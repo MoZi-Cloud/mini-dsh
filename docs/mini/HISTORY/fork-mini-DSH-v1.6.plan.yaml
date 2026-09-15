@@ -1,0 +1,562 @@
+schemaVersion: 1
+plan:
+  key: mini-dsh-v1.6
+  name: mini-DSH v1.6 Plan-as-Data and Project Execution Ledger
+  version: '1.6'
+  status: draft
+  project:
+    key: mini-dsh
+    name: mini-DSH
+    baseline:
+      repositoryRole: primary
+      selector: resolve-at-activation
+      requirePinnedSnapshotBeforeActivation: true
+  roles:
+  - key: owner
+    kind: OWNER
+  - key: coordinator
+    kind: COORDINATOR
+  - key: implementer
+    kind: IMPLEMENTER
+  - key: reviewer
+    kind: REVIEWER
+  - key: tester
+    kind: TESTER
+  objectives:
+  - key: OBJ-PLAN-DATA
+    kind: architecture
+    title: Plan is project data
+    description: Make active development plans queryable and executable from SQLite without ordinary workers loading the master
+      Markdown.
+  - key: OBJ-DYNAMIC
+    kind: architecture
+    title: Record dynamic development state
+    description: Track desired state, execution progress, owner decisions/resources, multi-agent collaboration, and verification
+      history.
+  - key: OBJ-CONTRACT
+    kind: quality
+    title: Contract-driven code changes
+    description: Represent baseline, target, implemented and verified function contracts including planned call relations
+      and acceptance criteria.
+  targets:
+  - key: TARGET-PLAN-001
+    kind: architecture
+    objective: OBJ-PLAN-DATA
+    assertion: An active plan can be queried from SQLite and a worker can obtain a bounded work packet without loading the
+      master plan document.
+    verifyBy: AC-BOOT-02
+  - key: TARGET-CONTRACT-001
+    kind: quality
+    objective: OBJ-CONTRACT
+    assertion: Every MODIFY function change has a pinned baseline contract, target contract, planned call policy and required
+      acceptance criteria before activation.
+    verifyBy: AC-CONTRACT-COMPLETE
+  - key: TARGET-MA-001
+    kind: behavior
+    objective: OBJ-DYNAMIC
+    assertion: At most one active primary lease exists for a work item while reviewer/test assignments may run independently.
+    verifyBy: AC-LEASE-UNIQUE
+  - key: TARGET-EVENT-001
+    kind: observability
+    objective: OBJ-DYNAMIC
+    assertion: Project execution mutations are recorded in append-only project_events and execution projections can be rebuilt.
+    verifyBy: AC-EVENT-REPLAY
+  phases:
+  - key: P00
+    ordinal: 0
+    title: Source pin / v1.5 baseline
+    status: planned
+    milestones:
+    - key: P00-M1
+      ordinal: 1
+      title: Source pin / v1.5 baseline milestone
+      workItems:
+      - key: W0001
+        type: RESEARCH
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Pin deepseek-harness fork baseline and toolchain
+        status: planned
+        acceptance:
+        - key: AC-PIN
+          kind: COMMAND
+          description: Pinned source SHA and toolchain are recorded
+          verifier:
+            kind: script
+            expected: pinned-baseline-recorded
+  - key: P01
+    ordinal: 1
+    title: v1.6 schema migration
+    status: planned
+    milestones:
+    - key: P01-M1
+      ordinal: 1
+      title: v1.6 schema migration milestone
+      workItems:
+      - key: W0101
+        type: MIGRATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Add v1.6 schema migration
+        status: planned
+        dependsOn:
+        - W0001
+        acceptance:
+        - key: AC-MIGRATE
+          kind: INTEGRATION_TEST
+          description: v1.5 fixture migrates to v1.6 without data loss
+          verifier:
+            kind: test
+            target: migration-v15-v16
+  - key: P02
+    ordinal: 2
+    title: Plan schema/parser/compiler
+    status: planned
+    milestones:
+    - key: P02-M1
+      ordinal: 1
+      title: Plan schema/parser/compiler milestone
+      workItems:
+      - key: W0201
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement Plan JSON Schema and YAML parser
+        status: planned
+        dependsOn:
+        - W0101
+        acceptance:
+        - key: AC-PLAN-SCHEMA
+          kind: COMMAND
+          description: v1.6.plan.yaml validates with zero schema errors
+          verifier:
+            kind: script
+            target: plan-schema-validate
+      - key: W0202
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement Plan semantic compiler and doctor
+        status: planned
+        dependsOn:
+        - W0201
+        acceptance:
+        - key: AC-PLAN-DOCTOR
+          kind: INTEGRATION_TEST
+          description: planDoctor finds missing baseline/acceptance/cycles and accepts golden v1.6 plan
+          verifier:
+            kind: test
+            target: plan-doctor
+  - key: P03
+    ordinal: 3
+    title: Project event ledger/projections
+    status: planned
+    milestones:
+    - key: P03-M1
+      ordinal: 1
+      title: Project event ledger/projections milestone
+      workItems:
+      - key: W0301
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement append-only project event ledger and rebuildable projections
+        status: planned
+        dependsOn:
+        - W0101
+        acceptance:
+        - key: AC-EVENT-REPLAY
+          kind: INTEGRATION_TEST
+          description: Replayed project projections equal transactional current projections
+          verifier:
+            kind: test
+            target: project-event-replay
+  - key: P04
+    ordinal: 4
+    title: Work graph/readiness/lease
+    status: planned
+    milestones:
+    - key: P04-M1
+      ordinal: 1
+      title: Work graph/readiness/lease milestone
+      workItems:
+      - key: W0401
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement work hierarchy, relations and readiness engine
+        status: planned
+        dependsOn:
+        - W0301
+        - W0202
+        acceptance:
+        - key: AC-READINESS
+          kind: INTEGRATION_TEST
+          description: Readiness explains work/dependency/decision/resource blockers deterministically
+          verifier:
+            kind: test
+            target: work-readiness
+      - key: W0402
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement claim lease and optimistic concurrency
+        status: planned
+        dependsOn:
+        - W0401
+        acceptance:
+        - key: AC-LEASE-UNIQUE
+          kind: INTEGRATION_TEST
+          description: Concurrent claims allow only one active primary lease
+          verifier:
+            kind: test
+            target: work-lease-concurrency
+  - key: P05
+    ordinal: 5
+    title: Owner decisions/resources
+    status: planned
+    milestones:
+    - key: P05-M1
+      ordinal: 1
+      title: Owner decisions/resources milestone
+      workItems:
+      - key: W0501
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement decision requests/options/resolution
+        status: planned
+        dependsOn:
+        - W0301
+        acceptance:
+        - key: AC-DECISION
+          kind: INTEGRATION_TEST
+          description: Hard decision blocker releases only after immutable decision resolution
+          verifier:
+            kind: test
+            target: decision-blocker
+      - key: W0502
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement resource requirement/instance/verification
+        status: planned
+        dependsOn:
+        - W0301
+        acceptance:
+        - key: AC-RESOURCE
+          kind: INTEGRATION_TEST
+          description: Owner-provided resource remains blocking until verification passes
+          verifier:
+            kind: test
+            target: resource-verification
+      - key: OWNER-ANDROID-001
+        type: ENVIRONMENT_SETUP
+        executorKind: OWNER
+        requestedRole: owner
+        title: Provide Android 11+ physical test device
+        status: planned
+        acceptance:
+        - key: AC-ANDROID-OWNER
+          kind: OWNER_REVIEW
+          description: Owner identifies/provides physical device for later verification
+          verifier:
+            kind: owner
+            role: owner
+  - key: P06
+    ordinal: 6
+    title: Design intent/function contracts
+    status: planned
+    milestones:
+    - key: P06-M1
+      ordinal: 1
+      title: Design intent/function contracts milestone
+      workItems:
+      - key: W0601
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement design objects and change specs
+        status: planned
+        dependsOn:
+        - W0202
+        - W0101
+        acceptance:
+        - key: AC-CHANGESPEC
+          kind: INTEGRATION_TEST
+          description: ADD/MODIFY/REMOVE design intents round-trip through plan import and SQLite
+          verifier:
+            kind: test
+            target: change-spec-roundtrip
+      - key: W0602
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement baseline and target function contract compiler
+        status: planned
+        dependsOn:
+        - W0601
+        acceptance:
+        - key: AC-CONTRACT-COMPLETE
+          kind: INTEGRATION_TEST
+          description: MODIFY function requires pinned baseline and complete target contract
+          verifier:
+            kind: test
+            target: function-contract-completeness
+        designChanges:
+        - key: DO-PLAN-COMPILER
+          operation: ADD
+          objectKind: function
+          targetStableKey: mini-dsh::plan::compilePlan
+          targetName: compilePlan
+          targetFunction:
+            async: true
+            parameters:
+            - name: input
+              type: PlanCompileInput
+              optional: false
+            return:
+              type: Promise<PlanCompileResult>
+            effects:
+            - kind: DATABASE_READ
+              requirement: ALLOWED
+              target: project memory
+            - kind: DATABASE_WRITE
+              requirement: PROHIBITED
+              target: formal project tables during compile stage
+            plannedCalls:
+            - action: ADD
+              callee: parsePlanDocument
+              refKind: DESIGN_OBJECT
+            - action: ADD
+              callee: validatePlanSchema
+              refKind: DESIGN_OBJECT
+            - action: ADD
+              callee: resolvePlanBaseline
+              refKind: DESIGN_OBJECT
+            - action: ADD
+              callee: bindObservedDesignTargets
+              refKind: DESIGN_OBJECT
+            - action: ADD
+              callee: compileAcceptanceCriteria
+              refKind: DESIGN_OBJECT
+  - key: P07
+    ordinal: 7
+    title: Acceptance/conformance
+    status: planned
+    milestones:
+    - key: P07-M1
+      ordinal: 1
+      title: Acceptance/conformance milestone
+      workItems:
+      - key: W0701
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement implementation binding and contract diff
+        status: planned
+        dependsOn:
+        - W0602
+        acceptance:
+        - key: AC-CONTRACT-DIFF
+          kind: INTEGRATION_TEST
+          description: Target vs implemented contract mismatch prevents work completion
+          verifier:
+            kind: test
+            target: contract-diff-gate
+      - key: W0702
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement acceptance criteria/spec/evaluation history
+        status: planned
+        dependsOn:
+        - W0701
+        acceptance:
+        - key: AC-ACCEPTANCE-HISTORY
+          kind: INTEGRATION_TEST
+          description: FAIL/FAIL/PASS evaluations remain historically queryable
+          verifier:
+            kind: test
+            target: acceptance-history
+  - key: P08
+    ordinal: 8
+    title: Multi-agent collaboration
+    status: planned
+    milestones:
+    - key: P08-M1
+      ordinal: 1
+      title: Multi-agent collaboration milestone
+      workItems:
+      - key: W0801
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement actor/role/assignment/handoff/scope reservation
+        status: planned
+        dependsOn:
+        - W0402
+        acceptance:
+        - key: AC-MULTIAGENT
+          kind: INTEGRATION_TEST
+          description: Agent1 implementation, Agent2 review and Agent3 test can be represented and coordinated
+          verifier:
+            kind: test
+            target: multi-agent-collaboration
+  - key: P09
+    ordinal: 9
+    title: Context-Light work packets
+    status: planned
+    milestones:
+    - key: P09-M1
+      ordinal: 1
+      title: Context-Light work packets milestone
+      workItems:
+      - key: W0901
+        type: IMPLEMENTATION
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Implement bounded database-driven work packet builder
+        status: planned
+        dependsOn:
+        - W0401
+        - W0602
+        - W0801
+        acceptance:
+        - key: AC-BOOT-02
+          kind: CONTEXT_BUDGET
+          description: Fresh worker gets complete current task without master plan and fits 4K lane reserve
+          verifier:
+            kind: benchmark
+            target: work-packet-4k
+  - key: P10
+    ordinal: 10
+    title: Self-bootstrap plan import
+    status: planned
+    milestones:
+    - key: P10-M1
+      ordinal: 1
+      title: Self-bootstrap plan import milestone
+      workItems:
+      - key: W1001
+        type: TEST
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Import v1.6 plan as self-bootstrap golden fixture
+        status: planned
+        dependsOn:
+        - W0202
+        - W0901
+        acceptance:
+        - key: AC-BOOT-01
+          kind: INTEGRATION_TEST
+          description: v1.6 plan imports and planDoctor returns zero errors before activation after baseline pin
+          verifier:
+            kind: test
+            target: v16-self-bootstrap
+  - key: P11
+    ordinal: 11
+    title: Real mini-DSH trial
+    status: planned
+    milestones:
+    - key: P11-M1
+      ordinal: 1
+      title: Real mini-DSH trial milestone
+      workItems:
+      - key: W1101
+        type: BENCHMARK
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Run real mini-DSH multi-agent execution trial
+        status: planned
+        dependsOn:
+        - W1001
+        - W0702
+        - W0801
+        acceptance:
+        - key: AC-REAL-TRIAL
+          kind: BENCHMARK
+          description: Real fork work item executes via DB packet, conformance, acceptance and review without loading master
+            plan
+          verifier:
+            kind: benchmark
+            target: real-mini-dsh-project-trial
+  - key: P12
+    ordinal: 12
+    title: Regression/release gate
+    status: planned
+    milestones:
+    - key: P12-M1
+      ordinal: 1
+      title: Regression/release gate milestone
+      workItems:
+      - key: W1201
+        type: RELEASE
+        executorKind: AGENT
+        requestedRole: implementer
+        title: Run full regression and release gate
+        status: planned
+        dependsOn:
+        - W1101
+        acceptance:
+        - key: AC-REGRESSION
+          kind: COMMAND
+          description: Upstream tests/typecheck/lint/check:ci plus DB doctor all pass
+          verifier:
+            kind: script
+            target: release-gate
+  decisions:
+  - key: DEC-DB-LOCATION
+    title: Choose default project database location
+    blockingLevel: soft
+    requiredRole: owner
+    status: open
+    question: Should project memory default to repo-local .mini-dsh/ or an external per-repo cache?
+    options:
+    - key: repo-local
+      label: .mini-dsh/ in repository worktree
+      recommended: true
+    - key: external-cache
+      label: External per-repository cache directory
+      recommended: false
+  resources:
+  - key: RES-ANDROID-PHYSICAL
+    kind: device
+    name: Android physical test device
+    status: required
+    requestedFrom: owner
+    constraints:
+      platform: android
+      physical: true
+      minApiLevel: 30
+      developerMode: true
+      usbDebugging: true
+      adbAuthorized: true
+  workflows:
+  - key: WF-IMPLEMENT-REVIEW-TEST
+    name: Implement then parallel review/test
+    nodes:
+    - key: impl
+      kind: work
+      role: implementer
+    - key: review
+      kind: work
+      role: reviewer
+    - key: test
+      kind: work
+      role: tester
+    - key: join
+      kind: gate
+    edges:
+    - from: impl
+      to: review
+      kind: sequence
+    - from: impl
+      to: test
+      kind: sequence
+    - from: review
+      to: join
+      kind: join
+    - from: test
+      to: join
+      kind: join

@@ -1,0 +1,384 @@
+schemaVersion: 1
+project:
+  id: mini-dsh
+  name: mini-DSH
+plan:
+  id: mini-dsh-v1.6a-ledger
+  name: Plan-as-Data Ledger Core
+  version: 1
+phases:
+  - id: W00
+    title: Freeze sources and prerequisites
+    ordinal: 0
+    status: READY
+    description: Pin DSH source, import prior design history, and define the real 4K benchmark before production code.
+  - id: W01
+    title: Strict plan schema and parser
+    ordinal: 1
+    status: PLANNED
+  - id: W02
+    title: SQLite ledger identity and runtime
+    ordinal: 2
+    status: PLANNED
+  - id: W03
+    title: Plan compiler and immutable import
+    ordinal: 3
+    status: PLANNED
+  - id: W04
+    title: Versioned project events and replay
+    ordinal: 4
+    status: PLANNED
+  - id: W05
+    title: Work relations and readiness
+    ordinal: 5
+    status: PLANNED
+  - id: W06
+    title: Acceptance and verifier storage
+    ordinal: 6
+    status: PLANNED
+  - id: W07
+    title: Work lease lifecycle
+    ordinal: 7
+    status: PLANNED
+  - id: W08
+    title: DSH profile, plan-mode, and todo integration
+    ordinal: 8
+    status: PLANNED
+  - id: W09
+    title: Bounded WorkPacket and model-visible logging
+    ordinal: 9
+    status: PLANNED
+  - id: W10
+    title: Owner and Agent todo views
+    ordinal: 10
+    status: PLANNED
+  - id: W11
+    title: Immutable supersede and baseline drift
+    ordinal: 11
+    status: PLANNED
+  - id: W12
+    title: Real 4K vertical slice
+    ordinal: 12
+    status: PLANNED
+workItems:
+  - id: OWNER-REVIEW-001
+    phaseId: W00
+    type: OWNER_ACTION
+    executorKind: OWNER
+    title: Approve the pinned v1.6a Ledger Core scope
+    description: Confirm that v1.6a deliberately excludes the Owner resource domain, Function Contract hard gates, and multi-agent workflow database.
+    priority: 100
+    status: READY
+    acceptance:
+      - id: AC-OWNER-001
+        kind: OWNER_CONFIRMATION
+        description: Owner explicitly approves the v1.6a scope before plan activation.
+        required: true
+        verifier:
+          kind: OWNER_CONFIRMATION
+          instruction: Confirm v1.6a Ledger Core scope and activation.
+  - id: PRE-001
+    phaseId: W00
+    type: DOCUMENTATION
+    executorKind: AGENT
+    title: Put v1.4/v1.5 design history and v1.6a fixtures in-repo
+    priority: 95
+    status: READY
+    acceptance:
+      - id: AC-PRE-001
+        kind: COMMAND
+        description: Required in-repo design and fixture paths exist.
+        required: true
+        verifier:
+          kind: COMMAND
+          command: test -f docs/mini/v1.6a/fork-mini-DSH改造方案-v1.6a.md
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: PRE-002
+    phaseId: W00
+    type: BENCHMARK
+    executorKind: AGENT
+    title: Define executable 4096-context benchmark
+    priority: 90
+    status: READY
+    acceptance:
+      - id: AC-PRE-002
+        kind: COMMAND
+        description: Context-light benchmark definition exists in the repository.
+        required: true
+        verifier:
+          kind: COMMAND
+          command: test -f benchmarks/context-light/README.md
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: SCHEMA-001
+    phaseId: W01
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Implement strict Plan v1.1 schema and parser
+    priority: 90
+    status: BLOCKED
+    acceptance:
+      - id: AC-SCHEMA-001
+        kind: TEST
+        description: Unknown fields, duplicate keys, unknown enums, and malformed verifier variants fail closed.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run packages/experimental/project-ledger/tests/plan-schema.spec.ts
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: DB-001
+    phaseId: W02
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Implement Project Ledger SQLite identity, user_version, WAL, busy timeout, and fail-closed open
+    priority: 85
+    status: BLOCKED
+    acceptance:
+      - id: AC-DB-001
+        kind: TEST
+        description: Fresh DB opens, unknown version rejects, and adjacent migration fixture upgrades without data loss.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run packages/experimental/project-ledger-sqlite/tests/schema.spec.ts
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: IMPORT-001
+    phaseId: W03
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Compile and transactionally import an immutable plan version
+    priority: 80
+    status: BLOCKED
+    acceptance:
+      - id: AC-IMPORT-001
+        kind: TEST
+        description: Golden plan imports once, re-import is idempotent by hash, and compile errors do not partially write.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run packages/experimental/project-ledger/tests/import.spec.ts
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: EVENT-001
+    phaseId: W04
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Implement versioned append-only project events and replay parity
+    priority: 75
+    status: BLOCKED
+    acceptance:
+      - id: AC-EVENT-001
+        kind: TEST
+        description: Unknown required events fail, ignorable unknown events preserve replay, and replay equals materialized projection.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run packages/experimental/project-ledger/tests/events.spec.ts
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: READY-001
+    phaseId: W05
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Implement hierarchy, typed relations, cycle detection, and computeWorkReadiness
+    priority: 70
+    status: BLOCKED
+    acceptance:
+      - id: AC-READY-001
+        kind: TEST
+        description: Hierarchy is independent from dependency, cycles are rejected, and blocked work cannot be claimed.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run packages/experimental/project-ledger/tests/readiness.spec.ts
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: ACCEPT-001
+    phaseId: W06
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Persist acceptance specs and append-only evaluations without executing verifier commands on import
+    priority: 65
+    status: BLOCKED
+    acceptance:
+      - id: AC-ACCEPT-001
+        kind: TEST
+        description: Import stores verifier commands but never executes them; evaluations append history.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run packages/experimental/project-ledger/tests/acceptance.spec.ts
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: LEASE-001
+    phaseId: W07
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Implement claim, heartbeat, expiry, and reaper lifecycle
+    priority: 60
+    status: BLOCKED
+    acceptance:
+      - id: AC-LEASE-001
+        kind: TEST
+        description: Two concurrent claimers produce exactly one active lease, and expired leases can be safely reaped.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run packages/experimental/project-ledger/tests/lease.spec.ts
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: INTEGRATE-001
+    phaseId: W08
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Mount Project Ledger through the mini DSH profile without a package bin
+    priority: 55
+    status: BLOCKED
+    acceptance:
+      - id: AC-INTEGRATE-001
+        kind: COMMAND
+        description: Repository application-entrypoint policy remains green.
+        required: true
+        verifier:
+          kind: COMMAND
+          command: pnpm run verify-application-entrypoints
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+      - id: AC-INTEGRATE-002
+        kind: TEST
+        description: Project Ledger, plan-mode, and tool-todo authority boundaries are covered by focused tests.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run packages/experimental/project-ledger/tests/bridges.spec.ts
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: PACKET-001
+    phaseId: W09
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Build bounded deterministic WorkPacket and log its reconstruction recipe
+    priority: 50
+    status: BLOCKED
+    acceptance:
+      - id: AC-PACKET-001
+        kind: TEST
+        description: Rebuilt packet hash equals final request packet hash and does not require the master plan transcript.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run packages/experimental/project-ledger/tests/work-packet.spec.ts
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: TODO-001
+    phaseId: W10
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Expose distinct Owner and Agent project todo queries
+    priority: 45
+    status: BLOCKED
+    acceptance:
+      - id: AC-TODO-001
+        kind: TEST
+        description: Owner and Agent work queries are distinct and session todo completion cannot directly complete a project work item.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run packages/experimental/project-ledger/tests/todo-views.spec.ts
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: VERSION-001
+    phaseId: W11
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Implement immutable supersede and baseline drift handling
+    priority: 40
+    status: BLOCKED
+    acceptance:
+      - id: AC-VERSION-001
+        kind: TEST
+        description: Superseded versions remain queryable, new claims stop, active attempts require review, and historical evaluations remain unchanged.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run packages/experimental/project-ledger/tests/versioning.spec.ts
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: REAL-4K-001
+    phaseId: W12
+    type: BENCHMARK
+    executorKind: AGENT
+    title: Use Project Ledger to execute one real mini-DSH development task under hard 4096 context
+    priority: 35
+    status: BLOCKED
+    acceptance:
+      - id: AC-4K-001
+        kind: COMMAND
+        description: The pinned 4K benchmark exits successfully without context widening.
+        required: true
+        verifier:
+          kind: COMMAND
+          command: ./benchmarks/context-light/run-4k.sh
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+relations:
+  - from: OWNER-REVIEW-001
+    to: SCHEMA-001
+    kind: BLOCKS
+  - from: PRE-001
+    to: SCHEMA-001
+    kind: BLOCKS
+  - from: PRE-002
+    to: REAL-4K-001
+    kind: BLOCKS
+  - from: SCHEMA-001
+    to: DB-001
+    kind: PRECEDES
+  - from: DB-001
+    to: IMPORT-001
+    kind: PRECEDES
+  - from: IMPORT-001
+    to: EVENT-001
+    kind: PRECEDES
+  - from: EVENT-001
+    to: READY-001
+    kind: PRECEDES
+  - from: READY-001
+    to: ACCEPT-001
+    kind: PRECEDES
+  - from: ACCEPT-001
+    to: LEASE-001
+    kind: PRECEDES
+  - from: LEASE-001
+    to: INTEGRATE-001
+    kind: PRECEDES
+  - from: INTEGRATE-001
+    to: PACKET-001
+    kind: PRECEDES
+  - from: PACKET-001
+    to: TODO-001
+    kind: PRECEDES
+  - from: TODO-001
+    to: VERSION-001
+    kind: PRECEDES
+  - from: VERSION-001
+    to: REAL-4K-001
+    kind: PRECEDES

@@ -50,6 +50,7 @@ packages/    @deepseek-ai/dsh-<pkg> workspaces at packages/<group>/<pkg>/
   session-query/        browsing/search/export
   attachment/           binary attachments
   spill/                output spill
+  project/              repository intelligence (memory store + indexer)
   storage/              non-session storage
   workspace/            workspace entities
   feedback/             human feedback

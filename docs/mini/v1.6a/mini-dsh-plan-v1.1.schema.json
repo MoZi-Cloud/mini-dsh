@@ -1,0 +1,406 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mini-dsh:plan:schema:v1.1",
+  "title": "mini-DSH Project Ledger Plan v1.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "project",
+    "plan",
+    "phases",
+    "workItems",
+    "relations"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "project": {
+      "$ref": "#/$defs/project"
+    },
+    "plan": {
+      "$ref": "#/$defs/plan"
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/phase"
+      },
+      "minItems": 1
+    },
+    "workItems": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/workItem"
+      },
+      "minItems": 1
+    },
+    "relations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relation"
+      }
+    }
+  },
+  "$defs": {
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repoHead": {
+          "type": "string",
+          "minLength": 1
+        },
+        "worktreeHash": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "minProperties": 1
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "baseline": {
+          "$ref": "#/$defs/baseline"
+        }
+      }
+    },
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "ordinal",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "enum": [
+            "PLANNED",
+            "READY",
+            "ACTIVE",
+            "BLOCKED",
+            "DONE",
+            "CANCELLED",
+            "SUPERSEDED"
+          ]
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "workItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "executorKind",
+        "title",
+        "priority",
+        "status",
+        "acceptance"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phaseId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "enum": [
+            "IMPLEMENTATION",
+            "BUG",
+            "RESEARCH",
+            "DESIGN",
+            "TEST",
+            "BENCHMARK",
+            "DOCUMENTATION",
+            "REVIEW",
+            "OWNER_ACTION",
+            "ENVIRONMENT_SETUP",
+            "MAINTENANCE"
+          ]
+        },
+        "executorKind": {
+          "enum": [
+            "AGENT",
+            "OWNER",
+            "SYSTEM",
+            "EXTERNAL"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "PROPOSED",
+            "READY",
+            "BLOCKED",
+            "IN_PROGRESS",
+            "VERIFYING",
+            "DONE",
+            "FAILED",
+            "CANCELLED",
+            "SUPERSEDED"
+          ]
+        },
+        "acceptance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/acceptance"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "kind"
+      ],
+      "properties": {
+        "from": {
+          "type": "string",
+          "minLength": 1
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "BLOCKS",
+            "PRECEDES",
+            "RELATES_TO",
+            "DUPLICATES",
+            "SUPERSEDES"
+          ]
+        }
+      }
+    },
+    "verifier": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "command",
+            "expectedExitCode",
+            "sandboxRequired",
+            "approvalRequired"
+          ],
+          "properties": {
+            "kind": {
+              "const": "COMMAND"
+            },
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedExitCode": {
+              "type": "integer"
+            },
+            "sandboxRequired": {
+              "type": "boolean"
+            },
+            "approvalRequired": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "command",
+            "expectedExitCode",
+            "sandboxRequired",
+            "approvalRequired"
+          ],
+          "properties": {
+            "kind": {
+              "const": "TEST"
+            },
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedExitCode": {
+              "type": "integer"
+            },
+            "sandboxRequired": {
+              "type": "boolean"
+            },
+            "approvalRequired": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "query",
+            "expected"
+          ],
+          "properties": {
+            "kind": {
+              "const": "SQL_ASSERTION"
+            },
+            "query": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expected": {}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "query",
+            "expected"
+          ],
+          "properties": {
+            "kind": {
+              "const": "GRAPH_ASSERTION"
+            },
+            "query": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expected": {}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "instruction"
+          ],
+          "properties": {
+            "kind": {
+              "const": "OWNER_CONFIRMATION"
+            },
+            "instruction": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "description",
+        "required",
+        "verifier"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "COMMAND",
+            "TEST",
+            "SQL_ASSERTION",
+            "GRAPH_ASSERTION",
+            "OWNER_CONFIRMATION"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "verifier": {
+          "$ref": "#/$defs/verifier"
+        }
+      }
+    }
+  }
+}

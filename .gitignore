@@ -44,3 +44,6 @@ worktrees/
 .agents/worktrees/
 .typert-*/
 native/system/test/bin/
+
+# mini-DSH project-memory trial database (generated, never committed)
+.mini-dsh/
