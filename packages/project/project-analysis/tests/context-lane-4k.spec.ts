@@ -20,6 +20,7 @@ import {
   ProjectMemory,
   buildContextPacket,
   type ContextPacket,
+  type SnapshotId,
   type SymbolVersionRow,
 } from '@deepseek-ai/dsh-project-memory'
 import { indexRepository } from '../src/index.ts'
@@ -63,7 +64,7 @@ function synthesizeFixture(): string {
   return root
 }
 
-function allPackets(memory: ProjectMemory, snapshotId: string): ContextPacket[] {
+function allPackets(memory: ProjectMemory, snapshotId: SnapshotId): ContextPacket[] {
   const packets: ContextPacket[] = []
   const symbols = [
     ...memory.findSymbolVersionsByName(snapshotId, 'probe'),
