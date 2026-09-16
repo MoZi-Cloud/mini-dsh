@@ -1,18 +1,6 @@
 import type { PlanDocumentV1 } from './plan-document.js'
 import { type PlanIssue, PlanDocumentError } from './plan-issues.js'
-
-/**
- * Relation kinds that order work and therefore deadlock on a cycle. A
- * `BLOCKS`, `PRECEDES`, or `SUPERSEDES` edge that closes a loop can never be
- * satisfied; `RELATES_TO` and `DUPLICATES` carry no ordering and are excluded.
- */
-const ORDERING_RELATION_KINDS: ReadonlySet<string> = new Set(['BLOCKS', 'PRECEDES', 'SUPERSEDES'])
-
-const WalkState = {
-  Unvisited: 0,
-  InProgress: 1,
-  Done: 2,
-} as const
+import { ORDERING_RELATION_KINDS, findChainCycles, findOrderingCycles } from './relation-graph.js'
 
 /**
  * Check reference integrity and acyclicity of a schema-valid document: every
@@ -119,53 +107,13 @@ function collectHierarchyIssues(
     parentOf.set(workItem.id, workItem.parentId)
   }
 
-  const state = new Map<string, typeof WalkState[keyof typeof WalkState]>()
-  for (const workItem of document.workItems) {
-    walkChain(workItem.id, parentOf, state, workItemIndexes, issues)
-  }
-}
-
-/** Iterative parent-chain walk shared by every start item; emits each cycle once. */
-function walkChain(
-  startId: string,
-  parentOf: Map<string, string>,
-  state: Map<string, 0 | 1 | 2>,
-  workItemIndexes: Map<string, number>,
-  issues: PlanIssue[],
-): void {
-  if (state.get(startId) === WalkState.Done) {
-    return
-  }
-  const chain: string[] = []
-  let current = startId
-  while (true) {
-    const currentState = state.get(current) ?? WalkState.Unvisited
-    if (currentState === WalkState.Done) {
-      break
-    }
-    if (currentState === WalkState.InProgress) {
-      const cycleStart = chain.indexOf(current)
-      const cycle = [...chain.slice(cycleStart), current]
-      for (const id of cycle) {
-        state.set(id, WalkState.Done)
-      }
-      issues.push({
-        code: 'hierarchy-cycle',
-        message: `parentId chain forms a cycle: ${cycle.join(' -> ')}`,
-        path: `workItems[${workItemIndexes.get(current)}].parentId`,
-      })
-      break
-    }
-    state.set(current, WalkState.InProgress)
-    chain.push(current)
-    const parent = parentOf.get(current)
-    if (parent === undefined) {
-      break
-    }
-    current = parent
-  }
-  for (const id of chain) {
-    state.set(id, WalkState.Done)
+  for (const cycle of findChainCycles(document.workItems.map(workItem => workItem.id), parentOf)) {
+    issues.push({
+      code: 'hierarchy-cycle',
+      message: `parentId chain forms a cycle: ${cycle.join(' -> ')}`,
+      // Every returned cycle is a closed loop with at least one node.
+      path: `workItems[${workItemIndexes.get(cycle[0] as string)}].parentId`,
+    })
   }
 }
 
@@ -176,7 +124,8 @@ function collectRelationIssues(
   issues: PlanIssue[],
 ): void {
   const seenRelations = new Map<string, number>()
-  const edges = new Map<string, { to: string; relationIndex: number }[]>()
+  const edges = new Map<string, string[]>()
+  const edgeIndexes = new Map<string, number>()
   for (const [index, relation] of document.relations.entries()) {
     const fromIndex = workItemIndexes.get(relation.from)
     if (fromIndex === undefined) {
@@ -218,59 +167,25 @@ function collectRelationIssues(
       continue
     }
     const outgoing = edges.get(relation.from) ?? []
-    outgoing.push({ to: relation.to, relationIndex: index })
+    outgoing.push(relation.to)
     edges.set(relation.from, outgoing)
+    const edgeKey = `${relation.from}\u0000${relation.to}`
+    if (!edgeIndexes.has(edgeKey)) {
+      edgeIndexes.set(edgeKey, index)
+    }
   }
 
-  const state = new Map<string, 0 | 1 | 2>()
-  for (const relation of document.relations) {
-    if (!ORDERING_RELATION_KINDS.has(relation.kind) || state.get(relation.from) === WalkState.Done) {
-      continue
-    }
-    walkOrdering(relation.from, edges, state, issues)
-  }
-}
-
-/** Depth-first walk over ordering edges; emits the cycle closed by each back edge. */
-function walkOrdering(
-  startId: string,
-  edges: Map<string, { to: string; relationIndex: number }[]>,
-  state: Map<string, 0 | 1 | 2>,
-  issues: PlanIssue[],
-): void {
-  const stack: { id: string; outgoing: { to: string; relationIndex: number }[]; next: number }[] = [
-    { id: startId, outgoing: edges.get(startId) ?? [], next: 0 },
-  ]
-  state.set(startId, WalkState.InProgress)
-  const chain: string[] = [startId]
-  for (let frame = stack.pop(); frame !== undefined; frame = stack.pop()) {
-    const edge = frame.outgoing[frame.next]
-    if (edge === undefined) {
-      state.set(frame.id, WalkState.Done)
-      chain.pop()
-      continue
-    }
-    frame.next += 1
-    stack.push(frame)
-    const targetState = state.get(edge.to) ?? WalkState.Unvisited
-    if (targetState === WalkState.InProgress) {
-      const cycleStart = chain.indexOf(edge.to)
-      const cycle = [...chain.slice(cycleStart), edge.to]
-      for (const id of cycle) {
-        state.set(id, WalkState.Done)
-      }
-      issues.push({
-        code: 'relation-cycle',
-        message: `ordering relations form a cycle: ${cycle.join(' -> ')}`,
-        path: `relations[${edge.relationIndex}]`,
-      })
-      continue
-    }
-    if (targetState === WalkState.Done) {
-      continue
-    }
-    state.set(edge.to, WalkState.InProgress)
-    chain.push(edge.to)
-    stack.push({ id: edge.to, outgoing: edges.get(edge.to) ?? [], next: 0 })
+  for (const cycle of findOrderingCycles(
+    document.relations
+      .filter(relation => ORDERING_RELATION_KINDS.has(relation.kind))
+      .map(relation => relation.from),
+    from => edges.get(from) ?? [],
+  )) {
+    const closingEdge = `${cycle[cycle.length - 2]}\u0000${cycle[0]}`
+    issues.push({
+      code: 'relation-cycle',
+      message: `ordering relations form a cycle: ${cycle.join(' -> ')}`,
+      path: `relations[${edgeIndexes.get(closingEdge)}]`,
+    })
   }
 }

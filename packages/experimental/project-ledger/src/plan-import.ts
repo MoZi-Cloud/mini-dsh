@@ -286,6 +286,7 @@ function importWithinTransaction(
       stableKey: workItem.stableKey,
       title: workItem.title,
       planVersionId: versionId,
+      status: workItem.status,
     }, { entityType: 'work_item', entityId: workItem.id, actorRef, nowMs })
   }
 

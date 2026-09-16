@@ -19,6 +19,7 @@ import {
   type CompiledPlan,
   type PlanId,
   type PlanVersionId,
+  type PlanWorkItemStatus,
   type ProjectEventEnvelope,
   type ProjectId,
   type ReplayedPlanVersion,
@@ -108,13 +109,14 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
     })
   }
   const workItems = new Map<WorkItemId, ReplayedWorkItem>()
-  const itemRows = db.prepare('SELECT id, stable_key, title, plan_version_id FROM work_items')
-    .all() as { id: string; stable_key: string; title: string; plan_version_id: string | null }[]
+  const itemRows = db.prepare('SELECT id, stable_key, title, plan_version_id, status FROM work_items')
+    .all() as { id: string; stable_key: string; title: string; plan_version_id: string | null; status: string }[]
   for (const row of itemRows) {
     workItems.set(brandString<WorkItemId>(row.id), {
       stableKey: row.stable_key,
       title: row.title,
       planVersionId: brandString<PlanVersionId>(row.plan_version_id!),
+      status: row.status as PlanWorkItemStatus,
     })
   }
   return { planVersions, workItems }
@@ -123,7 +125,7 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
 describe('appendProjectEvent', () => {
   it('allocates dense per-project sequences and stamps the envelope', async () => {
     const db = await goldenLedger()
-    const payload = { workItemId: 'wi:mini-dsh:IMPORT-001', status: 'READY' }
+    const payload = { workItemId: 'wi:mini-dsh:IMPORT-001', fromStatus: 'BLOCKED', toStatus: 'READY' }
     const envelope = appendProjectEvent(db, PROJECT, 'work/status-changed', payload, {
       entityType: 'work_item',
       entityId: 'wi:mini-dsh:IMPORT-001',
@@ -260,6 +262,7 @@ describe('replayProjectEvents', () => {
       stableKey: 'IMPORT-001',
       title: 'Compile and transactionally import an immutable plan version',
       planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
+      status: 'BLOCKED',
     })
     db.close()
   })
@@ -267,13 +270,41 @@ describe('replayProjectEvents', () => {
   it('skips unknown ignorable rows and vocabulary types without a projection effect', async () => {
     const db = await goldenLedger()
     insertRawEvent(db, { eventType: 'alien/note', ignorable: 1, payloadJson: '{"note":"observed"}' })
-    appendProjectEvent(db, PROJECT, 'work/status-changed', {
+    appendProjectEvent(db, PROJECT, 'work/claimed', {
       workItemId: 'wi:mini-dsh:IMPORT-001',
-      status: 'READY',
+      leaseId: 'lease:1',
+      workerIdentity: 'agent/a',
     }, { entityType: 'work_item', entityId: 'wi:mini-dsh:IMPORT-001', nowMs: 2 })
 
     expect(readProjectEvents(db, PROJECT)).toHaveLength(18)
     expect(replayProjectEvents(db, PROJECT)).toEqual(materializedProjection(db))
+    db.close()
+  })
+
+  it('applies work/status-changed to the replayed projection', async () => {
+    const db = await goldenLedger()
+    db.prepare("UPDATE work_items SET status = 'IN_PROGRESS' WHERE id = 'wi:mini-dsh:IMPORT-001'").run()
+    appendProjectEvent(db, PROJECT, 'work/status-changed', {
+      workItemId: 'wi:mini-dsh:IMPORT-001',
+      fromStatus: 'BLOCKED',
+      toStatus: 'IN_PROGRESS',
+    }, { entityType: 'work_item', entityId: 'wi:mini-dsh:IMPORT-001', nowMs: 2 })
+
+    const replayed = replayProjectEvents(db, PROJECT)
+    expect(replayed.workItems.get(brandString<WorkItemId>('wi:mini-dsh:IMPORT-001'))?.status).toBe('IN_PROGRESS')
+    expect(replayed).toEqual(materializedProjection(db))
+    db.close()
+  })
+
+  it('fails replay on a status change naming an unknown work item', async () => {
+    const db = await goldenLedger()
+    appendProjectEvent(db, PROJECT, 'work/status-changed', {
+      workItemId: 'wi:mini-dsh:GHOST',
+      fromStatus: 'BLOCKED',
+      toStatus: 'READY',
+    }, { entityType: 'work_item', entityId: 'wi:mini-dsh:GHOST', nowMs: 2 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "workItemId" names no replayed work item (wi:mini-dsh:GHOST)')
     db.close()
   })
 
@@ -297,11 +328,22 @@ describe('replayProjectEvents', () => {
       stableKey: 'EXTRA',
       title: 'Extra item',
       planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
+      status: 'READY',
+    }
+    const baseStatusChanged: Record<string, unknown> = {
+      workItemId: 'wi:mini-dsh:IMPORT-001',
+      fromStatus: 'BLOCKED',
+      toStatus: 'READY',
     }
     const created = appendProjectEvent(db, PROJECT, 'work/created', baseCreated, {
       entityType: 'work_item',
       entityId: 'wi:mini-dsh:EXTRA',
       nowMs: 2,
+    })
+    const statusChanged = appendProjectEvent(db, PROJECT, 'work/status-changed', baseStatusChanged, {
+      entityType: 'work_item',
+      entityId: 'wi:mini-dsh:IMPORT-001',
+      nowMs: 3,
     })
     const setPayload = (sequenceNo: number, payload: unknown): void => {
       db.prepare('UPDATE project_events SET payload_json = ? WHERE project_id = ? AND sequence_no = ?')
@@ -327,6 +369,19 @@ describe('replayProjectEvents', () => {
       setPayload(created.sequenceNo, variant)
       expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain('non-object payload')
     }
+    setPayload(created.sequenceNo, baseCreated)
+
+    for (const field of Object.keys(baseStatusChanged)) {
+      const payload = Object.fromEntries(Object.entries(baseStatusChanged).filter(([key]) => key !== field))
+      setPayload(statusChanged.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(statusChanged.sequenceNo, { ...baseStatusChanged, fromStatus: 1 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "fromStatus" must be a string')
+    setPayload(statusChanged.sequenceNo, { ...baseStatusChanged, toStatus: 'SPICED' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "toStatus" is not a work item status: "SPICED"')
     db.close()
   })
 

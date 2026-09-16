@@ -15,6 +15,10 @@
 
 import { DatabaseSync } from 'node:sqlite'
 import type { PlanId, PlanVersionId, ProjectId, SourceDocumentHash, WorkItemId } from './plan-compile.js'
+import type { PlanWorkItemStatus } from './plan-document.js'
+import { PLAN_WORK_ITEM_STATUSES } from './plan-schema.js'
+
+const WORK_ITEM_STATUS_SET: ReadonlySet<string> = new Set<string>(PLAN_WORK_ITEM_STATUSES)
 
 /**
  * The event envelope version recorded in the `event_format_version` column of
@@ -27,8 +31,8 @@ export const PROJECT_EVENT_FORMAT_VERSION = 1
 /**
  * The §16 v1 vocabulary. Every listed type is required: rows carry
  * `ignorable = 0`, replay knows their projection effect (this build applies
- * `plan/imported` and `work/created`), and a reader that does not know the
- * type fails closed.
+ * `plan/imported`, `work/created`, and `work/status-changed`), and a reader
+ * that does not know the type fails closed.
  */
 export const PROJECT_EVENT_TYPES = [
   'plan/imported',
@@ -272,6 +276,8 @@ export interface ReplayedWorkItem {
   readonly stableKey: string
   readonly title: string
   readonly planVersionId: PlanVersionId
+  /** The materialized status, moved forward by `work/status-changed` events. */
+  readonly status: PlanWorkItemStatus
 }
 
 /** The projection replaying a project's events rebuilds. */
@@ -311,7 +317,21 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
           stableKey: payload.stableKey,
           title: payload.title,
           planVersionId: payload.planVersionId,
+          status: payload.status,
         })
+        break
+      }
+      case 'work/status-changed': {
+        const payload = decodeWorkStatusChangedPayload(event)
+        const replayed = workItems.get(payload.workItemId)
+        if (replayed === undefined) {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "workItemId" `
+              + `names no replayed work item (${payload.workItemId})`,
+          )
+        }
+        workItems.set(payload.workItemId, { ...replayed, status: payload.toStatus })
         break
       }
       default:
@@ -335,6 +355,14 @@ interface WorkCreatedPayload {
   readonly stableKey: string
   readonly title: string
   readonly planVersionId: PlanVersionId
+  readonly status: PlanWorkItemStatus
+}
+
+/** Payload facts of one `work/status-changed` event. */
+interface WorkStatusChangedPayload {
+  readonly workItemId: WorkItemId
+  readonly fromStatus: PlanWorkItemStatus
+  readonly toStatus: PlanWorkItemStatus
 }
 
 /** The event payload must be a JSON object for appliers to read fields from. */
@@ -376,6 +404,23 @@ function requiredNumber(fields: Record<string, unknown>, event: ProjectEventEnve
   return value
 }
 
+/**
+ * Read one required work-item status payload field. The status crossed the
+ * durable `payload_json` boundary, so the controlled vocabulary is re-applied
+ * instead of trusting the string.
+ */
+function requiredStatus(fields: Record<string, unknown>, event: ProjectEventEnvelope, field: string): PlanWorkItemStatus {
+  const value = requiredString(fields, event, field)
+  if (!WORK_ITEM_STATUS_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not a work item status: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as PlanWorkItemStatus
+}
+
 /** Decode one `plan/imported` payload, failing closed on missing or mistyped fields. */
 function decodePlanImportedPayload(event: ProjectEventEnvelope): PlanImportedPayload {
   const fields = payloadFields(event)
@@ -395,5 +440,16 @@ function decodeWorkCreatedPayload(event: ProjectEventEnvelope): WorkCreatedPaylo
     stableKey: requiredString(fields, event, 'stableKey'),
     title: requiredString(fields, event, 'title'),
     planVersionId: requiredString(fields, event, 'planVersionId') as PlanVersionId,
+    status: requiredStatus(fields, event, 'status'),
+  }
+}
+
+/** Decode one `work/status-changed` payload, failing closed on missing or mistyped fields. */
+function decodeWorkStatusChangedPayload(event: ProjectEventEnvelope): WorkStatusChangedPayload {
+  const fields = payloadFields(event)
+  return {
+    workItemId: requiredString(fields, event, 'workItemId') as WorkItemId,
+    fromStatus: requiredStatus(fields, event, 'fromStatus'),
+    toStatus: requiredStatus(fields, event, 'toStatus'),
   }
 }

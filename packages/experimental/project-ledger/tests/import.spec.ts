@@ -313,6 +313,7 @@ describe('golden plan import (IMPORT-001)', () => {
       stableKey: 'IMPORT-001',
       title: 'Compile and transactionally import an immutable plan version',
       planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
+      status: 'BLOCKED',
     })
     expect(created.map(event => event['sequence_no'])).toEqual([...created.keys()].map(offset => offset + 2))
 

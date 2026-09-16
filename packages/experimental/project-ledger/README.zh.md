@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core（docs/mini/v1.6a）的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML 并带源位置，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像已发布的宪法 `docs/mini/v1.6a/mini-dsh-plan-v1.1.schema.json`；`validatePlanSemantics` 检查引用、层级与排序关系。`compilePlan` 把已校验文档编译为带确定性品牌行身份的规范 IR，`importPlanVersion` 以单个原子事务写入该 IR；事件接缝负责版本化信封的盖章、fail-closed 读取与重放。本包绝不执行 verifier 命令，也绝不激活计划。
+`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core（docs/mini/v1.6a）的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML 并带源位置，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像已发布的宪法 `docs/mini/v1.6a/mini-dsh-plan-v1.1.schema.json`；`validatePlanSemantics` 检查引用、层级与排序关系。`compilePlan` 把已校验文档编译为带确定性品牌行身份的规范 IR，`importPlanVersion` 以单个原子事务写入该 IR；事件接缝负责信封的盖章、fail-closed 读取与重放；`computeWorkReadiness` 从因果行重算可领取性，环检测守护账本。本包绝不执行 verifier 命令，也绝不激活计划。
 
 ## 目录
 
@@ -28,7 +28,7 @@ kind: "package-reference"
 
 ```ts
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
-import { compilePlan, importPlanVersion, parsePlanDocument, readProjectEvents, replayProjectEvents, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
+import { changeWorkStatus, compilePlan, computeWorkReadiness, detectWorkGraphCycles, importPlanVersion, parsePlanDocument, readProjectEvents, replayProjectEvents, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
 
 const { text, value } = parsePlanDocument(planBytes)
 const document = validatePlanSchema(value)
@@ -38,6 +38,8 @@ const db = await openProjectLedgerDatabase(ledgerPath)
 const result = importPlanVersion(db, compiled, { sourcePath: planPath })
 const timeline = readProjectEvents(db, compiled.projectId)
 const projection = replayProjectEvents(db, compiled.projectId)
+const readiness = computeWorkReadiness(db, compiled.workItems[0].id)
+const cycles = detectWorkGraphCycles(db, compiled.projectId)
 ```
 
 一个测试把 zod 镜像钉在已发布的 schema 文件上：只改宪法或镜像其一而不同步另一方，测试套件即失败。
@@ -51,6 +53,8 @@ const projection = replayProjectEvents(db, compiled.projectId)
 - **按 hash 幂等**——重复提交同一源文本会返回已记录版本且不写任何行；同一版本号携带不同源内容抛 `version-conflict`；新版本重复声明已属于其他版本的工作项抛 `work-item-conflict`。
 - **事务与事件原子**——单个 `BEGIN IMMEDIATE` 事务写入版本各表并追加 `plan/imported` 与 `work/created` 事件；任何失败回滚，账本不留部分行。导入绝不激活：版本以 `DRAFT` 落库，`plans.current_version_id` 不被触碰。
 - **事件读取 fail closed**——v1 词表全部是 required 事件：读取遇到未知 required 事件类型或外来 `event_format_version` 时拒绝整条时间线；未知 ignorable 行（更新的写入者的观察性扩展）被保留且不改变重放状态。required 词表条目拒绝以 ignorable 落库。
+- **readiness 只重算、绝不信任**——`computeWorkReadiness` 从因果行推导可领取性（plan 版本、phase、`BLOCKS`/`PRECEDES` 边、外部阻塞、required 验收标准、活跃租约，以及工作项自身状态）；物化的 `READY`/`BLOCKED` 状态只是这些输入的投影，层级绝不进入决策（`parent_work_item_id` 是组成关系，不是依赖）。
+- **环语义只有一个家**——编译期校验与账本侧 `detectWorkGraphCycles` 共享 `relation-graph.ts` 的排序关系种类与环 walks，同一张图在文档与其产出行上永远得到相同判定。
 
 <a id="dev-note"></a>
 ## 开发备注
@@ -71,6 +75,6 @@ const projection = replayProjectEvents(db, compiled.projectId)
 
 以下是当前包约束，不是任务清单。
 
-- **尚无激活与 supersede**——导入绝不激活版本，且拒绝已属于其他版本或 backlog 的工作项；这些迁移由 supersede 流程负责。
-- **账本读取仅限事件层**——`readProjectEvents` 与 `replayProjectEvents` 暴露事件时间线及其投影；readiness、项目状态与租约的查询随后续账本工作包到来。
+- **尚无激活与 supersede**——导入绝不激活版本，且拒绝已属于其他版本或 backlog 的工作项；这些迁移由 supersede 流程负责，指向本项的 `SUPERSEDES` 边在其落地前不进入 readiness。
+- **只有通用状态迁移**——`changeWorkStatus` 拒绝由专用事件拥有的迁移：认领（`work/claimed`）与 readiness 投影的 `work/blocked`/`work/unblocked` 写入随租约生命周期到来。
 - **英文诊断**——问题消息仅英文；它们是编译器输入，不是 UI 文案。
