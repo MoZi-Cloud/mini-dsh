@@ -276,6 +276,7 @@
     { "path": "./packages/project/project-analysis" },
     { "path": "./packages/project/project-memory" },
     { "path": "./packages/experimental/project-ledger" },
+    { "path": "./packages/experimental/project-ledger-sqlite" },
     { "path": "./packages/ptc-runtime/ptc-runtime" },
     { "path": "./packages/experimental/ptc-runtime-python" },
     { "path": "./packages/ptc-runtime/ptc-runtime-node" },

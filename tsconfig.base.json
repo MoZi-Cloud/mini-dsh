@@ -268,6 +268,7 @@
       "@deepseek-ai/dsh-experimental-inspector/client": ["./packages/experimental/inspector/src/client/index.ts"],
       "@deepseek-ai/dsh-experimental-ptc-runtime-python": ["./packages/experimental/ptc-runtime-python/src"],
       "@deepseek-ai/dsh-experimental-project-ledger": ["./packages/experimental/project-ledger/src"],
+      "@deepseek-ai/dsh-experimental-project-ledger-sqlite": ["./packages/experimental/project-ledger-sqlite/src"],
       "@deepseek-ai/dsh-util-crypto": ["./packages/util/crypto/src"],
       "@deepseek-ai/dsh-util-values": ["./packages/util/values/src"],
       // util/ folders are role-named without the util- prefix their npm names carry,
