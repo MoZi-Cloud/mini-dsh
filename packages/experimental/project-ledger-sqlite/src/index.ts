@@ -6,7 +6,7 @@
  * @module @deepseek-ai/dsh-experimental-project-ledger-sqlite
  */
 
-export { PROJECT_EVENT_FORMAT_VERSION, PROJECT_LEDGER_SCHEMA_VERSION } from './constants.ts'
+export { PROJECT_LEDGER_SCHEMA_VERSION } from './constants.ts'
 export { ProjectLedgerError } from './errors.ts'
 export type { ProjectLedgerErrorCode } from './errors.ts'
 export {

@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core（docs/mini/v1.6a）的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML 并带源位置，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像已发布的宪法 `docs/mini/v1.6a/mini-dsh-plan-v1.1.schema.json`（字段封闭、受控枚举、判别式 verifier 联合、不支持的 `schemaVersion` fail closed）；`validatePlanSemantics` 检查引用、层级与排序关系（`BLOCKS`/`PRECEDES`/`SUPERSEDES` 必须无环）。`compilePlan` 把已校验文档编译为带确定性品牌行身份的规范 IR，`importPlanVersion` 以单个原子事务把该 IR 写入账本数据库。本包绝不执行 verifier 命令，也绝不激活计划。
+`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core（docs/mini/v1.6a）的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML 并带源位置，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像已发布的宪法 `docs/mini/v1.6a/mini-dsh-plan-v1.1.schema.json`；`validatePlanSemantics` 检查引用、层级与排序关系。`compilePlan` 把已校验文档编译为带确定性品牌行身份的规范 IR，`importPlanVersion` 以单个原子事务写入该 IR；事件接缝负责版本化信封的盖章、fail-closed 读取与重放。本包绝不执行 verifier 命令，也绝不激活计划。
 
 ## 目录
 
@@ -28,7 +28,7 @@ kind: "package-reference"
 
 ```ts
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
-import { compilePlan, importPlanVersion, parsePlanDocument, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
+import { compilePlan, importPlanVersion, parsePlanDocument, readProjectEvents, replayProjectEvents, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
 
 const { text, value } = parsePlanDocument(planBytes)
 const document = validatePlanSchema(value)
@@ -36,6 +36,8 @@ validatePlanSemantics(document)
 const compiled = compilePlan(document, { sourceText: text })
 const db = await openProjectLedgerDatabase(ledgerPath)
 const result = importPlanVersion(db, compiled, { sourcePath: planPath })
+const timeline = readProjectEvents(db, compiled.projectId)
+const projection = replayProjectEvents(db, compiled.projectId)
 ```
 
 一个测试把 zod 镜像钉在已发布的 schema 文件上：只改宪法或镜像其一而不同步另一方，测试套件即失败。
@@ -48,6 +50,7 @@ const result = importPlanVersion(db, compiled, { sourcePath: planPath })
 - **确定性身份**——行 id 由账本稳定键推导（`wi:<project>:<work id>`、`plv:<plan>:v<n>`），同样的源字节在每个账本数据库中编译出相同的主键；规范 IR hash 是全部产出行按成员键排序 JSON 的 SHA-256。
 - **按 hash 幂等**——重复提交同一源文本会返回已记录版本且不写任何行；同一版本号携带不同源内容抛 `version-conflict`；新版本重复声明已属于其他版本的工作项抛 `work-item-conflict`。
 - **事务与事件原子**——单个 `BEGIN IMMEDIATE` 事务写入版本各表并追加 `plan/imported` 与 `work/created` 事件；任何失败回滚，账本不留部分行。导入绝不激活：版本以 `DRAFT` 落库，`plans.current_version_id` 不被触碰。
+- **事件读取 fail closed**——v1 词表全部是 required 事件：读取遇到未知 required 事件类型或外来 `event_format_version` 时拒绝整条时间线；未知 ignorable 行（更新的写入者的观察性扩展）被保留且不改变重放状态。required 词表条目拒绝以 ignorable 落库。
 
 <a id="dev-note"></a>
 ## 开发备注
@@ -69,5 +72,5 @@ const result = importPlanVersion(db, compiled, { sourcePath: planPath })
 以下是当前包约束，不是任务清单。
 
 - **尚无激活与 supersede**——导入绝不激活版本，且拒绝已属于其他版本或 backlog 的工作项；这些迁移由 supersede 流程负责。
-- **账本访问只写不读**——本包导入 plan 版本；readiness、项目状态与租约的查询随后续账本工作包到来。
+- **账本读取仅限事件层**——`readProjectEvents` 与 `replayProjectEvents` 暴露事件时间线及其投影；readiness、项目状态与租约的查询随后续账本工作包到来。
 - **英文诊断**——问题消息仅英文；它们是编译器输入，不是 UI 文案。

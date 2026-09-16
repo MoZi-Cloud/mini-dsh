@@ -13,8 +13,8 @@
  *
  * The module runs against any open database handle carrying the ledger
  * layout; the physical store lives in
- * `@deepseek-ai/dsh-experimental-project-ledger-sqlite`, whose matching
- * `PROJECT_EVENT_FORMAT_VERSION` is pinned by the import tests.
+ * `@deepseek-ai/dsh-experimental-project-ledger-sqlite`. The event envelope,
+ * vocabulary, and codec live in `project-events.ts`.
  *
  * @module @deepseek-ai/dsh-experimental-project-ledger/plan-import
  */
@@ -25,19 +25,13 @@ import type { CompiledCriterion, CompiledPlan, PlanVersionId } from './plan-comp
 import { planVersionRowId } from './plan-compile.js'
 import type { PlanVerifier } from './plan-document.js'
 import { PLAN_SCHEMA_VERSION } from './plan-document.js'
+import { appendProjectEvent } from './project-events.js'
 
 /**
  * Generation of the parsing passes whose output this importer accepts,
  * recorded in `plan_imports.parser_version`.
  */
 export const PLAN_PARSER_VERSION = '1'
-
-/**
- * Event envelope version stamped on the events this import appends; pinned to
- * the SQLite package's constant by a test until W04 moves the vocabulary into
- * one home.
- */
-export const PROJECT_EVENT_FORMAT_VERSION = 1
 
 /** Actor recorded on import events when the caller does not name one. */
 export const DEFAULT_IMPORT_ACTOR_REF = 'dsh-experimental-project-ledger/import'
@@ -62,7 +56,7 @@ export class PlanImportError extends Error {
 
 /** Options for {@link importPlanVersion}. */
 export interface ImportPlanVersionOptions {
-  /** Source location recorded in `plan_imports.source_path` (provenance only). */
+  /** Source location recorded in `plan_imports.source_path`; the import never reads it back. */
   readonly sourcePath?: string | undefined
   /** Actor recorded on the appended events; defaults to {@link DEFAULT_IMPORT_ACTOR_REF}. */
   readonly actorRef?: string | undefined
@@ -101,7 +95,7 @@ type VerifierSpecRow = [
  * `version-conflict` instead of overwriting the immutable version.
  * @param db - open ledger database whose layout is at least v1.
  * @param compiled - the canonical IR from {@link compilePlan}.
- * @param options - provenance, actor, and clock overrides.
+ * @param options - source path, actor, and clock overrides.
  * @returns the imported (or reused) plan version and how many rows were written.
  * @throws {PlanImportError} on `version-conflict`.
  * @throws the underlying SQLite error when a write fails; the transaction
@@ -280,46 +274,19 @@ function importWithinTransaction(
     nowMs,
   )
 
-  let sequence = (db
-    .prepare('SELECT COALESCE(MAX(sequence_no), 0) AS max_sequence FROM project_events WHERE project_id = ?')
-    .get(compiled.projectId) as { max_sequence: number }).max_sequence
-  const appendEvent = (
-    eventType: string,
-    entityType: string,
-    entityId: string,
-    payload: Record<string, unknown>,
-  ): void => {
-    sequence += 1
-    db.prepare(
-      'INSERT INTO project_events '
-      + '(project_id, sequence_no, event_format_version, event_type, ignorable, entity_type, entity_id, actor_ref, '
-      + 'payload_json, created_at_ms) '
-      + 'VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)',
-    ).run(
-      compiled.projectId,
-      sequence,
-      PROJECT_EVENT_FORMAT_VERSION,
-      eventType,
-      entityType,
-      entityId,
-      actorRef,
-      JSON.stringify(payload),
-      nowMs,
-    )
-  }
-  appendEvent('plan/imported', 'plan_version', versionId, {
+  appendProjectEvent(db, compiled.projectId, 'plan/imported', {
     planId: compiled.planId,
     planVersionId: versionId,
     versionNo: compiled.versionNo,
     sourceDocumentHash: compiled.sourceDocumentHash,
-  })
+  }, { entityType: 'plan_version', entityId: versionId, actorRef, nowMs })
   for (const workItem of compiled.workItems) {
-    appendEvent('work/created', 'work_item', workItem.id, {
+    appendProjectEvent(db, compiled.projectId, 'work/created', {
       workItemId: workItem.id,
       stableKey: workItem.stableKey,
       title: workItem.title,
       planVersionId: versionId,
-    })
+    }, { entityType: 'work_item', entityId: workItem.id, actorRef, nowMs })
   }
 
   return { planVersionId: versionId, reused: false, importedWorkItemCount: compiled.workItems.length }

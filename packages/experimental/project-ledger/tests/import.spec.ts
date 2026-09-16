@@ -3,10 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
-import {
-  PROJECT_EVENT_FORMAT_VERSION as STORE_EVENT_FORMAT_VERSION,
-  openProjectLedgerDatabase,
-} from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
+import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
 import {
   DEFAULT_IMPORT_ACTOR_REF,
   PLAN_COMPILER_VERSION,
@@ -632,9 +629,5 @@ describe('compilation for import', () => {
     expect(compileDocument(document, 'source-two').sourceDocumentHash)
       .toBe(createHash('sha256').update('source-two', 'utf8').digest('hex'))
     expect(compiled.sourceDocumentHash).toBe(createHash('sha256').update('source-one', 'utf8').digest('hex'))
-  })
-
-  it('stamps the same event envelope version as the SQLite store', () => {
-    expect(PROJECT_EVENT_FORMAT_VERSION).toBe(STORE_EVENT_FORMAT_VERSION)
   })
 })

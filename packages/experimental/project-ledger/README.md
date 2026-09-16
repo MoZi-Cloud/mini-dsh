@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-experimental-project-ledger` owns the plan document seam of the v1.6a Ledger Core (docs/mini/v1.6a). A plan document is inert data: `parsePlanDocument` parses YAML with source positions and rejects duplicate keys, anchors, and aliases; `validatePlanSchema` mirrors the published constitution `docs/mini/v1.6a/mini-dsh-plan-v1.1.schema.json` (strict fields, controlled enums, discriminated verifier union, unsupported `schemaVersion` fails closed); `validatePlanSemantics` checks references, hierarchy, and ordering relations (`BLOCKS`/`PRECEDES`/`SUPERSEDES` must be acyclic). `compilePlan` turns a validated document into a canonical IR with deterministic, branded row identities, and `importPlanVersion` writes that IR into a ledger database as one atomic transaction. Nothing here executes a verifier command or activates a plan.
+`dsh-experimental-project-ledger` owns the plan document seam of the v1.6a Ledger Core (docs/mini/v1.6a). A plan document is inert data: `parsePlanDocument` parses YAML with source positions and rejects duplicate keys, anchors, and aliases; `validatePlanSchema` mirrors the published constitution `docs/mini/v1.6a/mini-dsh-plan-v1.1.schema.json`; `validatePlanSemantics` checks references, hierarchy, and ordering relations. `compilePlan` turns a validated document into a canonical IR with deterministic branded row identities, `importPlanVersion` writes that IR as one atomic transaction, and the event seam stamps, reads fail-closed, and replays the versioned envelope. Nothing here executes a verifier command or activates a plan.
 
 ## Table of Contents
 
@@ -28,7 +28,7 @@ Parse bytes, validate the schema, check semantics, compile, then import; every r
 
 ```ts
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
-import { compilePlan, importPlanVersion, parsePlanDocument, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
+import { compilePlan, importPlanVersion, parsePlanDocument, readProjectEvents, replayProjectEvents, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
 
 const { text, value } = parsePlanDocument(planBytes)
 const document = validatePlanSchema(value)
@@ -36,6 +36,8 @@ validatePlanSemantics(document)
 const compiled = compilePlan(document, { sourceText: text })
 const db = await openProjectLedgerDatabase(ledgerPath)
 const result = importPlanVersion(db, compiled, { sourcePath: planPath })
+const timeline = readProjectEvents(db, compiled.projectId)
+const projection = replayProjectEvents(db, compiled.projectId)
 ```
 
 A test pins the zod mirror to the published schema file, so editing either the constitution or the mirror without the other fails the suite.
@@ -48,6 +50,7 @@ A test pins the zod mirror to the published schema file, so editing either the c
 - **Deterministic identities** — row ids derive from ledger-stable keys (`wi:<project>:<work id>`, `plv:<plan>:v<n>`), so the same source bytes compile to the same primary keys in every ledger database, and the canonical IR hash is the SHA-256 of the sorted-key JSON of the emitted rows.
 - **Idempotent by hash** — re-presenting the same source text returns the recorded version and writes nothing; a version number reused with different source content throws `version-conflict`, and a version re-declaring work items recorded under another version throws `work-item-conflict`.
 - **Atomic with events** — one `BEGIN IMMEDIATE` transaction writes the version rows and appends the `plan/imported` and `work/created` events; any failure rolls back to a ledger without partial rows. Import never activates: versions land as `DRAFT` and `plans.current_version_id` stays untouched.
+- **Fail-closed event reads** — the v1 vocabulary is required: a reader that meets an unknown required event type or a foreign `event_format_version` refuses the whole timeline, while unknown ignorable rows (observational extensions from newer writers) are preserved and change no replay state. Required vocabulary entries refuse to be recorded as ignorable.
 
 <a id="dev-note"></a>
 ## Dev Note
@@ -68,5 +71,5 @@ None — the package never assembles or sends provider requests.
 These are current package constraints, not a task backlog.
 
 - **No activation or supersede yet** — importing never activates a version and rejects work items that already belong to another version or the backlog; the supersede flow owns those transitions.
-- **Write-only ledger access** — the package imports plan versions; querying readiness, project status, and leases arrives with the later ledger work packages.
+- **Event-level reads only** — `readProjectEvents` and `replayProjectEvents` expose the event timeline and its projection; readiness, project status, and lease queries arrive with the later ledger work packages.
 - **English diagnostics** — issue messages are English-only; they are compiler input, not UI copy.
