@@ -399,7 +399,11 @@ describe('constitution parity', () => {
     ])
     const shape = planDocumentSchema.shape as unknown as Record<string, SchemaProbe>
     for (const key of CONSTITUTION.required) {
-      expect(acceptsUndefined(shape[key])).toBe(false)
+      const field = shape[key]
+      if (field === undefined) {
+        throw new Error(`mirror is missing the root key ${key}`)
+      }
+      expect(acceptsUndefined(field)).toBe(false)
     }
     expect(CONSTITUTION.properties.schemaVersion).toEqual({ const: 1 })
   })
