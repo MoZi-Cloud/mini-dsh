@@ -103,16 +103,16 @@ describe('repositories and snapshots', () => {
     const snapshot = memory.insertSnapshot({
       repositoryId: repository.id,
       snapshotKind: 'pinned',
-      commitSha: '0d1f50007f',
+      commitSha: 'fixture-commit-sha',
     })
     expect(snapshot).toMatchObject({
       repositoryId: repository.id,
       snapshotKind: 'pinned',
-      commitSha: '0d1f50007f',
+      commitSha: 'fixture-commit-sha',
       dirty: false,
     })
     expect(snapshot.capturedAtMs).toBeGreaterThan(0)
-    expect(memory.getSnapshot(snapshot.id)).toMatchObject({ commitSha: '0d1f50007f' })
+    expect(memory.getSnapshot(snapshot.id)).toMatchObject({ commitSha: 'fixture-commit-sha' })
     expect(memory.getRepository(repository.id)).toBeDefined()
     memory.close()
   })

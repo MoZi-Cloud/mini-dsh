@@ -8,6 +8,11 @@
     "docs/cordis-api/inherited.md",
     "docs/i18n/style-samples.md",
     "docs/i18n/terminology.md",
-    "docs/i18n/translation-prompt.md"
+    "docs/i18n/translation-prompt.md",
+    "docs/mini/HISTORY/fork-mini-DSH-v1.6-SQLite数据库架构附件.md",
+    "docs/mini/HISTORY/fork-mini-DSH改造方案-v1.6.md",
+    "docs/mini/v1.6a/fork-mini-DSH-v1.6a-SQLite核心账本附件.md",
+    "docs/mini/v1.6a/fork-mini-DSH改造方案-v1.6a.md",
+    "docs/mini/评审建议.md"
   ]
 }

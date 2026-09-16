@@ -75,8 +75,8 @@ describe('collectDocuments', () => {
 describe('indexRepository documents', () => {
   function docRepo(): string {
     const root = tmpRoot()
-    mkdirSync(join(root, 'docs'), { recursive: true })
-    writeFileSync(join(root, 'docs/README.md'), ['# Guide', '', '## Install', 'steps', ''].join('\n'))
+    mkdirSync(join(root, 'handbook'), { recursive: true })
+    writeFileSync(join(root, 'handbook/intro.md'), ['# Guide', '', '## Install', 'steps', ''].join('\n'))
     writeFileSync(join(root, 'main.ts'), 'export function main(): void {}\n')
     return root
   }
@@ -88,7 +88,7 @@ describe('indexRepository documents', () => {
     expect(report.documentHeadingCount).toBe(2)
     expect(report.fileCount).toBe(2)
     const documents = memory.findFilesByLanguage(report.snapshotId, 'markdown')
-    expect(documents.map(document => document.path)).toEqual(['docs/README.md'])
+    expect(documents.map(document => document.path)).toEqual(['handbook/intro.md'])
     const headings = memory.findDocumentHeadings(documents[0]!.id)
     expect(headings).toMatchObject([
       { level: 1, line: 1, text: 'Guide' },
@@ -96,7 +96,7 @@ describe('indexRepository documents', () => {
     ])
     const content = memory.getContent(documents[0]!.contentId!)
     expect(content?.text).toContain('# Guide')
-    const docObject = memory.findProjectObjectByStableKey(report.snapshotId, 'file:docs/README.md')
+    const docObject = memory.findProjectObjectByStableKey(report.snapshotId, 'file:handbook/intro.md')
     expect(docObject).toBeDefined()
     memory.close()
   })

@@ -15,9 +15,9 @@ kind: "package-reference"
 
 - [使用本包](#use-this-package)
 - [理解实现](#understand-the-implementation)
+- [开发备注](#dev-note)
 - [Model Experience](#model-experience)
 - [已知限制与延迟工作](#known-limitations-and-deferred-work)
-- [开发注记](#dev-note)
 
 -----
 
@@ -45,10 +45,15 @@ memory.close()
 - **调用图**——`call_sites` 行携带 caller/callee 符号版本链接及解析结果（`resolved` 仅当 callee 链接存在，另有 `external`、`unresolved`、`dynamic`）与产出它们的提取级别。
 - **上下文包**——章节按存储顺序加入直到预算耗尽；放不下的部分报告为省略。`overflow` 标记车道违规（仅头部就超出预算）。
 
+<a id="dev-note"></a>
+## 开发备注
+
+不发布运行时不变量伴随包：本存储是单进程库，其观测不会在独立视点间分歧；schema 版本控制、事务语义与车道预算由包自身测试强制执行。
+
 <a id="model-experience"></a>
 ## Model Experience
 
-无直接影响：本包是没有 Cordis 运行时的库，不触达任何模型请求。`buildContextPacket` 的输出设计为 worker 上下文的素材；转发给模型的内容由消费方集成负责记录。
+无，因为存储只持久化仓库事实并直接服务调用者；消费方转发给模型的任何内容由消费方负责记录。
 
 #### KV Cache effect
 
@@ -62,8 +67,3 @@ memory.close()
 - **无全文检索**——符号与文档查找是精确名匹配；快照之上的 FTS 层在有消费者需要时再引入。
 - **单连接存储**——一个 `ProjectMemory` 独占一个 SQLite 连接；多进程协调属于将构建其上的账本层。
 - **事件无序号**——`run_events` 是无项目级序号的 append-only 运行记录；带回放能力的版本化项目事件账本是独立能力。
-
-<a id="dev-note"></a>
-## 开发注记
-
-不发布运行时不变量伴随包：本存储是单进程库，其观测不会在独立视点间分歧；schema 版本控制、事务语义与车道预算由包自身测试强制执行。

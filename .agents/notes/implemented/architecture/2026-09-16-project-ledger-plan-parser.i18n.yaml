@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-16-project-ledger-plan-parser.md
+2026-09-16-project-ledger-plan-parser.md: cba61ea6cdf9d510db3d29ed03e0764e76254c65
+2026-09-16-project-ledger-plan-parser.zh.md: 49fecdab2c35a99a78bdaf23ae454e5cd16cba06

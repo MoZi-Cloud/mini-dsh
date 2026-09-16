@@ -5,6 +5,7 @@
 - **日期：2026-09-16**
 - **目标项目：official `deepseek-ai/deepseek-harness` fork → `mini-DSH`**
 - **前序：v1.5 Repository Intelligence / Progressive Reading / SQLite Memory**
+
 **配套附件：**
 
 - `fork-mini-DSH-v1.6-SQLite数据库架构附件.md`

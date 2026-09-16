@@ -4,6 +4,7 @@
 - **版本：v1.6a**
 - **日期：2026-09-16**
 - **定位：对 v1.6 的收敛修订，不废弃 v1.6b/c/d 的后续方向**
+
 **Golden repository：pinned `deepseek-ai/deepseek-harness` fork**
 
 ---

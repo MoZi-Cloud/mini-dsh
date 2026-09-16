@@ -15,9 +15,9 @@ kind: "package-reference"
 
 - [使用本包](#use-this-package)
 - [理解实现](#understand-the-implementation)
+- [开发备注](#dev-note)
 - [Model Experience](#model-experience)
 - [已知限制与延迟工作](#known-limitations-and-deferred-work)
-- [开发注记](#dev-note)
 
 -----
 
@@ -48,10 +48,15 @@ const report = indexRepository(memory, {
 - **确定性遍历**——文件与文档按路径序采集；同一棵树产出同一份报告。
 - **事实来源**——签名、标志与位置事实来自 AST 提取（`extraction_level = 'syntactic'`）；TypeChecker 提取只解析边与类型引用。
 
+<a id="dev-note"></a>
+## 开发备注
+
+不发布运行时不变量伴随包：索引器是单进程库，其输出在测试中由存储自身的查询交叉验证；提取器的保真度由包的 fixture 强制执行，包括合成仓库上的 4K 上下文车道规范。
+
 <a id="model-experience"></a>
 ## Model Experience
 
-无：索引在任何 agent 运行时之外离线执行，不触达模型请求。构建在已索引快照之上的上下文包才是面向模型的面，由 `dsh-project-memory` 拥有。
+无，因为索引器把仓库事实写入记忆库；本包没有任何提取输出是模型可见的。
 
 #### KV Cache effect
 
@@ -65,8 +70,3 @@ const report = indexRepository(memory, {
 - **不展开 vendored/依赖图**——默认排除 `node_modules` 与 `vendor`；依赖调用记为 `external`，不展开。
 - **无增量索引**——每次运行捕获完整快照；快照间 diff 待有消费者需要时再做。
 - **全仓 checker 成本**——`typechecker` 级别对所有采集文件编译一个程序（本 harness 仓库本身需要数分钟与提高的堆上限）；调用方可以用 `level: 'syntactic'` 或更窄的根控制成本。
-
-<a id="dev-note"></a>
-## 开发注记
-
-不发布运行时不变量伴随包：索引器是单进程库，其输出在测试中由存储自身的查询交叉验证；提取器的保真度由包的 fixture 强制执行，包括合成仓库上的 4K 上下文车道规范。

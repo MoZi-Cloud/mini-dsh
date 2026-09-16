@@ -2,6 +2,7 @@
 ## Project Execution Ledger / Design Intent / Function Contract / Multi-Agent Schema Delta
 
 - **配套：`fork-mini-DSH改造方案-v1.6.md`**
+
 **基础：v1.4 + v1.5 schema 全部继续保留。**
 
 本附件只描述 v1.6 delta。

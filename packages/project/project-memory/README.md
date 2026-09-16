@@ -15,9 +15,9 @@ English | [中文](README.zh.md)
 
 - [Use this package](#use-this-package)
 - [Understand the implementation](#understand-the-implementation)
+- [Dev Note](#dev-note)
 - [Model Experience](#model-experience)
 - [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
-- [Dev Note](#dev-note)
 
 -----
 
@@ -45,16 +45,20 @@ Snapshots are append-only: re-indexing adds a snapshot, never rewrites one. Mult
 - **Call graph** — `call_sites` rows carry caller/callee symbol-version links plus a resolution (`resolved` only when the callee link exists, `external`, `unresolved`, `dynamic`) and the extractor level that produced them.
 - **Context packets** — sections are added in store order until the budget is exhausted; what does not fit is reported as elided. `overflow` marks a lane violation (the header alone exceeded the budget).
 
+<a id="dev-note"></a>
+## Dev Note
+
+No runtime invariant companion is published: the store is a single-process library whose observations cannot diverge across independent vantage points; schema versioning, transaction semantics, and lane budgets are enforced by the package's own tests.
+
 <a id="model-experience"></a>
 ## Model Experience
 
-None directly: the store is a library with no Cordis runtime and touches no model request. `buildContextPacket` output is designed as material for a worker's context; the consuming integration owns logging whatever it forwards to a model.
+None, as the store persists repository facts and serves callers directly; forwarding anything to a model stays the consumer's logged responsibility.
 
 #### KV Cache effect
 
 None — no model requests originate from this package.
 
-<a id="known-limitations-and-deferred-work"></a>
 ## Known Limitations and Deferred Work
 
 These are current package constraints, not a task backlog.
@@ -62,8 +66,3 @@ These are current package constraints, not a task backlog.
 - **No full-text search** — symbol and document lookup is exact-name; an FTS layer over snapshots is deferred until a consumer needs it.
 - **Single-connection store** — one `ProjectMemory` owns one SQLite connection; multi-process coordination belongs to the ledger layer that will build on this store.
 - **Sequence-free events** — `run_events` are append-only run records without a per-project sequence; the versioned project-event ledger with replay is a separate capability.
-
-<a id="dev-note"></a>
-## Dev Note
-
-No runtime invariant companion is published: the store is a single-process library whose observations cannot diverge across independent vantage points; schema versioning, transaction semantics, and lane budgets are enforced by the package's own tests.

@@ -15,9 +15,9 @@ English | [中文](README.zh.md)
 
 - [Use this package](#use-this-package)
 - [Understand the implementation](#understand-the-implementation)
+- [Dev Note](#dev-note)
 - [Model Experience](#model-experience)
 - [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
-- [Dev Note](#dev-note)
 
 -----
 
@@ -46,18 +46,22 @@ const report = indexRepository(memory, {
 - **Two extractor levels** — the syntactic pass (`syntactic.ts`) recovers declarations, imports, and call expressions from the AST without types; the semantic pass (`semantic.ts`) walks the program's own SourceFiles with the checker, unwrapping import aliases so cross-file callees land on their declaring file. `resolved` is written only when the edge also links to a stored symbol version.
 - **Overload disambiguation** — declarations sharing a qualified name (overloads, declaration merging) get an occurrence ordinal (`#2`, `#3`) on their stable key so every declaration keeps its own symbol version; checker resolution of an overload set links its first declaration.
 - **Deterministic walks** — files and documents are collected in path order; the same tree yields the same report.
-- **Facts provenance** — signature, flag, and location facts come from the AST pass (`extraction_level = 'syntactic'`); the TypeChecker pass only resolves edges and type references.
+- **Fact sources** — signature, flag, and location facts come from the AST pass (`extraction_level = 'syntactic'`); the TypeChecker pass only resolves edges and type references.
+
+<a id="dev-note"></a>
+## Dev Note
+
+No runtime invariant companion is published: the indexer is a single-process library whose outputs are cross-checked by the store's own queries in tests; extractor fidelity is enforced by the package's fixtures, including the 4K context-lane specification over a synthesized repository.
 
 <a id="model-experience"></a>
 ## Model Experience
 
-None: indexing runs offline from any agent runtime and touches no model request. The store's context packets built over indexed snapshots are the model-facing surface, owned by `dsh-project-memory`.
+None, as the indexer writes repository facts into the memory store; no extraction output is model-facing in this package.
 
 #### KV Cache effect
 
 None — no model requests originate from this package.
 
-<a id="known-limitations-and-deferred-work"></a>
 ## Known Limitations and Deferred Work
 
 These are current package constraints, not a task backlog.
@@ -65,8 +69,3 @@ These are current package constraints, not a task backlog.
 - **No vendored/dependency graphs** — the default exclusions skip `node_modules` and `vendor`; dependency calls are recorded `external`, not expanded.
 - **No incremental indexing** — every run captures a full snapshot; diffing between snapshots is deferred until a consumer needs it.
 - **Whole-repo checker cost** — the `typechecker` level compiles one program over all collected files (the harness repository itself needs minutes and a raised heap); callers can cap cost with `level: 'syntactic'` or narrower roots.
-
-<a id="dev-note"></a>
-## Dev Note
-
-No runtime invariant companion is published: the indexer is a single-process library whose outputs are cross-checked by the store's own queries in tests; extractor fidelity is enforced by the package's fixtures, including the 4K context-lane specification over a synthesized repository.

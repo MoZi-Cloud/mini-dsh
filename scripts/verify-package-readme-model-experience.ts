@@ -46,6 +46,9 @@ const NO_MODEL_EXPERIENCE_SECTION: Readonly<Record<string, string>> = {
 const SENTENCE_MODEL_EXPERIENCE: Readonly<Record<string, SentenceContract>> = {
   'packages/api/terminal-controller': { kind: 'none', reason: 'User-owned terminal processes and screen streams never enter model requests or Session events.' },
   'packages/client/ui-sidebar-terminal': { kind: 'none', reason: 'The browser renders user terminal screens without exposing them to the model.' },
+  'packages/experimental/project-ledger': { kind: 'none', reason: 'The parser validates inert plan documents; verifier commands are stored data here, never executed processes.' },
+  'packages/project/project-analysis': { kind: 'none', reason: 'The indexer writes repository facts into the memory store; no extraction output is model-facing here.' },
+  'packages/project/project-memory': { kind: 'none', reason: 'The store persists repository facts and serves callers directly; forwarding anything to a model stays the consumer\'s logged responsibility.' },
   'packages/ssh/ssh': { kind: 'none', reason: 'The connection owner transports private provider operations; consumers own all model-facing content.' },
   'packages/ssh/fs-ssh': { kind: 'indirect', reason: 'The remote filesystem delegates model rendering to the existing filesystem consumers.' },
   'packages/ssh/subprocess-ssh': { kind: 'indirect', reason: 'The remote process provider delegates model rendering to Bash, terminal, LSP and ptc-runtime consumers.' },
