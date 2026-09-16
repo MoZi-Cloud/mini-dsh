@@ -1,5 +1,5 @@
 import { isAlias, isCollection, isScalar, parseDocument, visit } from 'yaml'
-import { type PlanIssue, PlanDocumentError, positionAtOffset } from './plan-issues.js'
+import { type PlanIssue, PlanDocumentError, positionAtOffset, type PlanSourcePosition } from './plan-issues.js'
 
 /**
  * Result of the strict YAML pass: the decoded source text (for later
@@ -31,12 +31,12 @@ export function parsePlanDocument(source: string | Uint8Array): ParsedPlanSource
   const doc = parseDocument(text)
   const issues: PlanIssue[] = []
   for (const error of doc.errors) {
-    const position = positionAtOffset(text, error.pos[0])
+    // The YAML library reports in-range offsets for every parse error.
     issues.push({
       code: error.code === 'DUPLICATE_KEY' ? 'duplicate-key' : 'yaml-syntax',
       message: error.message,
       path: '$',
-      ...(position ?? {}),
+      ...(positionAtOffset(text, error.pos[0]) as PlanSourcePosition),
     })
   }
   issues.push(...collectPolicyIssues(doc, text))
@@ -53,7 +53,8 @@ function collectPolicyIssues(doc: ReturnType<typeof parseDocument>, text: string
     if (!isAlias(node) && !isScalar(node) && !isCollection(node)) {
       return
     }
-    const located = positionAtOffset(text, node.range?.[0]) ?? {}
+    // Visited aliases, scalars, and collections always carry an in-range start offset.
+    const located = positionAtOffset(text, node.range?.[0]) as PlanSourcePosition
     if (isAlias(node)) {
       issues.push({
         code: 'alias-not-allowed',

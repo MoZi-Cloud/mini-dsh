@@ -33,6 +33,8 @@ export type PlanIssueCode =
   | 'relation-cycle'
   | 'self-relation'
   | 'acceptance-verifier-kind-mismatch'
+  // compile pass
+  | 'duplicate-criterion-id'
 
 /** One concrete rejection with its dotted document path and optional source position. */
 export interface PlanIssue {

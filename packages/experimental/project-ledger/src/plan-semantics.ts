@@ -243,19 +243,15 @@ function walkOrdering(
   ]
   state.set(startId, WalkState.InProgress)
   const chain: string[] = [startId]
-  while (stack.length > 0) {
-    const frame = stack[stack.length - 1]
-    if (frame === undefined) {
-      break
-    }
+  for (let frame = stack.pop(); frame !== undefined; frame = stack.pop()) {
     const edge = frame.outgoing[frame.next]
     if (edge === undefined) {
       state.set(frame.id, WalkState.Done)
-      stack.pop()
       chain.pop()
       continue
     }
     frame.next += 1
+    stack.push(frame)
     const targetState = state.get(edge.to) ?? WalkState.Unvisited
     if (targetState === WalkState.InProgress) {
       const cycleStart = chain.indexOf(edge.to)

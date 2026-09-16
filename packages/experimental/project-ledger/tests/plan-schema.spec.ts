@@ -4,6 +4,7 @@ import { expect, it, describe } from 'vitest'
 import {
   parsePlanDocument,
   PlanDocumentError,
+  positionAtOffset,
   validatePlanSchema,
   validatePlanSemantics,
 } from '../src/index.js'
@@ -155,8 +156,10 @@ describe('parsePlanDocument', () => {
   it('treats byte and string sources identically and strips a byte-order mark', () => {
     const text = 'schemaVersion: 1\n'
     expect(parsePlanDocument(new TextEncoder().encode(text)).value).toEqual(parsePlanDocument(text).value)
-    const withMark = new TextEncoder().encode(`\uFEFF${text}`)
-    expect(parsePlanDocument(withMark).value).toEqual({ schemaVersion: 1 })
+    // A byte-order mark on bytes is removed by the UTF-8 decoder; a mark on a
+    // decoded string is removed by the parse pass itself.
+    expect(parsePlanDocument(new TextEncoder().encode(`\uFEFF${text}`)).value).toEqual({ schemaVersion: 1 })
+    expect(parsePlanDocument(`\uFEFF${text}`).value).toEqual({ schemaVersion: 1 })
   })
 
   it('reports YAML syntax errors with the offending source position', () => {
@@ -165,6 +168,19 @@ describe('parsePlanDocument', () => {
     // Unterminated flow sequences surface at end of input (line 3, column 1).
     expect(issues[0]?.line).toBe(3)
     expect(issues[0]?.column).toBe(1)
+  })
+})
+
+describe('diagnostics helpers', () => {
+  it('summarizes an issue-free rejection without positions', () => {
+    expect(new PlanDocumentError([]).message).toBe('plan document rejected')
+  })
+
+  it('rejects out-of-range offsets in positionAtOffset', () => {
+    expect(positionAtOffset('a\nb', undefined)).toBeUndefined()
+    expect(positionAtOffset('a\nb', -1)).toBeUndefined()
+    expect(positionAtOffset('a\nb', 4)).toBeUndefined()
+    expect(positionAtOffset('a\nb', 3)).toEqual({ line: 2, column: 2 })
   })
 })
 
@@ -293,6 +309,13 @@ describe('validatePlanSemantics', () => {
   })
 
   it('rejects unknown relation endpoints, self edges, and duplicate relations', () => {
+    const unknownFrom = validDocument({
+      relations: [{ from: 'GHOST', to: 'WI-1', kind: 'BLOCKS' }],
+    })
+    expect(issuesOf(() => { validatePlanSemantics(validatePlanSchema(unknownFrom)) })).toEqual([
+      expect.objectContaining({ code: 'unknown-relation-reference', path: 'relations[0].from' }),
+    ])
+
     const unknown = validDocument({
       relations: [{ from: 'WI-1', to: 'GHOST', kind: 'BLOCKS' }],
     })

@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-experimental-project-ledger",
-  "description": "Plan-as-Data project ledger: strict plan document parsing, v1.1 schema validation, and semantic compile checks (v1.6a Ledger Core)",
+  "description": "Plan-as-Data project ledger: strict plan parsing, v1.1 schema validation, semantic checks, canonical IR compilation, and transactional immutable plan import (v1.6a Ledger Core)",
   "version": "0.1.6-alpha.1",
   "publishConfig": {
     "access": "public"
@@ -30,10 +30,13 @@
     "@deepseek-ai/cordis": "workspace:^"
   },
   "dependencies": {
+    "@deepseek-ai/dsh-brand": "workspace:^",
+    "@deepseek-ai/dsh-util-values": "workspace:^",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "workspace:^"
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-experimental-project-ledger-sqlite": "workspace:^"
   }
 }
