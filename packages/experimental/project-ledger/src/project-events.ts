@@ -14,11 +14,43 @@
  */
 
 import { DatabaseSync } from 'node:sqlite'
-import type { PlanId, PlanVersionId, ProjectId, SourceDocumentHash, WorkItemId } from './plan-compile.js'
-import type { PlanWorkItemStatus } from './plan-document.js'
-import { PLAN_WORK_ITEM_STATUSES } from './plan-schema.js'
+import type { AcceptanceCriterionId, PlanId, PlanVersionId, ProjectId, SourceDocumentHash, WorkItemId } from './plan-compile.js'
+import type { PlanAcceptanceKind, PlanWorkItemStatus } from './plan-document.js'
+import { PLAN_ACCEPTANCE_KINDS, PLAN_WORK_ITEM_STATUSES } from './plan-schema.js'
 
 const WORK_ITEM_STATUS_SET: ReadonlySet<string> = new Set<string>(PLAN_WORK_ITEM_STATUSES)
+const ACCEPTANCE_KIND_SET: ReadonlySet<string> = new Set<string>(PLAN_ACCEPTANCE_KINDS)
+
+/**
+ * The controlled status of one acceptance criterion row — the projection
+ * `acceptance/evaluated` events move (§10: evaluations are append-only
+ * history, the current status is the projection).
+ */
+export const ACCEPTANCE_CRITERION_STATUSES = [
+  'PENDING',
+  'PASSING',
+  'FAILING',
+  'BLOCKED',
+  'WAIVED',
+] as const
+
+/** The controlled status of one acceptance criterion row. */
+export type AcceptanceCriterionStatus = (typeof ACCEPTANCE_CRITERION_STATUSES)[number]
+
+/** The outcome one evaluation records for a criterion. */
+export const ACCEPTANCE_EVALUATION_RESULTS = [
+  'PASS',
+  'FAIL',
+  'BLOCKED',
+  'ERROR',
+  'WAIVED',
+] as const
+
+/** The outcome one evaluation records for a criterion. */
+export type AcceptanceEvaluationResult = (typeof ACCEPTANCE_EVALUATION_RESULTS)[number]
+
+const CRITERION_STATUS_SET: ReadonlySet<string> = new Set<string>(ACCEPTANCE_CRITERION_STATUSES)
+const EVALUATION_RESULT_SET: ReadonlySet<string> = new Set<string>(ACCEPTANCE_EVALUATION_RESULTS)
 
 /**
  * The event envelope version recorded in the `event_format_version` column of
@@ -31,8 +63,9 @@ export const PROJECT_EVENT_FORMAT_VERSION = 1
 /**
  * The §16 v1 vocabulary. Every listed type is required: rows carry
  * `ignorable = 0`, replay knows their projection effect (this build applies
- * `plan/imported`, `work/created`, and `work/status-changed`), and a reader
- * that does not know the type fails closed.
+ * `plan/imported`, `work/created`, `work/status-changed`, and
+ * `acceptance/evaluated`), and a reader that does not know the type fails
+ * closed.
  */
 export const PROJECT_EVENT_TYPES = [
   'plan/imported',
@@ -271,6 +304,17 @@ export interface ReplayedPlanVersion {
   readonly sourceDocumentHash: SourceDocumentHash
 }
 
+/** One acceptance criterion of a replayed work item. */
+export interface ReplayedCriterion {
+  /** Zero-based position within the work item's criteria. */
+  readonly ordinal: number
+  readonly criterionKind: PlanAcceptanceKind
+  /** `true` when a failing or blocked criterion blocks claiming. */
+  readonly required: boolean
+  /** The current projection status, moved by `acceptance/evaluated` events. */
+  readonly status: AcceptanceCriterionStatus
+}
+
 /** Work-item facts carried by a `work/created` event. */
 export interface ReplayedWorkItem {
   readonly stableKey: string
@@ -278,6 +322,8 @@ export interface ReplayedWorkItem {
   readonly planVersionId: PlanVersionId
   /** The materialized status, moved forward by `work/status-changed` events. */
   readonly status: PlanWorkItemStatus
+  /** The criteria created with the item, moved forward by `acceptance/evaluated` events. */
+  readonly criteria: ReadonlyMap<AcceptanceCriterionId, ReplayedCriterion>
 }
 
 /** The projection replaying a project's events rebuilds. */
@@ -318,6 +364,12 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
           title: payload.title,
           planVersionId: payload.planVersionId,
           status: payload.status,
+          criteria: new Map(payload.criteria.map(criterion => [criterion.criterionId, {
+            ordinal: criterion.ordinal,
+            criterionKind: criterion.criterionKind,
+            required: criterion.required,
+            status: criterion.status,
+          }])),
         })
         break
       }
@@ -332,6 +384,29 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
           )
         }
         workItems.set(payload.workItemId, { ...replayed, status: payload.toStatus })
+        break
+      }
+      case 'acceptance/evaluated': {
+        const payload = decodeAcceptanceEvaluatedPayload(event)
+        const replayed = workItems.get(payload.workItemId)
+        if (replayed === undefined) {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "workItemId" `
+              + `names no replayed work item (${payload.workItemId})`,
+          )
+        }
+        const criterion = replayed.criteria.get(payload.criterionId)
+        if (criterion === undefined) {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "criterionId" `
+              + `names no replayed acceptance criterion (${payload.criterionId})`,
+          )
+        }
+        const criteria = new Map(replayed.criteria)
+        criteria.set(payload.criterionId, { ...criterion, status: payload.status })
+        workItems.set(payload.workItemId, { ...replayed, criteria })
         break
       }
       default:
@@ -349,6 +424,15 @@ interface PlanImportedPayload {
   readonly sourceDocumentHash: SourceDocumentHash
 }
 
+/** One criterion of a `work/created` payload. */
+interface WorkCreatedCriterion {
+  readonly criterionId: AcceptanceCriterionId
+  readonly ordinal: number
+  readonly criterionKind: PlanAcceptanceKind
+  readonly required: boolean
+  readonly status: AcceptanceCriterionStatus
+}
+
 /** Payload facts of one `work/created` event. */
 interface WorkCreatedPayload {
   readonly workItemId: WorkItemId
@@ -356,6 +440,7 @@ interface WorkCreatedPayload {
   readonly title: string
   readonly planVersionId: PlanVersionId
   readonly status: PlanWorkItemStatus
+  readonly criteria: readonly WorkCreatedCriterion[]
 }
 
 /** Payload facts of one `work/status-changed` event. */
@@ -363,6 +448,15 @@ interface WorkStatusChangedPayload {
   readonly workItemId: WorkItemId
   readonly fromStatus: PlanWorkItemStatus
   readonly toStatus: PlanWorkItemStatus
+}
+
+/** Payload facts of one `acceptance/evaluated` event. */
+interface AcceptanceEvaluatedPayload {
+  readonly workItemId: WorkItemId
+  readonly criterionId: AcceptanceCriterionId
+  readonly result: AcceptanceEvaluationResult
+  /** The criterion's projection status after this evaluation. */
+  readonly status: AcceptanceCriterionStatus
 }
 
 /** The event payload must be a JSON object for appliers to read fields from. */
@@ -380,25 +474,30 @@ function payloadFields(event: ProjectEventEnvelope): Record<string, unknown> {
  * Read one required string payload field. Brands are re-applied here: the
  * fields crossed the durable `payload_json` boundary, and the write side only
  * ever recorded ledger-branded values.
+ * @param fields - the payload object to read from.
+ * @param event - the envelope the payload came from, for the error message.
+ * @param field - the key to read.
+ * @param label - the field name quoted in the error message; defaults to `field`. Nested
+ * arrays pass a path like `criteria[0].criterionId` while reading the bare key.
  */
-function requiredString(fields: Record<string, unknown>, event: ProjectEventEnvelope, field: string): string {
+function requiredString(fields: Record<string, unknown>, event: ProjectEventEnvelope, field: string, label: string = field): string {
   const value = fields[field]
   if (typeof value !== 'string') {
     throw new ProjectEventError(
       'malformed-event-payload',
-      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" must be a string`,
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${label}" must be a string`,
     )
   }
   return value
 }
 
 /** Read one required number payload field. */
-function requiredNumber(fields: Record<string, unknown>, event: ProjectEventEnvelope, field: string): number {
+function requiredNumber(fields: Record<string, unknown>, event: ProjectEventEnvelope, field: string, label: string = field): number {
   const value = fields[field]
   if (typeof value !== 'number') {
     throw new ProjectEventError(
       'malformed-event-payload',
-      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" must be a number`,
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${label}" must be a number`,
     )
   }
   return value
@@ -421,6 +520,102 @@ function requiredStatus(fields: Record<string, unknown>, event: ProjectEventEnve
   return value as PlanWorkItemStatus
 }
 
+/** Read one required criterion projection status payload field. */
+function requiredCriterionStatus(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+  label: string = field,
+): AcceptanceCriterionStatus {
+  const value = requiredString(fields, event, field, label)
+  if (!CRITERION_STATUS_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${label}" `
+        + `is not an acceptance criterion status: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as AcceptanceCriterionStatus
+}
+
+/** Read one required evaluation outcome payload field. */
+function requiredEvaluationResult(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+  label: string = field,
+): AcceptanceEvaluationResult {
+  const value = requiredString(fields, event, field, label)
+  if (!EVALUATION_RESULT_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${label}" `
+        + `is not an acceptance evaluation result: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as AcceptanceEvaluationResult
+}
+
+/** Read one required acceptance kind payload field. */
+function requiredAcceptanceKind(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+  label: string = field,
+): PlanAcceptanceKind {
+  const value = requiredString(fields, event, field, label)
+  if (!ACCEPTANCE_KIND_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${label}" `
+        + `is not an acceptance kind: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as PlanAcceptanceKind
+}
+
+/** Read one required boolean payload field. */
+function requiredBoolean(fields: Record<string, unknown>, event: ProjectEventEnvelope, field: string, label: string = field): boolean {
+  const value = fields[field]
+  if (typeof value !== 'boolean') {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${label}" must be a boolean`,
+    )
+  }
+  return value
+}
+
+/**
+ * Decode the `criteria` array of one `work/created` payload, failing closed
+ * on a non-array value and on entries this codec cannot read.
+ */
+function requiredCriteria(event: ProjectEventEnvelope, fields: Record<string, unknown>): WorkCreatedCriterion[] {
+  const value = fields.criteria
+  if (!Array.isArray(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "criteria" must be an array`,
+    )
+  }
+  return value.map((entry, index): WorkCreatedCriterion => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new ProjectEventError(
+        'malformed-event-payload',
+        `project event ${event.sequenceNo} of "${event.projectId}" payload field "criteria[${index}]" must be an object`,
+      )
+    }
+    const entryFields = entry as Record<string, unknown>
+    return {
+      criterionId: requiredString(entryFields, event, 'criterionId', `criteria[${index}].criterionId`) as AcceptanceCriterionId,
+      ordinal: requiredNumber(entryFields, event, 'ordinal', `criteria[${index}].ordinal`),
+      criterionKind: requiredAcceptanceKind(entryFields, event, 'criterionKind', `criteria[${index}].criterionKind`),
+      required: requiredBoolean(entryFields, event, 'required', `criteria[${index}].required`),
+      status: requiredCriterionStatus(entryFields, event, 'status', `criteria[${index}].status`),
+    }
+  })
+}
+
 /** Decode one `plan/imported` payload, failing closed on missing or mistyped fields. */
 function decodePlanImportedPayload(event: ProjectEventEnvelope): PlanImportedPayload {
   const fields = payloadFields(event)
@@ -441,6 +636,7 @@ function decodeWorkCreatedPayload(event: ProjectEventEnvelope): WorkCreatedPaylo
     title: requiredString(fields, event, 'title'),
     planVersionId: requiredString(fields, event, 'planVersionId') as PlanVersionId,
     status: requiredStatus(fields, event, 'status'),
+    criteria: requiredCriteria(event, fields),
   }
 }
 
@@ -451,5 +647,16 @@ function decodeWorkStatusChangedPayload(event: ProjectEventEnvelope): WorkStatus
     workItemId: requiredString(fields, event, 'workItemId') as WorkItemId,
     fromStatus: requiredStatus(fields, event, 'fromStatus'),
     toStatus: requiredStatus(fields, event, 'toStatus'),
+  }
+}
+
+/** Decode one `acceptance/evaluated` payload, failing closed on missing or mistyped fields. */
+function decodeAcceptanceEvaluatedPayload(event: ProjectEventEnvelope): AcceptanceEvaluatedPayload {
+  const fields = payloadFields(event)
+  return {
+    workItemId: requiredString(fields, event, 'workItemId') as WorkItemId,
+    criterionId: requiredString(fields, event, 'criterionId') as AcceptanceCriterionId,
+    result: requiredEvaluationResult(fields, event, 'result'),
+    status: requiredCriterionStatus(fields, event, 'status'),
   }
 }

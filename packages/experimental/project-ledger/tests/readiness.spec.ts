@@ -16,11 +16,15 @@ import {
   parsePlanDocument,
   replayProjectEvents,
   validatePlanSchema,
+  type AcceptanceCriterionId,
+  type AcceptanceCriterionStatus,
   type CompiledPlan,
+  type PlanAcceptanceKind,
   type PlanId,
   type PlanVersionId,
   type PlanWorkItemStatus,
   type ProjectId,
+  type ReplayedCriterion,
   type ReplayedPlanVersion,
   type ReplayedProjectProjection,
   type ReplayedWorkItem,
@@ -81,6 +85,27 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       sourceDocumentHash: brandString<SourceDocumentHash>(row.source_document_hash),
     })
   }
+  const criteriaByItem = new Map<string, Map<AcceptanceCriterionId, ReplayedCriterion>>()
+  const criteriaRows = db.prepare(
+    'SELECT id, work_item_id, ordinal, criterion_kind, required, status FROM acceptance_criteria ORDER BY ordinal',
+  ).all() as {
+    id: string
+    work_item_id: string
+    ordinal: number
+    criterion_kind: string
+    required: number
+    status: string
+  }[]
+  for (const row of criteriaRows) {
+    const criteria = criteriaByItem.get(row.work_item_id) ?? new Map<AcceptanceCriterionId, ReplayedCriterion>()
+    criteria.set(brandString<AcceptanceCriterionId>(row.id), {
+      ordinal: row.ordinal,
+      criterionKind: row.criterion_kind as PlanAcceptanceKind,
+      required: row.required === 1,
+      status: row.status as AcceptanceCriterionStatus,
+    })
+    criteriaByItem.set(row.work_item_id, criteria)
+  }
   const workItems = new Map<WorkItemId, ReplayedWorkItem>()
   const itemRows = db.prepare('SELECT id, stable_key, title, plan_version_id, status FROM work_items')
     .all() as { id: string; stable_key: string; title: string; plan_version_id: string; status: string }[]
@@ -90,6 +115,7 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       title: row.title,
       planVersionId: brandString<PlanVersionId>(row.plan_version_id),
       status: row.status as PlanWorkItemStatus,
+      criteria: criteriaByItem.get(row.id) ?? new Map(),
     })
   }
   return { planVersions, workItems }
@@ -488,6 +514,14 @@ describe('replay parity', () => {
       title: 'Put v1.4/v1.5 design history and v1.6a fixtures in-repo',
       planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
       status: 'DONE',
+      criteria: new Map([
+        [brandString<AcceptanceCriterionId>('ac:wi:mini-dsh:PRE-001:AC-PRE-001'), {
+          ordinal: 0,
+          criterionKind: 'COMMAND',
+          required: true,
+          status: 'PENDING',
+        }],
+      ]),
     })
     expect(replayed).toEqual(materializedProjection(db))
     db.close()

@@ -314,6 +314,13 @@ describe('golden plan import (IMPORT-001)', () => {
       title: 'Compile and transactionally import an immutable plan version',
       planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
       status: 'BLOCKED',
+      criteria: [{
+        criterionId: 'ac:wi:mini-dsh:IMPORT-001:AC-IMPORT-001',
+        ordinal: 0,
+        criterionKind: 'TEST',
+        required: true,
+        status: 'PENDING',
+      }],
     })
     expect(created.map(event => event['sequence_no'])).toEqual([...created.keys()].map(offset => offset + 2))
 

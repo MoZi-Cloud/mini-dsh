@@ -62,6 +62,6 @@ None — the package never assembles or sends provider requests.
 
 These are current package constraints, not a task backlog.
 
-- **Schema only, no typed access yet** — the typed surfaces that write and read these tables live in `dsh-experimental-project-ledger` against an open handle: plan import (W03), the project event envelope (W04), and the readiness projection (W05) are shipped there, acceptance storage (W06) and lease claiming (W07) follow; this package ships the identity, layout, and open sequence.
+- **Schema only, no typed access yet** — the typed surfaces that write and read these tables live in `dsh-experimental-project-ledger` against an open handle: plan import (W03), the project event envelope (W04), the readiness projection (W05), and acceptance evaluations (W06) are shipped there, lease claiming (W07) follows; this package ships the identity, layout, and open sequence.
 - **One migration step** — the registry stops at `0 → 1`; the fixture protocol (foreign-key check, integrity check, row parity) is exercised by the suite on the shipped step.
 - **No cross-process coordination** — concurrency defense is `busy_timeout`; `BEGIN IMMEDIATE` allocation paths for events and leases arrive with those work packages.

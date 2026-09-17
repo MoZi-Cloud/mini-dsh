@@ -16,12 +16,16 @@ import {
   readProjectEvents,
   replayProjectEvents,
   validatePlanSchema,
+  type AcceptanceCriterionId,
+  type AcceptanceCriterionStatus,
   type CompiledPlan,
+  type PlanAcceptanceKind,
   type PlanId,
   type PlanVersionId,
   type PlanWorkItemStatus,
   type ProjectEventEnvelope,
   type ProjectId,
+  type ReplayedCriterion,
   type ReplayedPlanVersion,
   type ReplayedProjectProjection,
   type ReplayedWorkItem,
@@ -108,6 +112,27 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       sourceDocumentHash: brandString<SourceDocumentHash>(row.source_document_hash),
     })
   }
+  const criteriaByItem = new Map<string, Map<AcceptanceCriterionId, ReplayedCriterion>>()
+  const criteriaRows = db.prepare(
+    'SELECT id, work_item_id, ordinal, criterion_kind, required, status FROM acceptance_criteria ORDER BY ordinal',
+  ).all() as {
+    id: string
+    work_item_id: string
+    ordinal: number
+    criterion_kind: string
+    required: number
+    status: string
+  }[]
+  for (const row of criteriaRows) {
+    const criteria = criteriaByItem.get(row.work_item_id) ?? new Map<AcceptanceCriterionId, ReplayedCriterion>()
+    criteria.set(brandString<AcceptanceCriterionId>(row.id), {
+      ordinal: row.ordinal,
+      criterionKind: row.criterion_kind as PlanAcceptanceKind,
+      required: row.required === 1,
+      status: row.status as AcceptanceCriterionStatus,
+    })
+    criteriaByItem.set(row.work_item_id, criteria)
+  }
   const workItems = new Map<WorkItemId, ReplayedWorkItem>()
   const itemRows = db.prepare('SELECT id, stable_key, title, plan_version_id, status FROM work_items')
     .all() as { id: string; stable_key: string; title: string; plan_version_id: string | null; status: string }[]
@@ -117,6 +142,7 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       title: row.title,
       planVersionId: brandString<PlanVersionId>(row.plan_version_id!),
       status: row.status as PlanWorkItemStatus,
+      criteria: criteriaByItem.get(row.id) ?? new Map(),
     })
   }
   return { planVersions, workItems }
@@ -263,6 +289,14 @@ describe('replayProjectEvents', () => {
       title: 'Compile and transactionally import an immutable plan version',
       planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
       status: 'BLOCKED',
+      criteria: new Map([
+        [brandString<AcceptanceCriterionId>('ac:wi:mini-dsh:IMPORT-001:AC-IMPORT-001'), {
+          ordinal: 0,
+          criterionKind: 'TEST',
+          required: true,
+          status: 'PENDING',
+        }],
+      ]),
     })
     db.close()
   })
@@ -329,6 +363,13 @@ describe('replayProjectEvents', () => {
       title: 'Extra item',
       planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
       status: 'READY',
+      criteria: [{
+        criterionId: 'ac:wi:mini-dsh:EXTRA:AC-EXTRA',
+        ordinal: 0,
+        criterionKind: 'TEST',
+        required: true,
+        status: 'PENDING',
+      }],
     }
     const baseStatusChanged: Record<string, unknown> = {
       workItemId: 'wi:mini-dsh:IMPORT-001',
@@ -369,6 +410,28 @@ describe('replayProjectEvents', () => {
       setPayload(created.sequenceNo, variant)
       expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain('non-object payload')
     }
+    setPayload(created.sequenceNo, baseCreated)
+
+    const criterion = (baseCreated.criteria as Record<string, unknown>[])[0] as Record<string, unknown>
+    const withCriteria = (criteria: unknown): Record<string, unknown> => ({ ...baseCreated, criteria })
+    setPayload(created.sequenceNo, withCriteria('spice'))
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "criteria" must be an array')
+    setPayload(created.sequenceNo, withCriteria([42]))
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "criteria[0]" must be an object')
+    setPayload(created.sequenceNo, withCriteria([{ ...criterion, ordinal: 'zero' }]))
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "criteria[0].ordinal" must be a number')
+    setPayload(created.sequenceNo, withCriteria([{ ...criterion, required: 1 }]))
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "criteria[0].required" must be a boolean')
+    setPayload(created.sequenceNo, withCriteria([{ ...criterion, criterionKind: 'TELEPORT' }]))
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "criteria[0].criterionKind" is not an acceptance kind: "TELEPORT"')
+    setPayload(created.sequenceNo, withCriteria([{ ...criterion, status: 'SPICED' }]))
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "criteria[0].status" is not an acceptance criterion status: "SPICED"')
     setPayload(created.sequenceNo, baseCreated)
 
     for (const field of Object.keys(baseStatusChanged)) {

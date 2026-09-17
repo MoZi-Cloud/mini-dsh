@@ -287,6 +287,13 @@ function importWithinTransaction(
       title: workItem.title,
       planVersionId: versionId,
       status: workItem.status,
+      criteria: workItem.acceptance.map(criterion => ({
+        criterionId: criterion.id,
+        ordinal: criterion.ordinal,
+        criterionKind: criterion.criterionKind,
+        required: criterion.required,
+        status: 'PENDING',
+      })),
     }, { entityType: 'work_item', entityId: workItem.id, actorRef, nowMs })
   }
 
