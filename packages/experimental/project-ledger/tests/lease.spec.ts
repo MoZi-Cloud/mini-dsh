@@ -895,13 +895,26 @@ describe('lease replay parity', () => {
     const owner = itemId('OWNER-REVIEW-001')
     const pre = itemId('PRE-001')
 
-    // OWNER-REVIEW-001 and PRE-001 complete through claim → VERIFYING → DONE.
+    // OWNER-REVIEW-001 and PRE-001 complete through claim → VERIFYING →
+    // acceptance PASS → DONE, the only lawful completion path.
     const ownerClaim = claimWorkItem(db, owner, 'worker-owner', { nowMs: 1000 })
     expect(ownerClaim.leaseId).toBe('ls:wi:mini-dsh:OWNER-REVIEW-001:17')
     changeWorkStatus(db, owner, 'VERIFYING', { nowMs: 1050 })
+    evaluateAcceptanceCriterion(
+      db,
+      brandString<AcceptanceCriterionId>('ac:wi:mini-dsh:OWNER-REVIEW-001:AC-OWNER-001'),
+      'PASS',
+      { nowMs: 1080 },
+    )
     changeWorkStatus(db, owner, 'DONE', { nowMs: 1100 })
     const preClaim = claimWorkItem(db, pre, 'worker-pre', { nowMs: 1150 })
     changeWorkStatus(db, pre, 'VERIFYING', { nowMs: 1200 })
+    evaluateAcceptanceCriterion(
+      db,
+      brandString<AcceptanceCriterionId>('ac:wi:mini-dsh:PRE-001:AC-PRE-001'),
+      'PASS',
+      { nowMs: 1230 },
+    )
     changeWorkStatus(db, pre, 'DONE', { nowMs: 1250 })
     expect(preClaim.status).toBe('ACTIVE')
 
@@ -915,7 +928,7 @@ describe('lease replay parity', () => {
     const second = claimWorkItem(db, target, 'worker-b', { nowMs: 2000 })
     reapExpiredLeases(db, { nowMs: 400_000 })
 
-    expect(second.leaseId).toBe('ls:wi:mini-dsh:SCHEMA-001:26')
+    expect(second.leaseId).toBe('ls:wi:mini-dsh:SCHEMA-001:28')
     expect(replayProjectEvents(db, PROJECT)).toEqual(materializedProjection(db))
     expect(itemStatus(db, 'SCHEMA-001')).toBe('READY')
     expect(itemStatus(db, 'OWNER-REVIEW-001')).toBe('DONE')

@@ -16,7 +16,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { ProjectId, WorkItemId } from './plan-compile.js'
 import type { PlanWorkItemStatus } from './plan-document.js'
-import { appendProjectEvent } from './project-events.js'
+import { appendProjectEvent, type AcceptanceCriterionStatus } from './project-events.js'
 
 /**
  * The closed transition table for {@link changeWorkStatus}. Statuses a
@@ -40,7 +40,7 @@ export const WORK_STATUS_TRANSITIONS: Readonly<Record<PlanWorkItemStatus, readon
 export const DEFAULT_STATUS_ACTOR_REF = 'dsh-experimental-project-ledger/work-status'
 
 /** Closed set of status-transition rejection reasons. */
-export type WorkStatusErrorCode = 'unknown-work-item' | 'transition-not-allowed'
+export type WorkStatusErrorCode = 'unknown-work-item' | 'transition-not-allowed' | 'acceptance-not-passed'
 
 /**
  * Thrown when a status change is rejected on ledger state. The failing
@@ -79,13 +79,16 @@ export interface WorkStatusChange {
 /**
  * Move one work item to a new status and record the `work/status-changed`
  * event atomically. Re-presenting the current status is a rejection, not a
- * no-op: a no-op write would append an event without a transition.
+ * no-op: a no-op write would append an event without a transition. Completion
+ * carries one extra gate beyond the table: every required acceptance
+ * criterion must be `PASSING` or `WAIVED` (§5.3 — acceptance is the only
+ * authority that completes project work).
  * @param db - open ledger database.
  * @param workItemId - the work item to transition.
  * @param toStatus - the target status, outside the dedicated-event transitions.
  * @param options - actor and clock overrides.
  * @returns the recorded transition with its event sequence.
- * @throws {WorkStatusError} on `unknown-work-item` and `transition-not-allowed`.
+ * @throws {WorkStatusError} on `unknown-work-item`, `transition-not-allowed`, and `acceptance-not-passed`.
  * @throws the underlying SQLite error when a write fails; the transaction
  * rolls back, leaving no partial rows.
  */
@@ -123,6 +126,22 @@ export function changeWorkStatus(
         `work item "${workItemId}" cannot change status from ${item.status} to ${toStatus} `
           + `(allowed from ${item.status}: ${reachable})`,
       )
+    }
+    if (toStatus === 'DONE') {
+      // Completion authority (§5.3): only passed or waived acceptance
+      // completes a work item — an unevaluated or failing required criterion
+      // holds it in VERIFYING no matter who calls.
+      const outstanding = db.prepare(
+        'SELECT id, status FROM acceptance_criteria '
+        + "WHERE work_item_id = ? AND required = 1 AND status NOT IN ('PASSING', 'WAIVED') ORDER BY ordinal",
+      ).all(workItemId) as { id: string; status: AcceptanceCriterionStatus }[]
+      if (outstanding.length > 0) {
+        throw new WorkStatusError(
+          'acceptance-not-passed',
+          `work item "${workItemId}" cannot complete while required acceptance is outstanding: `
+            + outstanding.map(criterion => `"${criterion.id}" is ${criterion.status}`).join('; '),
+        )
+      }
     }
     db.prepare('UPDATE work_items SET status = ?, updated_at_ms = ? WHERE id = ?')
       .run(toStatus, nowMs, workItemId)

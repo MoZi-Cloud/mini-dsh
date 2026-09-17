@@ -60,6 +60,7 @@ releaseWorkLease(db, claim.leaseId, claim.leaseToken)
 - **readiness 只重算、绝不信任**——`computeWorkReadiness` 从因果行推导可领取性（plan 版本、phase、`BLOCKS`/`PRECEDES` 边、外部阻塞、required 验收标准、活跃租约，以及工作项自身状态）；物化的 `READY`/`BLOCKED` 状态只是这些输入的投影，层级绝不进入决策（`parent_work_item_id` 是组成关系，不是依赖）。
 - **环语义只有一个家**——编译期校验与账本侧 `detectWorkGraphCycles` 共享 `relation-graph.ts` 的排序关系种类与环 walks，同一张图在文档与其产出行上永远得到相同判定。
 - **评估是历史，状态是投影**——`evaluateAcceptanceCriterion` 把调用方报告的结果追加进 `acceptance_evaluations`，并在同一事务内随 `acceptance/evaluated` 事件移动标准状态。`ERROR` 只记历史、不动投影。结果由调用方报告：本包存储 `command_text`，绝不运行它。
+- **验收是唯一的完成权威**——`changeWorkStatus` 只能从 `VERIFYING` 到达 `DONE`，且仅当全部 required 标准处于 `PASSING` 或 `WAIVED`；session todo、plan-mode 编辑或账本之外的任何调用者都无法把项目工作抄近路变成完成。
 - **每个工作项只有一个活跃租约**——`claimWorkItem` 在单个 `BEGIN IMMEDIATE` 事务内完成 readiness 重算、陈旧租约回收与租约插入（§13），竞争的 claimer 只会在其后串行并被活跃租约阻塞项拒绝；`uq_one_active_lease_per_work` 部分唯一索引是最终仲裁者。心跳与释放必须在过期前到达，reaper 重算被遗弃项的 `READY`/`BLOCKED` 投影，绝不宣布 `FAILED`。
 - **令牌只存哈希，绝不入日志**——认领返回一次性 bearer 令牌；账本只存其 SHA-256 哈希，任何租约事件都不携带它，日志重建租约状态时无需重放机密。
 

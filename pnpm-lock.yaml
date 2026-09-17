@@ -6222,6 +6222,25 @@ importers:
         specifier: ^4.19.2
         version: 4.22.4
 
+  packages/experimental/mini-profile:
+    dependencies:
+      '@deepseek-ai/dsh-experimental-project-ledger':
+        specifier: workspace:^
+        version: link:../project-ledger
+      '@deepseek-ai/dsh-experimental-project-ledger-sqlite':
+        specifier: workspace:^
+        version: link:../project-ledger-sqlite
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-brand':
+        specifier: workspace:^
+        version: link:../../util/brand
+
   packages/experimental/project-ledger:
     dependencies:
       '@deepseek-ai/dsh-brand':

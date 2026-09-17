@@ -12,6 +12,7 @@ import {
   compilePlan,
   computeWorkReadiness,
   detectWorkGraphCycles,
+  evaluateAcceptanceCriterion,
   importPlanVersion,
   parsePlanDocument,
   replayProjectEvents,
@@ -364,8 +365,15 @@ describe('changeWorkStatus', () => {
       sequenceNo: 17,
       createdAtMs: 7,
     })
+    // Completion authority: the required criterion must pass before DONE.
+    evaluateAcceptanceCriterion(
+      db,
+      brandString<AcceptanceCriterionId>('ac:wi:mini-dsh:PRE-001:AC-PRE-001'),
+      'PASS',
+      { nowMs: 7 },
+    )
     const second = changeWorkStatus(db, itemId('PRE-001'), 'DONE', { actorRef: 'agent/a', nowMs: 8 })
-    expect(second.sequenceNo).toBe(18)
+    expect(second.sequenceNo).toBe(19)
 
     expect(db.prepare('SELECT status, updated_at_ms FROM work_items WHERE id = ?').get(itemId('PRE-001')))
       .toEqual({ status: 'DONE', updated_at_ms: 8 })
@@ -534,6 +542,12 @@ describe('replay parity', () => {
     const db = await goldenLedger()
     setItemStatus(db, 'PRE-001', 'IN_PROGRESS')
     changeWorkStatus(db, itemId('PRE-001'), 'VERIFYING', { actorRef: 'agent/a', nowMs: 7 })
+    evaluateAcceptanceCriterion(
+      db,
+      brandString<AcceptanceCriterionId>('ac:wi:mini-dsh:PRE-001:AC-PRE-001'),
+      'PASS',
+      { nowMs: 7 },
+    )
     changeWorkStatus(db, itemId('PRE-001'), 'DONE', { actorRef: 'agent/a', nowMs: 8 })
 
     const replayed = replayProjectEvents(db, PROJECT)
@@ -547,7 +561,7 @@ describe('replay parity', () => {
           ordinal: 0,
           criterionKind: 'COMMAND',
           required: true,
-          status: 'PENDING',
+          status: 'PASSING',
         }],
       ]),
     })
