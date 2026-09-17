@@ -105,7 +105,32 @@ function materializedProjection(db: DatabaseSync): Record<string, unknown> {
       criteria: criteriaByItem.get(row.id) ?? new Map(),
     })
   }
-  return { planVersions, workItems }
+  const leases = new Map<string, unknown>()
+  const leaseRows = db.prepare(
+    'SELECT id, work_item_id, worker_identity, status, acquired_at_ms, heartbeat_at_ms, expires_at_ms, released_at_ms '
+    + 'FROM work_leases',
+  ).all() as {
+    id: string
+    work_item_id: string
+    worker_identity: string
+    status: string
+    acquired_at_ms: number
+    heartbeat_at_ms: number
+    expires_at_ms: number
+    released_at_ms: number | null
+  }[]
+  for (const row of leaseRows) {
+    leases.set(row.id, {
+      workItemId: row.work_item_id,
+      workerIdentity: row.worker_identity,
+      status: row.status,
+      acquiredAtMs: row.acquired_at_ms,
+      heartbeatAtMs: row.heartbeat_at_ms,
+      expiresAtMs: row.expires_at_ms,
+      releasedAtMs: row.released_at_ms ?? undefined,
+    })
+  }
+  return { planVersions, workItems, leases }
 }
 
 describe('verification_specs storage', () => {

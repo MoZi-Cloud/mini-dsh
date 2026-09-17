@@ -27,15 +27,19 @@ import { ORDERING_RELATION_KINDS, findChainCycles, findOrderingCycles } from './
  */
 const OPEN_FOR_CLAIM_STATUSES: ReadonlySet<string> = new Set(['PROPOSED', 'READY', 'BLOCKED'])
 
+/** The closed set of readiness blocker kinds. */
+export const WORK_READINESS_BLOCKER_KINDS = [
+  'plan-version-not-active',
+  'phase-not-active',
+  'blocking-relation-open',
+  'external-blocker-open',
+  'acceptance-criterion-blocked',
+  'lease-active',
+  'work-status-closed',
+] as const
+
 /** Closed set of readiness blocker kinds. */
-export type WorkReadinessBlockerKind =
-  | 'plan-version-not-active'
-  | 'phase-not-active'
-  | 'blocking-relation-open'
-  | 'external-blocker-open'
-  | 'acceptance-criterion-blocked'
-  | 'lease-active'
-  | 'work-status-closed'
+export type WorkReadinessBlockerKind = (typeof WORK_READINESS_BLOCKER_KINDS)[number]
 
 /** One reason a work item is not ready to be claimed. */
 export interface WorkReadinessReason {
@@ -77,6 +81,18 @@ export class WorkReadinessError extends Error {
 export interface ComputeWorkReadinessOptions {
   /** Now, for the lease-expiry comparison; defaults to `Date.now()`. */
   readonly nowMs?: number | undefined
+  /**
+   * Evaluate every input while treating the item's own status gate as open.
+   * The lease lifecycle recomputes the projected status of an item it is
+   * about to move out of `IN_PROGRESS`; the claim path keeps the gate.
+   */
+  readonly treatStatusAsOpen?: boolean | undefined
+  /**
+   * Exclude one lease id from the live-lease check. A release recomputes the
+   * item's projected status before its own lease row moves, so that row must
+   * not count as a live lease.
+   */
+  readonly ignoreLeaseId?: string | undefined
 }
 
 /**
@@ -90,7 +106,7 @@ export interface ComputeWorkReadinessOptions {
  * are the supersede flow's projection (a later work package).
  * @param db - open ledger database.
  * @param workItemId - the work item to recompute.
- * @param options - clock override for the lease-expiry comparison.
+ * @param options - clock override, status-gate, and lease-exclusion controls.
  * @returns the recomputed readiness with every blocker and its ledger id.
  * @throws {WorkReadinessError} on `unknown-work-item`.
  */
@@ -111,7 +127,7 @@ export function computeWorkReadiness(
   const nowMs = options.nowMs ?? Date.now()
   const reasons: WorkReadinessReason[] = []
 
-  if (!OPEN_FOR_CLAIM_STATUSES.has(item.status)) {
+  if (options.treatStatusAsOpen !== true && !OPEN_FOR_CLAIM_STATUSES.has(item.status)) {
     reasons.push({
       kind: 'work-status-closed',
       message: `work item "${workItemId}" has status ${item.status} and is not open for a claim`,
@@ -177,8 +193,8 @@ export function computeWorkReadiness(
   }
   const liveLeases = db.prepare(
     'SELECT id, worker_identity, expires_at_ms FROM work_leases '
-    + "WHERE work_item_id = ? AND status = 'ACTIVE' AND expires_at_ms > ? ORDER BY id",
-  ).all(workItemId, nowMs) as { id: string; worker_identity: string; expires_at_ms: number }[]
+    + "WHERE work_item_id = ? AND status = 'ACTIVE' AND expires_at_ms > ? AND id != ? ORDER BY id",
+  ).all(workItemId, nowMs, options.ignoreLeaseId ?? '') as { id: string; worker_identity: string; expires_at_ms: number }[]
   for (const lease of liveLeases) {
     reasons.push({
       kind: 'lease-active',

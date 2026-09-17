@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-experimental-project-ledger` owns the plan document seam of the v1.6a Ledger Core (docs/mini/v1.6a). A plan document is inert data: `parsePlanDocument` parses YAML with source positions and rejects duplicate keys, anchors, and aliases; `validatePlanSchema` mirrors the constitution `docs/mini/v1.6a/mini-dsh-plan-v1.1.schema.json`; `validatePlanSemantics` checks references, hierarchy, and ordering relations. `compilePlan` turns a validated document into a canonical IR with deterministic row identities, `importPlanVersion` writes that IR as one atomic transaction, the event seam stamps, reads fail-closed, and replays the envelope, `computeWorkReadiness` recomputes claimability from the causal rows, and `evaluateAcceptanceCriterion` appends caller-reported evaluations onto the criterion projection. Nothing here executes a verifier command or activates a plan.
+`dsh-experimental-project-ledger` owns the plan document seam of the v1.6a Ledger Core (docs/mini/v1.6a). A plan document is inert data: `parsePlanDocument` parses YAML and rejects duplicate keys, anchors, and aliases; `validatePlanSchema` mirrors the constitution schema; `validatePlanSemantics` checks references, hierarchy, and ordering relations. `compilePlan` builds a canonical IR with deterministic identities, `importPlanVersion` writes it as one atomic transaction, the event seam stamps and replays fail-closed, `computeWorkReadiness` recomputes claimability from the causal rows, `evaluateAcceptanceCriterion` appends caller-reported evaluations, and `claimWorkItem` arbitrates one active lease per item with a heartbeat/expiry/reaper lifecycle. Nothing here executes a verifier command or activates a plan.
 
 ## Table of Contents
 
@@ -28,7 +28,7 @@ Parse bytes, validate the schema, check semantics, compile, then import; every r
 
 ```ts
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
-import { changeWorkStatus, compilePlan, computeWorkReadiness, detectWorkGraphCycles, evaluateAcceptanceCriterion, importPlanVersion, parsePlanDocument, readProjectEvents, replayProjectEvents, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
+import { changeWorkStatus, claimWorkItem, compilePlan, computeWorkReadiness, detectWorkGraphCycles, evaluateAcceptanceCriterion, heartbeatWorkLease, importPlanVersion, parsePlanDocument, readProjectEvents, releaseWorkLease, replayProjectEvents, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
 
 const { text, value } = parsePlanDocument(planBytes)
 const document = validatePlanSchema(value)
@@ -41,6 +41,9 @@ const projection = replayProjectEvents(db, compiled.projectId)
 const readiness = computeWorkReadiness(db, compiled.workItems[0].id)
 const cycles = detectWorkGraphCycles(db, compiled.projectId)
 const evaluation = evaluateAcceptanceCriterion(db, compiled.workItems[0].acceptance[0].id, 'PASS')
+const claim = claimWorkItem(db, compiled.workItems[0].id, 'worker/session-7')
+const lease = heartbeatWorkLease(db, claim.leaseId, claim.leaseToken)
+releaseWorkLease(db, claim.leaseId, claim.leaseToken)
 ```
 
 A test pins the zod mirror to the published schema file, so editing either the constitution or the mirror without the other fails the suite.
@@ -57,6 +60,8 @@ A test pins the zod mirror to the published schema file, so editing either the c
 - **Readiness is recomputed, never trusted** — `computeWorkReadiness` derives claimability from the causal rows (plan version, phase, `BLOCKS`/`PRECEDES` edges, external blockers, required criteria, live leases, and the item's own status); the materialized `READY`/`BLOCKED` status is only a projection of those inputs, and hierarchy never enters the decision (`parent_work_item_id` is composition, not dependency).
 - **One cycle semantics** — compile-time validation and the ledger-side `detectWorkGraphCycles` share the ordering-relation kinds and the cycle walks in `relation-graph.ts`, so a document and the rows it produced always get the same verdict on cycles.
 - **Evaluations are history; status is the projection** — `evaluateAcceptanceCriterion` appends the caller-reported outcome to `acceptance_evaluations` and moves the criterion's status with its `acceptance/evaluated` event in one transaction. `ERROR` records history without moving the projection. Results are caller-reported: the package stores `command_text` and never runs it.
+- **One active lease per item** — `claimWorkItem` holds one `BEGIN IMMEDIATE` transaction across the readiness recompute, the stale-lease reap, and the lease insert (§13), so a competing claimer serializes behind it and is rejected by the live-lease blocker; the `uq_one_active_lease_per_work` partial unique index is the final arbiter. Heartbeats and releases must arrive before expiry, and the reaper recomputes an abandoned item's `READY`/`BLOCKED` projection without ever declaring it `FAILED`.
+- **Tokens are hashed, never logged** — a claim returns a one-time bearer token; only its SHA-256 hash is stored, and no lease event carries it, so the log rebuilds lease state without replaying secrets.
 
 <a id="dev-note"></a>
 ## Dev Note
@@ -77,5 +82,5 @@ None — the package never assembles or sends provider requests.
 These are current package constraints, not a task backlog.
 
 - **No activation or supersede yet** — importing never activates a version and rejects work items that already belong to another version or the backlog; the supersede flow owns those transitions, and incoming `SUPERSEDES` edges are excluded from readiness until it lands.
-- **Generic status transitions only** — `changeWorkStatus` refuses the transitions a dedicated event owns: claiming (`work/claimed`), and the readiness projection's `work/blocked`/`work/unblocked` writes arrive with the lease lifecycle.
+- **`REVOKED` is a reserved row status** — the lease lifecycle writes `ACTIVE`, `RELEASED`, and `EXPIRED`; owner-side revocation has no writer yet, and the reaper loop's cadence (`reaperIntervalMs`) belongs to the caller of the bounded `reapExpiredLeases` batch.
 - **English diagnostics** — issue messages are English-only; they are compiler input, not UI copy.

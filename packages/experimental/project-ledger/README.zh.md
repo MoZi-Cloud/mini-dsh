@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core（docs/mini/v1.6a）的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML 并带源位置，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像已发布的宪法 `docs/mini/v1.6a/mini-dsh-plan-v1.1.schema.json`；`validatePlanSemantics` 检查引用、层级与排序关系。`compilePlan` 把已校验文档编译为带确定性品牌行身份的规范 IR，`importPlanVersion` 以单个原子事务写入该 IR；事件接缝负责信封的盖章、fail-closed 读取与重放；`computeWorkReadiness` 从因果行重算可领取性；`evaluateAcceptanceCriterion` 把调用方报告的评估追加到标准投影之上。本包绝不执行 verifier 命令，也绝不激活计划。
+`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core（docs/mini/v1.6a）的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用、层级与排序关系。`compilePlan` 编译出带确定性身份的规范 IR，`importPlanVersion` 以单个原子事务写入；事件接缝负责盖章与 fail-closed 重放；`computeWorkReadiness` 从因果行重算可领取性；`evaluateAcceptanceCriterion` 追加调用方报告的评估；`claimWorkItem` 为每个工作项仲裁唯一活跃租约，并附带心跳、过期与重算投影的 reaper 生命周期。本包绝不执行 verifier 命令，也绝不激活计划。
 
 ## 目录
 
@@ -28,7 +28,7 @@ kind: "package-reference"
 
 ```ts
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
-import { changeWorkStatus, compilePlan, computeWorkReadiness, detectWorkGraphCycles, evaluateAcceptanceCriterion, importPlanVersion, parsePlanDocument, readProjectEvents, replayProjectEvents, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
+import { changeWorkStatus, claimWorkItem, compilePlan, computeWorkReadiness, detectWorkGraphCycles, evaluateAcceptanceCriterion, heartbeatWorkLease, importPlanVersion, parsePlanDocument, readProjectEvents, releaseWorkLease, replayProjectEvents, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
 
 const { text, value } = parsePlanDocument(planBytes)
 const document = validatePlanSchema(value)
@@ -41,6 +41,9 @@ const projection = replayProjectEvents(db, compiled.projectId)
 const readiness = computeWorkReadiness(db, compiled.workItems[0].id)
 const cycles = detectWorkGraphCycles(db, compiled.projectId)
 const evaluation = evaluateAcceptanceCriterion(db, compiled.workItems[0].acceptance[0].id, 'PASS')
+const claim = claimWorkItem(db, compiled.workItems[0].id, 'worker/session-7')
+const lease = heartbeatWorkLease(db, claim.leaseId, claim.leaseToken)
+releaseWorkLease(db, claim.leaseId, claim.leaseToken)
 ```
 
 一个测试把 zod 镜像钉在已发布的 schema 文件上：只改宪法或镜像其一而不同步另一方，测试套件即失败。
@@ -57,6 +60,8 @@ const evaluation = evaluateAcceptanceCriterion(db, compiled.workItems[0].accepta
 - **readiness 只重算、绝不信任**——`computeWorkReadiness` 从因果行推导可领取性（plan 版本、phase、`BLOCKS`/`PRECEDES` 边、外部阻塞、required 验收标准、活跃租约，以及工作项自身状态）；物化的 `READY`/`BLOCKED` 状态只是这些输入的投影，层级绝不进入决策（`parent_work_item_id` 是组成关系，不是依赖）。
 - **环语义只有一个家**——编译期校验与账本侧 `detectWorkGraphCycles` 共享 `relation-graph.ts` 的排序关系种类与环 walks，同一张图在文档与其产出行上永远得到相同判定。
 - **评估是历史，状态是投影**——`evaluateAcceptanceCriterion` 把调用方报告的结果追加进 `acceptance_evaluations`，并在同一事务内随 `acceptance/evaluated` 事件移动标准状态。`ERROR` 只记历史、不动投影。结果由调用方报告：本包存储 `command_text`，绝不运行它。
+- **每个工作项只有一个活跃租约**——`claimWorkItem` 在单个 `BEGIN IMMEDIATE` 事务内完成 readiness 重算、陈旧租约回收与租约插入（§13），竞争的 claimer 只会在其后串行并被活跃租约阻塞项拒绝；`uq_one_active_lease_per_work` 部分唯一索引是最终仲裁者。心跳与释放必须在过期前到达，reaper 重算被遗弃项的 `READY`/`BLOCKED` 投影，绝不宣布 `FAILED`。
+- **令牌只存哈希，绝不入日志**——认领返回一次性 bearer 令牌；账本只存其 SHA-256 哈希，任何租约事件都不携带它，日志重建租约状态时无需重放机密。
 
 <a id="dev-note"></a>
 ## 开发备注
@@ -78,5 +83,5 @@ const evaluation = evaluateAcceptanceCriterion(db, compiled.workItems[0].accepta
 以下是当前包约束，不是任务清单。
 
 - **尚无激活与 supersede**——导入绝不激活版本，且拒绝已属于其他版本或 backlog 的工作项；这些迁移由 supersede 流程负责，指向本项的 `SUPERSEDES` 边在其落地前不进入 readiness。
-- **只有通用状态迁移**——`changeWorkStatus` 拒绝由专用事件拥有的迁移：认领（`work/claimed`）与 readiness 投影的 `work/blocked`/`work/unblocked` 写入随租约生命周期到来。
+- **`REVOKED` 是保留行状态**——租约生命周期只写 `ACTIVE`、`RELEASED` 与 `EXPIRED`；Owner 侧吊销尚无写入者，reaper 循环节奏（`reaperIntervalMs`）属于有界 `reapExpiredLeases` 批次的调用方。
 - **英文诊断**——问题消息仅英文；它们是编译器输入，不是 UI 文案。

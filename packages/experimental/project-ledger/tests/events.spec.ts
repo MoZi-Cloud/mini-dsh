@@ -26,11 +26,14 @@ import {
   type ProjectEventEnvelope,
   type ProjectId,
   type ReplayedCriterion,
+  type ReplayedLease,
+  type ReplayedLeaseStatus,
   type ReplayedPlanVersion,
   type ReplayedProjectProjection,
   type ReplayedWorkItem,
   type SourceDocumentHash,
   type WorkItemId,
+  type WorkLeaseId,
 } from '../src/index.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -145,7 +148,32 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       criteria: criteriaByItem.get(row.id) ?? new Map(),
     })
   }
-  return { planVersions, workItems }
+  const leases = new Map<WorkLeaseId, ReplayedLease>()
+  const leaseRows = db.prepare(
+    'SELECT id, work_item_id, worker_identity, status, acquired_at_ms, heartbeat_at_ms, expires_at_ms, released_at_ms '
+    + 'FROM work_leases',
+  ).all() as {
+    id: string
+    work_item_id: string
+    worker_identity: string
+    status: string
+    acquired_at_ms: number
+    heartbeat_at_ms: number
+    expires_at_ms: number
+    released_at_ms: number | null
+  }[]
+  for (const row of leaseRows) {
+    leases.set(brandString<WorkLeaseId>(row.id), {
+      workItemId: brandString<WorkItemId>(row.work_item_id),
+      workerIdentity: row.worker_identity,
+      status: row.status as ReplayedLeaseStatus,
+      acquiredAtMs: row.acquired_at_ms,
+      heartbeatAtMs: row.heartbeat_at_ms,
+      expiresAtMs: row.expires_at_ms,
+      releasedAtMs: row.released_at_ms ?? undefined,
+    })
+  }
+  return { planVersions, workItems, leases }
 }
 
 describe('appendProjectEvent', () => {
@@ -304,11 +332,9 @@ describe('replayProjectEvents', () => {
   it('skips unknown ignorable rows and vocabulary types without a projection effect', async () => {
     const db = await goldenLedger()
     insertRawEvent(db, { eventType: 'alien/note', ignorable: 1, payloadJson: '{"note":"observed"}' })
-    appendProjectEvent(db, PROJECT, 'work/claimed', {
-      workItemId: 'wi:mini-dsh:IMPORT-001',
-      leaseId: 'lease:1',
-      workerIdentity: 'agent/a',
-    }, { entityType: 'work_item', entityId: 'wi:mini-dsh:IMPORT-001', nowMs: 2 })
+    appendProjectEvent(db, PROJECT, 'plan/version-activated', {
+      activatedBy: 'owner',
+    }, { entityType: 'plan_version', entityId: 'plv:mini-dsh-v1.6a-ledger:v1', nowMs: 2 })
 
     expect(readProjectEvents(db, PROJECT)).toHaveLength(18)
     expect(replayProjectEvents(db, PROJECT)).toEqual(materializedProjection(db))
@@ -453,6 +479,7 @@ describe('replayProjectEvents', () => {
     expect(replayProjectEvents(db, brandString<ProjectId>('fresh'))).toEqual({
       planVersions: new Map(),
       workItems: new Map(),
+      leases: new Map(),
     })
     db.close()
   })

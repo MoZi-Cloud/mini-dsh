@@ -14,12 +14,19 @@
  */
 
 import { DatabaseSync } from 'node:sqlite'
+import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanId, PlanVersionId, ProjectId, SourceDocumentHash, WorkItemId } from './plan-compile.js'
 import type { PlanAcceptanceKind, PlanWorkItemStatus } from './plan-document.js'
 import { PLAN_ACCEPTANCE_KINDS, PLAN_WORK_ITEM_STATUSES } from './plan-schema.js'
+import {
+  WORK_READINESS_BLOCKER_KINDS,
+  type WorkReadinessBlockerKind,
+  type WorkReadinessReason,
+} from './work-readiness.js'
 
 const WORK_ITEM_STATUS_SET: ReadonlySet<string> = new Set<string>(PLAN_WORK_ITEM_STATUSES)
 const ACCEPTANCE_KIND_SET: ReadonlySet<string> = new Set<string>(PLAN_ACCEPTANCE_KINDS)
+const BLOCKER_KIND_SET: ReadonlySet<string> = new Set<string>(WORK_READINESS_BLOCKER_KINDS)
 
 /**
  * The controlled status of one acceptance criterion row — the projection
@@ -63,9 +70,10 @@ export const PROJECT_EVENT_FORMAT_VERSION = 1
 /**
  * The §16 v1 vocabulary. Every listed type is required: rows carry
  * `ignorable = 0`, replay knows their projection effect (this build applies
- * `plan/imported`, `work/created`, `work/status-changed`, and
- * `acceptance/evaluated`), and a reader that does not know the type fails
- * closed.
+ * `plan/imported`, `work/created`, `work/status-changed`, `work/blocked`,
+ * `work/unblocked`, `work/claimed`, `work/lease-heartbeat`,
+ * `work/lease-expired`, `work/lease-released`, and `acceptance/evaluated`),
+ * and a reader that does not know the type fails closed.
  */
 export const PROJECT_EVENT_TYPES = [
   'plan/imported',
@@ -156,6 +164,21 @@ export interface AppendProjectEventOptions {
 }
 
 /**
+ * Allocate the next position in a project's timeline. Exported for writers
+ * whose event payload must name an id derived from that position (the lease
+ * id); such a caller holds `BEGIN IMMEDIATE`, so the pre-read equals the
+ * appended envelope's sequence.
+ * @param db - open ledger database inside the caller's write transaction.
+ * @param projectId - project whose timeline allocates.
+ * @returns the sequence number the next appended event will carry.
+ */
+export function nextProjectEventSequence(db: DatabaseSync, projectId: ProjectId): number {
+  return (db
+    .prepare('SELECT COALESCE(MAX(sequence_no), 0) AS max_sequence FROM project_events WHERE project_id = ?')
+    .get(projectId) as { max_sequence: number }).max_sequence + 1
+}
+
+/**
  * Append one event to a project's timeline and return the envelope as
  * written. The sequence is allocated from the project's current maximum, so
  * callers must hold their `BEGIN IMMEDIATE` transaction across the read and
@@ -192,9 +215,7 @@ export function appendProjectEvent(
     )
   }
   const nowMs = options.nowMs ?? Date.now()
-  const sequenceNo = (db
-    .prepare('SELECT COALESCE(MAX(sequence_no), 0) AS max_sequence FROM project_events WHERE project_id = ?')
-    .get(projectId) as { max_sequence: number }).max_sequence + 1
+  const sequenceNo = nextProjectEventSequence(db, projectId)
   db.prepare(
     'INSERT INTO project_events '
     + '(project_id, sequence_no, event_format_version, event_type, ignorable, entity_type, entity_id, actor_ref, '
@@ -326,10 +347,29 @@ export interface ReplayedWorkItem {
   readonly criteria: ReadonlyMap<AcceptanceCriterionId, ReplayedCriterion>
 }
 
+/** The replay-reachable statuses of one work lease; `REVOKED` has no writer. */
+export type ReplayedLeaseStatus = 'ACTIVE' | 'RELEASED' | 'EXPIRED'
+
+/**
+ * Lease facts carried by the lease lifecycle events. The token hash never
+ * replays: it is bearer-credential material, not projection state.
+ */
+export interface ReplayedLease {
+  readonly workItemId: WorkItemId
+  readonly workerIdentity: string
+  readonly status: ReplayedLeaseStatus
+  readonly acquiredAtMs: number
+  readonly heartbeatAtMs: number
+  readonly expiresAtMs: number
+  readonly releasedAtMs: number | undefined
+}
+
 /** The projection replaying a project's events rebuilds. */
 export interface ReplayedProjectProjection {
   readonly planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>
   readonly workItems: ReadonlyMap<WorkItemId, ReplayedWorkItem>
+  /** The lease lifecycle, rebuilt from `work/claimed` and the lease end events. */
+  readonly leases: ReadonlyMap<WorkLeaseId, ReplayedLease>
 }
 
 /**
@@ -346,6 +386,7 @@ export interface ReplayedProjectProjection {
 export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): ReplayedProjectProjection {
   const planVersions = new Map<PlanVersionId, ReplayedPlanVersion>()
   const workItems = new Map<WorkItemId, ReplayedWorkItem>()
+  const leases = new Map<WorkLeaseId, ReplayedLease>()
   for (const event of readProjectEvents(db, projectId)) {
     switch (event.eventType) {
       case 'plan/imported': {
@@ -374,28 +415,116 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         break
       }
       case 'work/status-changed': {
-        const payload = decodeWorkStatusChangedPayload(event)
-        const replayed = workItems.get(payload.workItemId)
-        if (replayed === undefined) {
+        const payload = decodeStatusMovePayload(event)
+        const replayed = requireReplayedWorkItem(workItems, payload.workItemId, event)
+        workItems.set(payload.workItemId, { ...replayed, status: payload.toStatus })
+        break
+      }
+      case 'work/blocked': {
+        const payload = decodeWorkBlockedPayload(event)
+        const replayed = requireReplayedWorkItem(workItems, payload.workItemId, event)
+        if (payload.toStatus !== 'BLOCKED') {
           throw new ProjectEventError(
             'malformed-event-payload',
-            `project event ${event.sequenceNo} of "${event.projectId}" payload field "workItemId" `
-              + `names no replayed work item (${payload.workItemId})`,
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "toStatus" `
+              + `of a work/blocked event must be BLOCKED, got ${JSON.stringify(payload.toStatus)}`,
           )
         }
         workItems.set(payload.workItemId, { ...replayed, status: payload.toStatus })
         break
       }
-      case 'acceptance/evaluated': {
-        const payload = decodeAcceptanceEvaluatedPayload(event)
-        const replayed = workItems.get(payload.workItemId)
-        if (replayed === undefined) {
+      case 'work/unblocked': {
+        const payload = decodeStatusMovePayload(event)
+        const replayed = requireReplayedWorkItem(workItems, payload.workItemId, event)
+        if (payload.toStatus !== 'READY') {
           throw new ProjectEventError(
             'malformed-event-payload',
-            `project event ${event.sequenceNo} of "${event.projectId}" payload field "workItemId" `
-              + `names no replayed work item (${payload.workItemId})`,
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "toStatus" `
+              + `of a work/unblocked event must be READY, got ${JSON.stringify(payload.toStatus)}`,
           )
         }
+        workItems.set(payload.workItemId, { ...replayed, status: payload.toStatus })
+        break
+      }
+      case 'work/claimed': {
+        const payload = decodeWorkClaimedPayload(event)
+        const replayed = requireReplayedWorkItem(workItems, payload.workItemId, event)
+        if (leases.has(payload.leaseId)) {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "leaseId" `
+              + `names an already replayed work lease (${payload.leaseId})`,
+          )
+        }
+        if (payload.toStatus !== 'IN_PROGRESS') {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "toStatus" `
+              + `of a work/claimed event must be IN_PROGRESS, got ${JSON.stringify(payload.toStatus)}`,
+          )
+        }
+        workItems.set(payload.workItemId, { ...replayed, status: payload.toStatus })
+        leases.set(payload.leaseId, {
+          workItemId: payload.workItemId,
+          workerIdentity: payload.workerIdentity,
+          status: 'ACTIVE',
+          acquiredAtMs: payload.acquiredAtMs,
+          heartbeatAtMs: payload.acquiredAtMs,
+          expiresAtMs: payload.expiresAtMs,
+          releasedAtMs: undefined,
+        })
+        break
+      }
+      case 'work/lease-heartbeat': {
+        const payload = decodeWorkLeaseHeartbeatPayload(event)
+        const lease = requireReplayedLease(leases, payload.leaseId, event)
+        if (lease.status !== 'ACTIVE') {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload heartbeats work lease `
+              + `"${payload.leaseId}" whose replayed status is ${lease.status}`,
+          )
+        }
+        leases.set(payload.leaseId, {
+          ...lease,
+          heartbeatAtMs: event.createdAtMs,
+          expiresAtMs: payload.expiresAtMs,
+        })
+        break
+      }
+      case 'work/lease-expired': {
+        const payload = decodeWorkLeaseEndedPayload(event)
+        const replayed = requireReplayedWorkItem(workItems, payload.workItemId, event)
+        const lease = requireReplayedLease(leases, payload.leaseId, event)
+        if (lease.status !== 'ACTIVE') {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload expires work lease `
+              + `"${payload.leaseId}" whose replayed status is ${lease.status}`,
+          )
+        }
+        leases.set(payload.leaseId, { ...lease, status: 'EXPIRED' })
+        workItems.set(payload.workItemId, { ...replayed, status: payload.toStatus })
+        break
+      }
+      case 'work/lease-released': {
+        const payload = decodeWorkLeaseEndedPayload(event)
+        const replayed = requireReplayedWorkItem(workItems, payload.workItemId, event)
+        const lease = requireReplayedLease(leases, payload.leaseId, event)
+        if (lease.status !== 'ACTIVE') {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload releases work lease `
+              + `"${payload.leaseId}" whose replayed status is ${lease.status}`,
+          )
+        }
+        leases.set(payload.leaseId, { ...lease, status: 'RELEASED', releasedAtMs: event.createdAtMs })
+        workItems.set(payload.workItemId, { ...replayed, status: payload.toStatus })
+        break
+      }
+      case 'acceptance/evaluated': {
+        const payload = decodeAcceptanceEvaluatedPayload(event)
+        const replayed = requireReplayedWorkItem(workItems, payload.workItemId, event)
         const criterion = replayed.criteria.get(payload.criterionId)
         if (criterion === undefined) {
           throw new ProjectEventError(
@@ -413,7 +542,41 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         break
     }
   }
-  return { planVersions, workItems }
+  return { planVersions, workItems, leases }
+}
+
+/** Fail closed when a payload names a work item the fold has not replayed. */
+function requireReplayedWorkItem(
+  workItems: ReadonlyMap<WorkItemId, ReplayedWorkItem>,
+  workItemId: WorkItemId,
+  event: ProjectEventEnvelope,
+): ReplayedWorkItem {
+  const replayed = workItems.get(workItemId)
+  if (replayed === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "workItemId" `
+        + `names no replayed work item (${workItemId})`,
+    )
+  }
+  return replayed
+}
+
+/** Fail closed when a payload names a lease the fold has not replayed. */
+function requireReplayedLease(
+  leases: ReadonlyMap<WorkLeaseId, ReplayedLease>,
+  leaseId: WorkLeaseId,
+  event: ProjectEventEnvelope,
+): ReplayedLease {
+  const lease = leases.get(leaseId)
+  if (lease === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "leaseId" `
+        + `names no replayed work lease (${leaseId})`,
+    )
+  }
+  return lease
 }
 
 /** Payload facts of one `plan/imported` event. */
@@ -443,13 +606,6 @@ interface WorkCreatedPayload {
   readonly criteria: readonly WorkCreatedCriterion[]
 }
 
-/** Payload facts of one `work/status-changed` event. */
-interface WorkStatusChangedPayload {
-  readonly workItemId: WorkItemId
-  readonly fromStatus: PlanWorkItemStatus
-  readonly toStatus: PlanWorkItemStatus
-}
-
 /** Payload facts of one `acceptance/evaluated` event. */
 interface AcceptanceEvaluatedPayload {
   readonly workItemId: WorkItemId
@@ -457,6 +613,48 @@ interface AcceptanceEvaluatedPayload {
   readonly result: AcceptanceEvaluationResult
   /** The criterion's projection status after this evaluation. */
   readonly status: AcceptanceCriterionStatus
+}
+
+/** The lease facts every lease lifecycle event names. */
+interface WorkLeaseRefPayload {
+  readonly workItemId: WorkItemId
+  readonly leaseId: WorkLeaseId
+  readonly workerIdentity: string
+}
+
+/** Payload facts of one `work/claimed` event. */
+interface WorkClaimedPayload extends WorkLeaseRefPayload {
+  readonly fromStatus: PlanWorkItemStatus
+  /** Always `IN_PROGRESS`; the applier refuses any other value. */
+  readonly toStatus: PlanWorkItemStatus
+  readonly acquiredAtMs: number
+  readonly expiresAtMs: number
+}
+
+/** Payload facts of one `work/lease-heartbeat` event; the heartbeat stamp is the envelope's `createdAtMs`. */
+interface WorkLeaseHeartbeatPayload extends WorkLeaseRefPayload {
+  readonly expiresAtMs: number
+}
+
+/** Payload facts of one `work/lease-expired` or `work/lease-released` event; the end stamp is the envelope's `createdAtMs`. */
+interface WorkLeaseEndedPayload extends WorkLeaseRefPayload {
+  /** The item's recomputed projection (`READY` or `BLOCKED`, §13). */
+  readonly toStatus: PlanWorkItemStatus
+}
+
+/** Payload facts of one plain status move: `work/status-changed` or `work/unblocked`. */
+interface StatusMovePayload {
+  readonly workItemId: WorkItemId
+  readonly fromStatus: PlanWorkItemStatus
+  readonly toStatus: PlanWorkItemStatus
+}
+
+/** Payload facts of one `work/blocked` event. */
+interface WorkBlockedPayload extends StatusMovePayload {
+  /** Always `BLOCKED`; the applier refuses any other value. */
+  readonly toStatus: PlanWorkItemStatus
+  /** The recomputed blockers materialized by the move. */
+  readonly reasons: readonly WorkReadinessReason[]
 }
 
 /** The event payload must be a JSON object for appliers to read fields from. */
@@ -574,6 +772,19 @@ function requiredAcceptanceKind(
   return value as PlanAcceptanceKind
 }
 
+/** Read one required readiness blocker kind payload field. */
+function requiredBlockerKind(fields: Record<string, unknown>, event: ProjectEventEnvelope, label: string): WorkReadinessBlockerKind {
+  const value = requiredString(fields, event, 'kind', label)
+  if (!BLOCKER_KIND_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${label}" `
+        + `is not a readiness blocker kind: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as WorkReadinessBlockerKind
+}
+
 /** Read one required boolean payload field. */
 function requiredBoolean(fields: Record<string, unknown>, event: ProjectEventEnvelope, field: string, label: string = field): boolean {
   const value = fields[field]
@@ -616,6 +827,39 @@ function requiredCriteria(event: ProjectEventEnvelope, fields: Record<string, un
   })
 }
 
+/**
+ * Decode the `reasons` array of one `work/blocked` payload, failing closed on
+ * a non-array value and on entries this codec cannot read.
+ */
+function requiredReadinessReasons(event: ProjectEventEnvelope, fields: Record<string, unknown>): WorkReadinessReason[] {
+  const value = fields.reasons
+  if (!Array.isArray(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "reasons" must be an array`,
+    )
+  }
+  return value.map((entry, index): WorkReadinessReason => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new ProjectEventError(
+        'malformed-event-payload',
+        `project event ${event.sequenceNo} of "${event.projectId}" payload field "reasons[${index}]" must be an object`,
+      )
+    }
+    const entryFields = entry as Record<string, unknown>
+    const refId = entryFields.refId
+    if (refId !== undefined && typeof refId !== 'string') {
+      throw new ProjectEventError(
+        'malformed-event-payload',
+        `project event ${event.sequenceNo} of "${event.projectId}" payload field "reasons[${index}].refId" must be a string`,
+      )
+    }
+    return refId === undefined
+      ? { kind: requiredBlockerKind(entryFields, event, `reasons[${index}].kind`), message: requiredString(entryFields, event, 'message', `reasons[${index}].message`) }
+      : { kind: requiredBlockerKind(entryFields, event, `reasons[${index}].kind`), refId, message: requiredString(entryFields, event, 'message', `reasons[${index}].message`) }
+  })
+}
+
 /** Decode one `plan/imported` payload, failing closed on missing or mistyped fields. */
 function decodePlanImportedPayload(event: ProjectEventEnvelope): PlanImportedPayload {
   const fields = payloadFields(event)
@@ -640,8 +884,8 @@ function decodeWorkCreatedPayload(event: ProjectEventEnvelope): WorkCreatedPaylo
   }
 }
 
-/** Decode one `work/status-changed` payload, failing closed on missing or mistyped fields. */
-function decodeWorkStatusChangedPayload(event: ProjectEventEnvelope): WorkStatusChangedPayload {
+/** Decode one plain status-move payload (`work/status-changed`, `work/unblocked`), failing closed on missing or mistyped fields. */
+function decodeStatusMovePayload(event: ProjectEventEnvelope): StatusMovePayload {
   const fields = payloadFields(event)
   return {
     workItemId: requiredString(fields, event, 'workItemId') as WorkItemId,
@@ -658,5 +902,55 @@ function decodeAcceptanceEvaluatedPayload(event: ProjectEventEnvelope): Acceptan
     criterionId: requiredString(fields, event, 'criterionId') as AcceptanceCriterionId,
     result: requiredEvaluationResult(fields, event, 'result'),
     status: requiredCriterionStatus(fields, event, 'status'),
+  }
+}
+
+/** Read the lease facts shared by every lease lifecycle payload. */
+function requiredLeaseRef(fields: Record<string, unknown>, event: ProjectEventEnvelope): WorkLeaseRefPayload {
+  return {
+    workItemId: requiredString(fields, event, 'workItemId') as WorkItemId,
+    leaseId: requiredString(fields, event, 'leaseId') as WorkLeaseId,
+    workerIdentity: requiredString(fields, event, 'workerIdentity'),
+  }
+}
+
+/** Decode one `work/claimed` payload, failing closed on missing or mistyped fields. */
+function decodeWorkClaimedPayload(event: ProjectEventEnvelope): WorkClaimedPayload {
+  const fields = payloadFields(event)
+  return {
+    ...requiredLeaseRef(fields, event),
+    fromStatus: requiredStatus(fields, event, 'fromStatus'),
+    toStatus: requiredStatus(fields, event, 'toStatus'),
+    acquiredAtMs: requiredNumber(fields, event, 'acquiredAtMs'),
+    expiresAtMs: requiredNumber(fields, event, 'expiresAtMs'),
+  }
+}
+
+/** Decode one `work/lease-heartbeat` payload, failing closed on missing or mistyped fields. */
+function decodeWorkLeaseHeartbeatPayload(event: ProjectEventEnvelope): WorkLeaseHeartbeatPayload {
+  const fields = payloadFields(event)
+  return {
+    ...requiredLeaseRef(fields, event),
+    expiresAtMs: requiredNumber(fields, event, 'expiresAtMs'),
+  }
+}
+
+/** Decode one `work/lease-expired` or `work/lease-released` payload, failing closed on missing or mistyped fields. */
+function decodeWorkLeaseEndedPayload(event: ProjectEventEnvelope): WorkLeaseEndedPayload {
+  const fields = payloadFields(event)
+  return {
+    ...requiredLeaseRef(fields, event),
+    toStatus: requiredStatus(fields, event, 'toStatus'),
+  }
+}
+
+/** Decode one `work/blocked` payload, failing closed on missing or mistyped fields. */
+function decodeWorkBlockedPayload(event: ProjectEventEnvelope): WorkBlockedPayload {
+  const fields = payloadFields(event)
+  return {
+    workItemId: requiredString(fields, event, 'workItemId') as WorkItemId,
+    fromStatus: requiredStatus(fields, event, 'fromStatus'),
+    toStatus: requiredStatus(fields, event, 'toStatus'),
+    reasons: requiredReadinessReasons(event, fields),
   }
 }

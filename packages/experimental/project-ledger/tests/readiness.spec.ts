@@ -25,11 +25,14 @@ import {
   type PlanWorkItemStatus,
   type ProjectId,
   type ReplayedCriterion,
+  type ReplayedLease,
+  type ReplayedLeaseStatus,
   type ReplayedPlanVersion,
   type ReplayedProjectProjection,
   type ReplayedWorkItem,
   type SourceDocumentHash,
   type WorkItemId,
+  type WorkLeaseId,
   type WorkReadiness,
 } from '../src/index.js'
 
@@ -118,7 +121,32 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       criteria: criteriaByItem.get(row.id) ?? new Map(),
     })
   }
-  return { planVersions, workItems }
+  const leases = new Map<WorkLeaseId, ReplayedLease>()
+  const leaseRows = db.prepare(
+    'SELECT id, work_item_id, worker_identity, status, acquired_at_ms, heartbeat_at_ms, expires_at_ms, released_at_ms '
+    + 'FROM work_leases',
+  ).all() as {
+    id: string
+    work_item_id: string
+    worker_identity: string
+    status: string
+    acquired_at_ms: number
+    heartbeat_at_ms: number
+    expires_at_ms: number
+    released_at_ms: number | null
+  }[]
+  for (const row of leaseRows) {
+    leases.set(brandString<WorkLeaseId>(row.id), {
+      workItemId: brandString<WorkItemId>(row.work_item_id),
+      workerIdentity: row.worker_identity,
+      status: row.status as ReplayedLeaseStatus,
+      acquiredAtMs: row.acquired_at_ms,
+      heartbeatAtMs: row.heartbeat_at_ms,
+      expiresAtMs: row.expires_at_ms,
+      releasedAtMs: row.released_at_ms ?? undefined,
+    })
+  }
+  return { planVersions, workItems, leases }
 }
 
 /**
