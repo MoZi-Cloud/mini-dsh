@@ -1,14 +1,18 @@
 # The dsh-experimental-mini-profile bundle patch: the v1.6a Project Ledger
-# capability mounted over dsh-base. It adds no Host, HTTP, or browser surface
-# of its own and no package bin — `dsh --profile mini` stays the only launch
-# form (v1.6a §4). The bundle lives in the experimental group, so it stays
-# outside the default product: attach it to a `mini` profile with
+# capability and its /project command surface mounted over dsh-base. It adds
+# no Host, HTTP, or browser surface of its own and no package bin —
+# `dsh --profile mini` stays the only launch form (v1.6a §4). The bundle
+# lives in the experimental group, so it stays outside the default product:
+# attach it to a `mini` profile with
 # `dsh plugin --profile mini add @deepseek-ai/dsh-experimental-mini-profile`.
-# The row below exposes the opened ledger as `ctx.projectLedger`; consumers
-# call the ledger seam functions against its handle.
+# The first row exposes the opened ledger as `ctx.projectLedger`; consumers
+# call the ledger seam functions against its handle. The second row
+# registers the read-only /project command over that handle.
 
 - insert:
     - id: project-ledger
       name: '@deepseek-ai/dsh-experimental-mini-profile'
       config:
         ledgerPath: !!js process.env.DSH_MINI_LEDGER_PATH ?? dshHomePath('project-ledger/ledger.sqlite')
+    - id: project-commands
+      name: '@deepseek-ai/dsh-experimental-mini-profile/commands'

@@ -18,6 +18,9 @@
       "path": "../../util/brand"
     },
     {
+      "path": "../../interaction/commands"
+    },
+    {
       "path": "../../experimental/project-ledger"
     },
     {

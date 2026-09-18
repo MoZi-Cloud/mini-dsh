@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 
 describe('dsh-experimental-mini-profile bundle', () => {
-  it('mounts exactly the Project Ledger capability row over its declared patch', () => {
+  it('mounts exactly the ledger row and the /project command row over its declared patch', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>
@@ -23,18 +23,20 @@ describe('dsh-experimental-mini-profile bundle', () => {
     const rows = patches[0]?.insert ?? []
     expect(rows.map(row => [row.id, row.name])).toEqual([
       ['project-ledger', '@deepseek-ai/dsh-experimental-mini-profile'],
+      ['project-commands', '@deepseek-ai/dsh-experimental-mini-profile/commands'],
     ])
     // The patch resolves the deployment-owned path as an unevaluated `!!js`
-    // expression node: env override, then the dsh home. The plugin itself
-    // declares no default.
+    // expression node: env override, then the dsh home. The plugins themselves
+    // declare no defaults.
     expect(rows[0]?.config).toEqual({
       ledgerPath: {
         __jsExpr: "process.env.DSH_MINI_LEDGER_PATH ?? dshHomePath('project-ledger/ledger.sqlite')",
       },
     })
+    expect(rows[1]?.config).toBeUndefined()
   })
 
-  it('declares the ledger capability and its store as dependencies', () => {
+  it('declares the ledger capability, its store, and the command registry as dependencies', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>
@@ -43,13 +45,16 @@ describe('dsh-experimental-mini-profile bundle', () => {
       bin?: unknown
     }
     expect(Object.keys(manifest.dependencies ?? {}).sort()).toEqual([
+      '@deepseek-ai/dsh-brand',
+      '@deepseek-ai/dsh-commands',
       '@deepseek-ai/dsh-experimental-project-ledger',
       '@deepseek-ai/dsh-experimental-project-ledger-sqlite',
       '@deepseek-ai/schemastery',
     ])
     expect(Object.keys(manifest.devDependencies ?? {}).sort()).toEqual([
       '@deepseek-ai/cordis',
-      '@deepseek-ai/dsh-brand',
+      '@deepseek-ai/dsh-agent',
+      '@deepseek-ai/dsh-session',
     ])
     expect(manifest.peerDependencies).toEqual({ '@deepseek-ai/cordis': 'workspace:^' })
     expect(manifest.bin).toBeUndefined()

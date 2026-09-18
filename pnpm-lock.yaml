@@ -6233,6 +6233,12 @@ importers:
 
   packages/experimental/mini-profile:
     dependencies:
+      '@deepseek-ai/dsh-brand':
+        specifier: workspace:^
+        version: link:../../util/brand
+      '@deepseek-ai/dsh-commands':
+        specifier: workspace:^
+        version: link:../../interaction/commands
       '@deepseek-ai/dsh-experimental-project-ledger':
         specifier: workspace:^
         version: link:../project-ledger
@@ -6246,9 +6252,12 @@ importers:
       '@deepseek-ai/cordis':
         specifier: workspace:^
         version: link:../../../vendor/cordis
-      '@deepseek-ai/dsh-brand':
+      '@deepseek-ai/dsh-agent':
         specifier: workspace:^
-        version: link:../../util/brand
+        version: link:../../core/agent
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
 
   packages/experimental/project-ledger:
     dependencies:

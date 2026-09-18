@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core 的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用、层级与关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝 fail-closed 重放；`computeWorkReadiness` 重算可领取性；租约接缝为每个工作项仲裁唯一活跃租约；`buildWorkPacket` 准备有界确定性 WorkPacket；todo 视图按 executor kind 划分未完成工作；supersede 与 drift 退役版本、封堵漂移 baseline，绝不触碰历史。本包绝不执行 verifier 命令。
+`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core 的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用、层级与关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝 fail-closed 重放；`computeWorkReadiness` 重算可领取性；租约接缝为每个工作项仲裁唯一活跃租约；`buildWorkPacket` 准备有界确定性 WorkPacket；todo 视图按 executor kind 划分未完成工作；supersede 与 drift 退役版本、封堵漂移 baseline；`listPlans` 列出每个 plan 的 current-version 指针。本包绝不执行 verifier 命令。
 
 ## 目录
 
@@ -74,6 +74,7 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **supersede 退役版本，绝不改写历史**——`supersedePlanVersion` 在单个 `BEGIN IMMEDIATE` 内只移动生命周期列（`SUPERSEDED`、`superseded_at_ms`）与 `plans.current_version_id` 指针，并随 `plan/version-superseded` 事件落库；readiness 随即以 `plan-version-not-active` 拒绝该版本的每个新认领，活跃尝试保留租约、放弃租约后落 `BLOCKED`，事件载荷记录 review 队列。工作项、plan 事实与评估逐字节不变。
 - **drift 封堵认领，绝不改写 baseline 钉**——`recordBaselineDrift` 把调用方观测的仓库事实与版本钉住的 baseline 比较，追加 `baseline/drift-detected`，并在工作项上打开 `BASELINE_DRIFT` 外部阻塞，下一次认领被拒，直到 owner 解决、豁免或 supersede；baseline 列本身绝不移动（§21）。
 - **doctor 是只读巡检**——`planDoctor` 一趟重验已导入版本：验收与 verifier 的存在性、层级与排序环、关系的项目内约束、事件时间线可解码，以及工作项/标准/租约状态的投影对等；全部独立问题连同版本身份、baseline 与行数一并报告。
+- **plan 经由唯一目录解析**——`listPlans` 读取每个 `plans` 行及其 `current_version_id` 指针，按 project、plan id 排序；需要回答"哪个项目""哪个版本是 current"的消费方从这个清单推导，而不是重新拥有 `plans` 表语义。目录只读：行随 import 出现，指针随 supersede 移动。
 
 <a id="dev-note"></a>
 ## 开发备注
