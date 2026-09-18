@@ -9,11 +9,11 @@
  * deterministic WorkPacket builder that records its reconstruction recipe,
  * the executor-separated Owner/Agent todo views, the immutable plan-version
  * the immutable plan-version supersede and baseline-drift writers, the
- * read-only plan doctor, and the plan directory listing. Compiling,
- * importing, replaying, reading readiness, recording evaluations,
- * claiming, reaping, building packets, listing todos, superseding,
- * recording drift, doctoring, and listing plans never execute verifier
- * commands.
+ * read-only plan doctor, the plan directory listing, and the work-item
+ * review read. Compiling, importing, replaying, reading readiness, recording
+ * evaluations, claiming, reaping, building packets, listing todos,
+ * superseding, recording drift, doctoring, listing plans, and reading item
+ * reviews never execute verifier commands.
  */
 export { PLAN_SCHEMA_VERSION, type PlanAcceptanceCriterion, type PlanAcceptanceKind, type PlanBaseline, type PlanDocumentV1, type PlanExecutorKind, type PlanPhase, type PlanPhaseStatus, type PlanPlan, type PlanProject, type PlanRelation, type PlanRelationKind, type PlanVerifier, type PlanVerifierAssertion, type PlanVerifierCommand, type PlanVerifierOwnerConfirmation, type PlanWorkItem, type PlanWorkItemStatus, type PlanWorkItemType } from './plan-document.js'
 export { PlanDocumentError, type PlanIssue, type PlanIssueCode, positionAtOffset, type PlanSourcePosition } from './plan-issues.js'
@@ -33,3 +33,4 @@ export { AGENT_TODO_EXECUTOR_KINDS, OWNER_TODO_EXECUTOR_KINDS, TODO_VIEW_STATUSE
 export { DEFAULT_DRIFT_ACTOR_REF, DEFAULT_SUPERSEDE_ACTOR_REF, PLAN_VERSION_STATUSES, BaselineDriftError, PlanSupersedeError, recordBaselineDrift, supersedePlanVersion, type BaselineDrift, type BaselineDriftErrorCode, type ObservedBaseline, type PlanSupersedeErrorCode, type PlanVersionStatus, type PlanVersionSupersede, type RecordBaselineDriftOptions, type SupersededAttempt, type SupersedePlanVersionOptions, type WorkExternalBlockerId } from './versioning.js'
 export { PLAN_DOCTOR_ISSUE_CODES, PlanDoctorError, planDoctor, type PlanDoctorCounts, type PlanDoctorErrorCode, type PlanDoctorIssue, type PlanDoctorReport } from './doctor.js'
 export { listPlans, type PlanDirectoryEntry } from './plan-directory.js'
+export { readWorkItemReview, type LatestEvaluation, type ReviewedCriterion, type WorkItemReview } from './work-item-review.js'

@@ -40,6 +40,16 @@ The same lane drove `PW-OBSERVED-TAIL-001` (bounded verifier output tails in `pr
 
 An immediate rerun passed idempotently (`alreadyComplete: true`, no writes). The 4K slice rerun after the change stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE — the scripted report now carries a short output tail), so no BOOT/4K regression accompanies this increment. This closes the post-v1.6a increment backlog; later real-use items come from new plan versions.
 
+### 2026-09-18 — plan version 2 and PW-ITEM-REVIEW-001 through the shipped tools
+
+The plan document (`v1.6a/fork-mini-DSH-post-v1.6a.plan.yaml`) bumped to version 2 with a fresh batch (`PW-ITEM-REVIEW-001`, `PW-REPLAY-VIEW-001`), and the same lane drove the bump end to end against the persistent ledger: version 2 imported, version 1 superseded through the §22 seam (`supersedePlanVersion` naming the successor — the seam's first real-use record, event sequence 29; the three version-1 items stay DONE and byte-identical), then `PW-ITEM-REVIEW-001` (the `/project item` review view over a new `readWorkItemReview` ledger seam) claimed by `agent:mini-real-use-lane`, verifier `pnpm exec vitest run mini-profile` (exit 0), item DONE, doctor 0 issues, event replay DONE. First-run report line:
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v2","workItemId":"wi:mini-dsh:PW-ITEM-REVIEW-001","stableKey":"PW-ITEM-REVIEW-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-ITEM-REVIEW-001:AC-PW-ITEM-REVIEW-001","command":"pnpm exec vitest run mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+An immediate rerun passed idempotently (`alreadyComplete: true`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE). `PW-REPLAY-VIEW-001` stays claimable in version 2 for a later increment.
+
 ## Status toward the gate
 
-Items completed through the ledger: 18 (15 golden-plan items by the v1.6a build itself, plus the three entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.
+Items completed through the ledger: 19 (15 golden-plan items by the v1.6a build itself, plus the four entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.

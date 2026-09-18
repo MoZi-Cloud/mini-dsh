@@ -22,13 +22,13 @@
 ./benchmarks/real-use/run-real-use.sh
 ```
 
-脚本先用 benchmark tsdown 配置编译 worker，再以纯 Node 基于已构建的 workspace 库运行（全新树先 `pnpm install && pnpm run build`）。这是功能性 lane 门，不是计时 benchmark；不属于 `test:bench`。`DSH_REAL_USE_ITEM` 指定要领取的工作项（默认 `PW-PRESENTERS-001`，即 `fork-mini-DSH-post-v1.6a.plan.yaml` 的 presenter 项）。
+脚本先用 benchmark tsdown 配置编译 worker，再以纯 Node 基于已构建的 workspace 库运行（全新树先 `pnpm install && pnpm run build`）。这是功能性 lane 门，不是计时 benchmark；不属于 `test:bench`。`DSH_REAL_USE_ITEM` 指定要领取的工作项（默认 `PW-ITEM-REVIEW-001`，即 `fork-mini-DSH-post-v1.6a.plan.yaml` 版本 2 的首个条目）。
 
 <a id="ledger-and-idempotency"></a>
 
 ## 账本与幂等
 
-默认驱动一个全新临时账本，以一行 JSON 报告退出 0。`DSH_REAL_USE_LEDGER` 指向持久文件——profile 默认为 `~/.dsh/project-ledger/ledger.sqlite`——连续运行因此累积在真实 `dsh --profile mini` 会话读取的同一账本里。运行是幂等的：已导入的版本会被复用，已完成的工作项以 `alreadyComplete: true` 通过且不写入。lane 直接执行 owner 的版本激活（一次裸状态更新），因为 v1.6a 的激活没有账本 writer；领取、评估与完成全部经由 shipped 工具。
+默认驱动一个全新临时账本，以一行 JSON 报告退出 0。`DSH_REAL_USE_LEDGER` 指向持久文件——profile 默认为 `~/.dsh/project-ledger/ledger.sqlite`——连续运行因此累积在真实 `dsh --profile mini` 会话读取的同一账本里。运行是幂等的：plan 文档的当前版本只导入一次，已完成的工作项以 `alreadyComplete: true` 通过且不写入。plan 文档升版本时，经 §22 接缝 supersede 先前的 ACTIVE 版本（`supersedePlanVersion` 指名已导入的继任者）；supersede 与激活都由 lane 直接执行 owner 的动作（裸状态更新），因为二者都没有面向 lane 的 shipped writer——领取、评估与完成全部经由 shipped 工具。
 
 <a id="dev-note"></a>
 

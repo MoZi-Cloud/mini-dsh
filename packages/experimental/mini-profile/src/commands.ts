@@ -2,11 +2,14 @@
  * The mini profile's `/project` command surface: read-only reporting over
  * the mounted Project Ledger for the human operating a `dsh --profile mini`
  * session. `todo` projects the executor-separated Owner/Agent views (v1.6a
- * §11) and `doctor` runs the read-only plan doctor pass (F05); the project
- * and plan version resolve through the ledger's plan directory when the
- * command names none. The handler never mutates ledger state, never sends
- * anything to the model, and never executes a verifier command — mutating
- * surfaces stay with their owning writers and later work.
+ * §11), `doctor` runs the read-only plan doctor pass (F05), and `item`
+ * reviews one work item over its criteria and latest evaluations — including
+ * each evaluation's observed exit code and output-tail excerpt — through the
+ * ledger's review read seam; the project and plan version resolve through
+ * the ledger's plan directory when the command names none. The handler never
+ * mutates ledger state, never sends anything to the model, and never
+ * executes a verifier command — mutating surfaces stay with their owning
+ * writers and later work.
  *
  * @module @deepseek-ai/dsh-experimental-mini-profile/commands
  */
@@ -22,8 +25,10 @@ import {
   listOwnerTodo,
   listPlans,
   planDoctor,
+  readWorkItemReview,
   type PlanDoctorReport,
   type PlanVersionId,
+  type WorkItemReview,
   type WorkTodoView,
 } from '@deepseek-ai/dsh-experimental-project-ledger'
 import { ProjectResolutionError, resolveProjectId } from './project-resolution.js'
@@ -39,6 +44,7 @@ type ProjectCommand =
   | { readonly kind: 'help' }
   | { readonly kind: 'todo'; readonly agentView: boolean; readonly projectId: string | undefined }
   | { readonly kind: 'doctor'; readonly planVersionId: string | undefined }
+  | { readonly kind: 'item'; readonly itemRef: string; readonly projectId: string | undefined }
 
 /* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
@@ -49,6 +55,7 @@ const HELP_TEXT = [
   'Inspect the mounted Project Ledger.',
   '/project todo [--agent] [<project-id>] — list outstanding owner (or agent) work with readiness and leases',
   '/project doctor [<plan-version-id>] — run the read-only plan doctor on the current (or named) plan version',
+  '/project item <stable-key-or-id> [<project-id>] — review one work item: criteria statuses, latest evaluations, observed evidence',
 ].join('\n')
 
 /**
@@ -75,6 +82,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
     return tokens.length <= 2
       ? { kind: 'doctor', planVersionId: tokens[1] }
       : undefined
+  }
+  if (tokens[0] === 'item') {
+    const [itemRef, projectId] = tokens.slice(1)
+    if (itemRef === undefined || tokens.length > 3) return undefined
+    return { kind: 'item', itemRef, projectId }
   }
   return undefined
 }
@@ -161,6 +173,71 @@ function renderDoctorReport(report: PlanDoctorReport): string {
   return lines.join('\n')
 }
 
+/** How many characters of an observed output tail the item review quotes. */
+const REVIEW_EXCERPT_CHARS = 160
+
+/**
+ * Collapse one observed output tail to a single-line excerpt, so a criterion
+ * line stays readable while still showing the verifier's own words.
+ * @param tail - the output tail an evaluation stored.
+ * @returns the whitespace-collapsed excerpt, cut with an ellipsis past the cap.
+ */
+function reviewExcerpt(tail: string): string {
+  const collapsed = tail.split(/\s+/u).filter(part => part !== '').join(' ')
+  return collapsed.length <= REVIEW_EXCERPT_CHARS
+    ? collapsed
+    : `${collapsed.slice(0, REVIEW_EXCERPT_CHARS)}…`
+}
+
+/**
+ * Narrow one evaluation's observed payload to the facts the review prints.
+ * The payload crossed the durable boundary as JSON, so it is read by field,
+ * never trusted whole.
+ * @param observed - the parsed observed payload, or `null`.
+ * @returns the exit code and output-tail excerpt it carries, when well-formed.
+ */
+function observedReviewFacts(observed: unknown): { exitCode?: number; tailExcerpt?: string } {
+  if (typeof observed !== 'object' || observed === null) return {}
+  const record = observed as Record<string, unknown>
+  const facts: { exitCode?: number; tailExcerpt?: string } = {}
+  if (typeof record.exitCode === 'number') facts.exitCode = record.exitCode
+  if (typeof record.outputTail === 'string' && record.outputTail.trim() !== '') {
+    facts.tailExcerpt = reviewExcerpt(record.outputTail)
+  }
+  return facts
+}
+
+/**
+ * Render one work-item review as command output: the item's identity and
+ * status, then one line per criterion with its status and latest evaluation,
+ * quoting the observed exit code and output-tail excerpt when present.
+ * @param review - the review read seam's outcome.
+ * @returns the multi-line command text.
+ */
+function renderItemReview(review: WorkItemReview): string {
+  const lines = [
+    `Work item ${review.workItemId} "${review.title}" — ${review.status} `
+      + `(${review.executorKind.toLowerCase()}, priority ${String(review.priority)}, `
+      + `version ${review.planVersionId ?? 'none'})`,
+  ]
+  for (const criterion of review.criteria) {
+    const role = criterion.required ? 'required' : 'optional'
+    if (criterion.latest === null) {
+      lines.push(`- ${criterion.criterionId} (${criterion.kind}, ${role}) ${criterion.status} — no evaluation yet`)
+      continue
+    }
+    const { latest } = criterion
+    const facts = observedReviewFacts(latest.observed)
+    lines.push(
+      `- ${criterion.criterionId} (${criterion.kind}, ${role}) ${criterion.status} — ${latest.result} `
+        + `by ${latest.evaluatedBy} at ${new Date(latest.evaluatedAtMs).toISOString()}`
+        + (facts.exitCode === undefined ? '' : `; exit ${String(facts.exitCode)}`),
+    )
+    if (facts.tailExcerpt !== undefined) lines.push(`  ${facts.tailExcerpt}`)
+  }
+  return lines.join('\n')
+}
+
 /**
  * Execute one parsed `/project` invocation against the mounted ledger.
  * @param ctx - context whose `projectLedger` service owns the opened database.
@@ -184,6 +261,16 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
         const report = planDoctor(db, resolveDoctorVersion(db, command.planVersionId))
         return { kind: 'success', text: renderDoctorReport(report) }
       }
+      case 'item': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        const review = readWorkItemReview(db, projectId, command.itemRef)
+        if (review === undefined) {
+          throw new ProjectResolutionError(
+            `No work item "${command.itemRef}" in project ${projectId}. Name a stable key or full id.`,
+          )
+        }
+        return { kind: 'success', text: renderItemReview(review) }
+      }
       /* v8 ignore next 2 -- the parse step returns a closed union */
       default: return assertNever(command, 'project command')
     }
@@ -206,7 +293,7 @@ export function apply(ctx: Context): void {
     definitionId: CommandDefinitionId('@deepseek-ai/dsh-experimental-mini-profile'),
     name: 'project',
     description: 'Inspect Project Ledger work and run the plan doctor',
-    input: { hint: 'todo [--agent] [<project-id>] | doctor [<plan-version-id>]' },
+    input: { hint: 'todo [--agent] [<project-id>] | doctor [<plan-version-id>] | item <stable-key-or-id> [<project-id>]' },
     handler: invocation => runProjectCommand(ctx, invocation.rawInput),
   }))
 }

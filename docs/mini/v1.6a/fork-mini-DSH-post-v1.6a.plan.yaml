@@ -5,7 +5,7 @@ project:
 plan:
   id: mini-dsh-post-v16a-increments
   name: Post-v1.6a Real-Use Increments
-  version: 1
+  version: 2
 phases:
   - id: INC1
     title: Post-v1.6a increments
@@ -15,25 +15,28 @@ phases:
       Real repository work claimed, verified, and completed through the mounted
       Project Ledger, accumulating the §33 real-use record one increment at a
       time. Items land in the order priority names; each carries a stored
-      verifier command the real-use lane executes.
+      verifier command the real-use lane executes. Version 2 supersedes the
+      completed version-1 items (PW-PRESENTERS-001, PW-REPORT-VERDICTS-001,
+      PW-OBSERVED-TAIL-001) with a fresh batch.
 workItems:
-  - id: PW-PRESENTERS-001
+  - id: PW-ITEM-REVIEW-001
     phaseId: INC1
     type: IMPLEMENTATION
     executorKind: AGENT
-    title: Host presenters for the project_work tools
+    title: Item review view in /project
     description: >
-      Give project_work_next, project_work_claim, and project_work_update pure
-      presentCall generic views so a Host UI titles and icons their pending
-      cards from the call args alone; the completed card keeps the title over
-      the rendered result, and the Web Client keeps deriving its cards from the
-      raw events.
+      Give /project an item subcommand over a new ledger read seam: one work
+      item resolved by stable key or id, showing each acceptance criterion's
+      status and latest evaluation — verdict, evaluator, exit code, and a
+      bounded excerpt of the observed output tail — so the owner reads why an
+      item passed or failed without SQL. The view only reads; the Owner domain
+      stays v1.6b scope.
     priority: 10
     status: READY
     acceptance:
-      - id: AC-PW-PRESENTERS-001
+      - id: AC-PW-ITEM-REVIEW-001
         kind: TEST
-        description: The mini-profile package suite passes, including the presenter assertions.
+        description: The mini-profile package suite passes with the item review path covered.
         required: true
         verifier:
           kind: TEST
@@ -41,45 +44,21 @@ workItems:
           expectedExitCode: 0
           sandboxRequired: true
           approvalRequired: false
-  - id: PW-REPORT-VERDICTS-001
+  - id: PW-REPLAY-VIEW-001
     phaseId: INC1
     type: IMPLEMENTATION
     executorKind: AGENT
-    title: Per-criterion verdicts in project_work_update reports
+    title: Replay projection view in /project
     description: >
-      Let action report carry one verdict per observable criterion instead of
-      applying a single PASS or FAIL to all of them, so an agent can report a
-      suite where some verifiers passed and others failed without splitting
-      the claim.
+      Give /project a replay subcommand that runs the ledger's event replay
+      for the resolved project and reports the replayed projection against the
+      materialized rows, so the owner audits ledger integrity read-only.
     priority: 20
     status: READY
     acceptance:
-      - id: AC-PW-REPORT-VERDICTS-001
+      - id: AC-PW-REPLAY-VIEW-001
         kind: TEST
-        description: The mini-profile package suite passes with the per-criterion report path covered.
-        required: true
-        verifier:
-          kind: TEST
-          command: pnpm exec vitest run mini-profile
-          expectedExitCode: 0
-          sandboxRequired: true
-          approvalRequired: false
-  - id: PW-OBSERVED-TAIL-001
-    phaseId: INC1
-    type: IMPLEMENTATION
-    executorKind: AGENT
-    title: Record the verifier output tail with each report
-    description: >
-      Extend project_work_update's report to accept a bounded tail of the
-      verifier output and store it in the acceptance evaluation's observed
-      payload beside the exit code, so a replayed ledger shows why a criterion
-      passed or failed without re-running the command.
-    priority: 30
-    status: READY
-    acceptance:
-      - id: AC-PW-OBSERVED-TAIL-001
-        kind: TEST
-        description: The mini-profile package suite passes with the observed-tail path covered.
+        description: The mini-profile package suite passes with the replay view path covered.
         required: true
         verifier:
           kind: TEST

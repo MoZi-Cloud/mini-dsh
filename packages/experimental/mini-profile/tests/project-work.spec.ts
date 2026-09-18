@@ -407,16 +407,17 @@ describe('project-work tools', () => {
     })
     try {
       await run(mounted, 'project_work_claim', { workItemId: 'wi:solo-proj:AGENT-ONLY' }, { agent: agent('agent-1') })
+      const failing = criterionId(mounted, 'wi:solo-proj:AGENT-ONLY', 'AC-AGENT-ONLY')
+      const optional = criterionId(mounted, 'wi:solo-proj:AGENT-ONLY', 'AC-AGENT-ONLY-OPT')
       const result = await run(
         mounted,
         'project_work_update',
         {
           action: 'report',
-          criteria: [{
-            criterionId: criterionId(mounted, 'wi:solo-proj:AGENT-ONLY', 'AC-AGENT-ONLY'),
-            result: 'FAIL',
-            exitCode: 1,
-          }],
+          criteria: [
+            { criterionId: failing, result: 'FAIL', exitCode: 1 },
+            { criterionId: optional, result: 'PASS', exitCode: 0 },
+          ],
         },
         { agent: agent('agent-1') },
       )
@@ -425,8 +426,12 @@ describe('project-work tools', () => {
         action: 'report',
         workItemId: 'wi:solo-proj:AGENT-ONLY',
         itemStatus: 'FAILED',
-        evaluatedCriteria: [{ result: 'FAIL', status: 'FAILING' }],
-        pendingCriteria: [expect.stringContaining('AC-AGENT-ONLY') as string],
+        evaluatedCriteria: [
+          { criterionId: failing, result: 'FAIL', status: 'FAILING' },
+          { criterionId: optional, result: 'PASS', status: 'PASSING' },
+        ],
+        // A failing optional criterion is not on the DONE gate's pending list.
+        pendingCriteria: [failing],
       })
     } finally {
       await unmount(mounted)

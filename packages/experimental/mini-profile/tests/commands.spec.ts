@@ -13,10 +13,12 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { describe, expect, it } from 'vitest'
 import {
   claimWorkItem,
+  evaluateAcceptanceCriterion,
   importPlanVersion,
+  type AcceptanceCriterionId,
   type WorkItemId,
 } from '@deepseek-ai/dsh-experimental-project-ledger'
-import { GOLDEN_PLAN_TEXT, SOLO_PLAN_TEXT, TINY_PLAN_TEXT, compilePlanText, seedActivePlan } from './plans.ts'
+import { DUAL_PLAN_TEXT, GOLDEN_PLAN_TEXT, SOLO_PLAN_TEXT, TINY_PLAN_TEXT, compilePlanText, seedActivePlan } from './plans.ts'
 import * as miniProjectCommands from '../src/commands.ts'
 import MiniProjectLedger from '../src/index.ts'
 
@@ -60,7 +62,9 @@ describe('/project', () => {
     try {
       await expect(run(mounted, '/project')).resolves.toMatchObject({
         kind: 'success',
-        text: expect.stringMatching(/\/project todo \[--agent\] \[<project-id>\][\s\S]*\/project doctor \[<plan-version-id>\]/) as string,
+        text: expect.stringMatching(
+          /\/project todo \[--agent\] \[<project-id>\][\s\S]*doctor \[<plan-version-id>\][\s\S]*item <stable-key-or-id>/,
+        ) as string,
       })
     } finally {
       await unmount(mounted)
@@ -75,6 +79,8 @@ describe('/project', () => {
       await expect(run(mounted, '/project todo a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project todo --agent a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project doctor a b')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project item')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project item a b c')).resolves.toEqual(usage)
     } finally {
       await unmount(mounted)
     }
@@ -86,6 +92,7 @@ describe('/project', () => {
       const empty = { kind: 'error', text: 'This ledger records no plan yet. Import a plan version first.' }
       await expect(run(mounted, '/project todo')).resolves.toEqual(empty)
       await expect(run(mounted, '/project doctor')).resolves.toEqual(empty)
+      await expect(run(mounted, '/project item AGENT-FREE')).resolves.toEqual(empty)
     } finally {
       await unmount(mounted)
     }
@@ -247,6 +254,136 @@ describe('/project', () => {
       })
     } finally {
       await unmount(solo)
+    }
+  })
+
+  it('reviews one item with its criteria, latest evaluations, and observed evidence', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, TINY_PLAN_TEXT)
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:tiny-proj:AGENT-FREE:AC-AGENT-FREE'),
+        'PASS',
+        { evaluatedBy: 'spec-worker', observed: { exitCode: 0, outputTail: 'Test Files\n4 passed\n' } },
+      )
+    })
+    try {
+      await expect(run(mounted, '/project item AGENT-FREE')).resolves.toMatchObject({
+        kind: 'success',
+        text: expect.stringContaining(
+          'Work item wi:tiny-proj:AGENT-FREE "Do the free work" — READY (agent, priority 30, version plv:tiny-plan:v1)',
+        ) as string,
+      })
+      await expect(run(mounted, '/project item AGENT-FREE')).resolves.toMatchObject({
+        kind: 'success',
+        text: expect.stringMatching(
+          /ac:wi:tiny-proj:AGENT-FREE:AC-AGENT-FREE \(TEST, required\) PASSING — PASS by spec-worker at .*; exit 0/,
+        ) as string,
+      })
+      // The observed tail is quoted as one collapsed excerpt line.
+      await expect(run(mounted, '/project item AGENT-FREE')).resolves.toMatchObject({
+        kind: 'success',
+        text: expect.stringContaining('  Test Files 4 passed') as string,
+      })
+      await expect(run(mounted, '/project item wi:tiny-proj:AGENT-FREE')).resolves.toMatchObject({
+        kind: 'success',
+        text: expect.stringContaining('Work item wi:tiny-proj:AGENT-FREE') as string,
+      })
+      await expect(run(mounted, '/project item NO-SUCH')).resolves.toEqual({
+        kind: 'error',
+        text: 'No work item "NO-SUCH" in project tiny-proj. Name a stable key or full id.',
+      })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('marks unevaluated criteria and truncates long observed tails in the review', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, DUAL_PLAN_TEXT)
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:dual-proj:AGENT-DUAL:AC-DUAL-A'),
+        'PASS',
+        { evaluatedBy: 'spec-worker', observed: { exitCode: 0, outputTail: `${'x'.repeat(400)}END-OF-OUTPUT` } },
+      )
+      // A tail without an exit code: the verdict line carries no exit fact.
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:dual-proj:AGENT-DUAL:AC-DUAL-B'),
+        'PASS',
+        { evaluatedBy: 'spec-worker', observed: { outputTail: 'tail without exit code' } },
+      )
+    })
+    try {
+      const result = await run(mounted, '/project item AGENT-DUAL')
+      expect(result).toMatchObject({ kind: 'success', text: expect.stringContaining('AGENT-DUAL') as string })
+      if (result.kind !== 'success' || result.text === undefined) return
+      expect(result.text).toContain('(OWNER_CONFIRMATION, required) PENDING — no evaluation yet')
+      expect(result.text).toMatch(/AC-DUAL-A \(TEST, required\) PASSING — PASS by spec-worker at .*; exit 0/)
+      const lines = result.text.split('\n')
+      const dualB = lines.find(line => line.includes('AC-DUAL-B'))
+      expect(dualB).toMatch(/\(TEST, required\) PASSING — PASS by spec-worker at [^;]*$/u)
+      // One whitespace-collapsed excerpt line: two indent spaces, the first
+      // 160 characters of the tail, and the truncation mark.
+      const excerptLine = lines.find(line => line.startsWith('  '))
+      expect(excerptLine).toMatch(/^ {2}x{160}…$/u)
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('reviews backlog work that carries no plan version', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, TINY_PLAN_TEXT)
+      // Backlog rows have no writer yet (import always versions its items);
+      // the out-of-band insert mirrors the ledger readiness spec's fixture.
+      db.prepare(
+        'INSERT INTO work_items '
+          + '(id, project_id, plan_version_id, phase_id, parent_work_item_id, stable_key, work_type, executor_kind, '
+          + 'title, description, priority, status, lock_version, created_at_ms, updated_at_ms) '
+          + "VALUES ('wi:tiny-proj:BACKLOG-1', 'tiny-proj', NULL, NULL, NULL, 'BACKLOG-1', 'RESEARCH', 'AGENT', "
+          + "'Discovered work', NULL, 0, 'READY', 0, 1, 1)",
+      ).run()
+    })
+    try {
+      await expect(run(mounted, '/project item BACKLOG-1')).resolves.toMatchObject({
+        kind: 'success',
+        text: 'Work item wi:tiny-proj:BACKLOG-1 "Discovered work" — READY (agent, priority 0, version none)',
+      })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('renders optional criteria and evaluations without observed payloads', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, SOLO_PLAN_TEXT)
+      // One evaluation stores no observed payload at all; the other stores
+      // an exit code with no output tail.
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:solo-proj:AGENT-ONLY:AC-AGENT-ONLY'),
+        'FAIL',
+        { evaluatedBy: 'owner' },
+      )
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:solo-proj:AGENT-ONLY:AC-AGENT-ONLY-OPT'),
+        'PASS',
+        { evaluatedBy: 'spec-worker', observed: { exitCode: 2 } },
+      )
+    })
+    try {
+      const result = await run(mounted, '/project item AGENT-ONLY')
+      expect(result).toMatchObject({ kind: 'success', text: expect.stringContaining('AGENT-ONLY') as string })
+      if (result.kind !== 'success' || result.text === undefined) return
+      expect(result.text).toMatch(/AC-AGENT-ONLY \(TEST, required\) FAILING — FAIL by owner at [^;]*$/mu)
+      expect(result.text).toMatch(/AC-AGENT-ONLY-OPT \(TEST, optional\) PASSING — PASS by spec-worker at .*; exit 2$/mu)
+      // No evaluation stored an output tail, so no excerpt line exists.
+      expect(result.text.split('\n').every(line => !line.startsWith('  '))).toBe(true)
+    } finally {
+      await unmount(mounted)
     }
   })
 

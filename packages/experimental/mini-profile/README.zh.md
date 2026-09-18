@@ -36,7 +36,7 @@ declare const ctx: Context
 const db = ctx.projectLedger.db
 ```
 
-挂载后的 `/project` 命令在 profile 的交互式命令适配器中应答：`/project todo [--agent] [<project-id>]` 列出未完成的 owner（或 agent）工作，附带重算的 readiness 与活跃租约；`/project doctor [<plan-version-id>]` 对 current（或指定）plan 版本运行只读 plan doctor；裸 `/project` 打印用法。未指明时，命令经账本的 plan 目录解析项目与版本。
+挂载后的 `/project` 命令在 profile 的交互式命令适配器中应答：`/project todo [--agent] [<project-id>]` 列出未完成的 owner（或 agent）工作，附带重算的 readiness 与活跃租约；`/project doctor [<plan-version-id>]` 对 current（或指定）plan 版本运行只读 plan doctor；`/project item <stable-key-or-id> [<project-id>]` 经账本的 review 接缝审视单个工作项——每条标准的投影状态与最新评估，附观察到的 exitCode 与折叠成单行的输出尾部摘录；裸 `/project` 打印用法。未指明时，命令经账本的 plan 目录解析项目与版本。
 
 profile 内的 agent 还获得三个面向模型的工具。`project_work_next` 列出 agent todo 视图，附带可认领性、阻塞原因与租约持有者；`project_work_claim` 对一个就绪条目取得租约并返回有界 work packet——目标、阶段、阻塞回执、验收标准与存储的 verifier 规格；`project_work_update` 推进持有的认领：`heartbeat` 延长租约，`release` 归还条目，`report` 记录 agent 的 verifier 观察——判定连同可选 exitCode 与有界输出尾部，存入每条评估的 observed 载荷——把条目移入 `VERIFYING` 或 `FAILED`，且只有当全部必备标准都已通过时才完成它。认领与心跳时长是部署配置（`leaseTtlMs`、`leaseHeartbeatIntervalMs`）。
 

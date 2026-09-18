@@ -127,6 +127,16 @@ workItems:
           expectedExitCode: 0
           sandboxRequired: true
           approvalRequired: false
+      - id: AC-AGENT-ONLY-OPT
+        kind: TEST
+        description: It also lints.
+        required: false
+        verifier:
+          kind: TEST
+          command: pnpm lint
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
 relations: []
 `
 

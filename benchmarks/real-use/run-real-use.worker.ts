@@ -15,9 +15,11 @@
  * The ledger is a fresh temporary file unless DSH_REAL_USE_LEDGER names a
  * persistent one (the profile default is ~/.dsh/project-ledger/ledger.sqlite),
  * so consecutive runs accumulate the real-use record in place. Runs are
- * idempotent: an already-imported version is reused, and an already-complete
- * item passes without writing. No model is involved — this lane is the
- * deterministic driver whose recorded runs are the §33 real-use evidence.
+ * idempotent: the plan document's current version imports once, any prior
+ * ACTIVE version of the same plan is superseded through the §22 seam, and an
+ * already-complete item passes without writing. No model is involved — this
+ * lane is the deterministic driver whose recorded runs are the §33 real-use
+ * evidence.
  */
 
 import { spawn } from 'node:child_process'
@@ -36,6 +38,7 @@ import {
   parsePlanDocument,
   planDoctor,
   replayProjectEvents,
+  supersedePlanVersion,
   validatePlanSchema,
   type PlanVersionId,
   type WorkItemId,
@@ -47,7 +50,7 @@ import { assertBuiltBenchmarkRuntime } from '../support/built-worker.ts'
 /** The increment plan this lane drives; the shell entry runs from the repository root. */
 const PLAN_PATH = join(process.cwd(), 'docs/mini/v1.6a/fork-mini-DSH-post-v1.6a.plan.yaml')
 /** The item this run claims; a later increment names its own item. */
-const TARGET_STABLE_KEY = process.env.DSH_REAL_USE_ITEM ?? 'PW-PRESENTERS-001'
+const TARGET_STABLE_KEY = process.env.DSH_REAL_USE_ITEM ?? 'PW-ITEM-REVIEW-001'
 /** A repository suite verifier can legitimately take minutes; the bound keeps a hung one from parking the lane. */
 const VERIFIER_TIMEOUT_MS = 600_000
 /** How much verifier output the failure diagnostics carry. */
@@ -167,20 +170,30 @@ async function main(): Promise<void> {
     await ctx.plugin(miniProjectWork)
     const db = ctx.projectLedger.db
 
-    const existing = db.prepare('SELECT id, status FROM plan_versions WHERE plan_id = ?')
-      .get(compiled.planId) as { id: string; status: string } | undefined
+    const existing = db.prepare('SELECT id, status FROM plan_versions WHERE plan_id = ? AND version_no = ?')
+      .get(compiled.planId, compiled.versionNo) as { id: string; status: string } | undefined
     let versionId: string
     if (existing === undefined) {
-      const { planVersionId } = importPlanVersion(db, compiled, { sourcePath: PLAN_PATH })
-      // The activation seam: activation has no ledger writer in v1.6a, so the
-      // lane performs the owner's activation directly, like the pinned fixtures.
-      db.prepare("UPDATE plan_versions SET status = 'ACTIVE' WHERE id = ?").run(planVersionId)
-      versionId = planVersionId
+      versionId = importPlanVersion(db, compiled, { sourcePath: PLAN_PATH }).planVersionId
     } else {
-      if (existing.status !== 'ACTIVE') {
-        throw new Error(`real-use lane: plan version ${existing.id} is ${existing.status}, expected ACTIVE`)
-      }
       versionId = existing.id
+    }
+    const statusRow = () => db.prepare('SELECT status FROM plan_versions WHERE id = ?')
+      .get(versionId) as { status: string }
+    if (statusRow().status !== 'ACTIVE') {
+      // The supersede seam (§22): a prior ACTIVE version of this plan freezes
+      // under the imported successor; like activation, supersede-then-activate
+      // here is the owner's move the lane performs directly, per the pinned
+      // fixtures' documented raw owner updates.
+      const activeOther = db.prepare(
+        "SELECT id FROM plan_versions WHERE plan_id = ? AND status = 'ACTIVE' AND id <> ?",
+      ).get(compiled.planId, versionId) as { id: string } | undefined
+      if (activeOther !== undefined) {
+        supersedePlanVersion(db, brandString<PlanVersionId>(activeOther.id), {
+          succeededBy: brandString<PlanVersionId>(versionId),
+        })
+      }
+      db.prepare("UPDATE plan_versions SET status = 'ACTIVE' WHERE id = ?").run(versionId)
     }
 
     const itemRow = db.prepare('SELECT id, status FROM work_items WHERE plan_version_id = ? AND stable_key = ?')
