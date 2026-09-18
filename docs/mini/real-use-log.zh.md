@@ -50,6 +50,16 @@ post-v1.6a 真实使用 lane（`./benchmarks/real-use/run-real-use.sh`）经 SHI
 
 紧接着的重跑幂等通过（`alreadyComplete: true`，零写入）。4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`PW-REPLAY-VIEW-001` 在版本 2 中保持可领取，留给后续增量。
 
+### 2026-09-19 —— 经 shipped 工具完成 PW-REPLAY-VIEW-001
+
+同一 lane 对持久账本驱动了 `PW-REPLAY-VIEW-001`（`/project replay` 对账视图，建于新的 `readProjectReplay` 账本接缝之上：折叠项目全量事件，把重建投影与物化行逐族双向比对——物化侧多出的行与重放侧多出的实体同样算 drift）。同一增量内，lane 自身的通过判据也加入了该对账——`assertReplayClean` 在完成与已完结两条路径上运行，报告行新增 `replayDrift`。由 `agent:mini-real-use-lane` 领取、verifier `pnpm exec vitest run mini-profile`（退出码 0）、工作项 DONE、doctor 0 问题、重放对账 0 drift、事件重放 DONE；项目时间线现有 43 条事件。首次运行报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v2","workItemId":"wi:mini-dsh:PW-REPLAY-VIEW-001","stableKey":"PW-REPLAY-VIEW-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-REPLAY-VIEW-001:AC-PW-REPLAY-VIEW-001","command":"pnpm exec vitest run mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+紧接着的重跑幂等通过（`alreadyComplete: true`、`replayDrift: 0`、零写入）。4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。版本 2 的两个条目至此全部完成；后续真实使用条目来自新的计划版本。
+
 ## 相对门槛的状态
 
-经账本完成的工作项：19（15 个黄金计划项由 v1.6a 构建本身完成，加上面四条）。BOOT/4K 回归：无记录；`run-4k.sh` 与 BOOT 验收套件保持绿色。用户价值确认：待定——进入决策按 §33 归 owner。
+经账本完成的工作项：20（15 个黄金计划项由 v1.6a 构建本身完成，加上面五条）。BOOT/4K 回归：无记录；`run-4k.sh` 与 BOOT 验收套件保持绿色。用户价值确认：待定——进入决策按 §33 归 owner。

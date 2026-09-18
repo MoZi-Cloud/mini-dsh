@@ -50,6 +50,16 @@ The plan document (`v1.6a/fork-mini-DSH-post-v1.6a.plan.yaml`) bumped to version
 
 An immediate rerun passed idempotently (`alreadyComplete: true`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE). `PW-REPLAY-VIEW-001` stays claimable in version 2 for a later increment.
 
+### 2026-09-19 — PW-REPLAY-VIEW-001 through the shipped tools
+
+The same lane drove `PW-REPLAY-VIEW-001` (the `/project replay` audit view over a new `readProjectReplay` ledger seam: the project's events fold, and the rebuilt projection is compared with the materialized rows family by family and in both directions, so a row nothing replays and a replay nothing materializes are both drift) against the persistent ledger. The lane's own passing bar gained the audit in the same increment — `assertReplayClean` runs on both the completion and already-complete paths and the report line carries `replayDrift`. Claim by `agent:mini-real-use-lane`, verifier `pnpm exec vitest run mini-profile` (exit 0), item DONE, doctor 0 issues, replay audit 0 drift, event replay DONE; the project timeline now holds 43 events. First-run report line:
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v2","workItemId":"wi:mini-dsh:PW-REPLAY-VIEW-001","stableKey":"PW-REPLAY-VIEW-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-REPLAY-VIEW-001:AC-PW-REPLAY-VIEW-001","command":"pnpm exec vitest run mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+An immediate rerun passed idempotently (`alreadyComplete: true`, `replayDrift: 0`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE). Both version-2 items are now complete; later real-use items come from new plan versions.
+
 ## Status toward the gate
 
-Items completed through the ledger: 19 (15 golden-plan items by the v1.6a build itself, plus the four entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.
+Items completed through the ledger: 20 (15 golden-plan items by the v1.6a build itself, plus the five entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.

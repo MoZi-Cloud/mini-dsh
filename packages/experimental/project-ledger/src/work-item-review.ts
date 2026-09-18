@@ -89,8 +89,8 @@ export function readWorkItemReview(
     executor_kind: string
     priority: number
   }[]
-  if (itemRows.length === 0) return undefined
   const [item] = itemRows
+  // The first row of the match exists exactly when the ref matched anything.
   if (item === undefined) return undefined
   if (itemRows.length > 1) {
     throw new Error(

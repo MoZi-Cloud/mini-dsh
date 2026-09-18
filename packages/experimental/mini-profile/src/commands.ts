@@ -2,14 +2,16 @@
  * The mini profile's `/project` command surface: read-only reporting over
  * the mounted Project Ledger for the human operating a `dsh --profile mini`
  * session. `todo` projects the executor-separated Owner/Agent views (v1.6a
- * §11), `doctor` runs the read-only plan doctor pass (F05), and `item`
+ * §11), `doctor` runs the read-only plan doctor pass (F05), `item`
  * reviews one work item over its criteria and latest evaluations — including
  * each evaluation's observed exit code and output-tail excerpt — through the
- * ledger's review read seam; the project and plan version resolve through
- * the ledger's plan directory when the command names none. The handler never
- * mutates ledger state, never sends anything to the model, and never
- * executes a verifier command — mutating surfaces stay with their owning
- * writers and later work.
+ * ledger's review read seam, and `replay` audits ledger integrity through
+ * the replay read seam, folding the project's events and comparing the
+ * projection with the materialized rows. The project and plan version
+ * resolve through the ledger's plan directory when the command names none.
+ * The handler never mutates ledger state, never sends anything to the
+ * model, and never executes a verifier command — mutating surfaces stay
+ * with their owning writers and later work.
  *
  * @module @deepseek-ai/dsh-experimental-mini-profile/commands
  */
@@ -25,9 +27,11 @@ import {
   listOwnerTodo,
   listPlans,
   planDoctor,
+  readProjectReplay,
   readWorkItemReview,
   type PlanDoctorReport,
   type PlanVersionId,
+  type ProjectReplayReport,
   type WorkItemReview,
   type WorkTodoView,
 } from '@deepseek-ai/dsh-experimental-project-ledger'
@@ -45,6 +49,7 @@ type ProjectCommand =
   | { readonly kind: 'todo'; readonly agentView: boolean; readonly projectId: string | undefined }
   | { readonly kind: 'doctor'; readonly planVersionId: string | undefined }
   | { readonly kind: 'item'; readonly itemRef: string; readonly projectId: string | undefined }
+  | { readonly kind: 'replay'; readonly projectId: string | undefined }
 
 /* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
@@ -56,7 +61,16 @@ const HELP_TEXT = [
   '/project todo [--agent] [<project-id>] — list outstanding owner (or agent) work with readiness and leases',
   '/project doctor [<plan-version-id>] — run the read-only plan doctor on the current (or named) plan version',
   '/project item <stable-key-or-id> [<project-id>] — review one work item: criteria statuses, latest evaluations, observed evidence',
+  '/project replay [<project-id>] — replay the project\'s events and compare the projection with materialized rows',
 ].join('\n')
+
+/** The usage hint the command registry shows for /project. */
+const PROJECT_INPUT_HINT = [
+  'todo [--agent] [<project-id>]',
+  'doctor [<plan-version-id>]',
+  'item <stable-key-or-id> [<project-id>]',
+  'replay [<project-id>]',
+].join(' | ')
 
 /**
  * Parse the exact text following `/project` into one closed command.
@@ -87,6 +101,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
     const [itemRef, projectId] = tokens.slice(1)
     if (itemRef === undefined || tokens.length > 3) return undefined
     return { kind: 'item', itemRef, projectId }
+  }
+  if (tokens[0] === 'replay') {
+    return tokens.length <= 2
+      ? { kind: 'replay', projectId: tokens[1] }
+      : undefined
   }
   return undefined
 }
@@ -239,6 +258,43 @@ function renderItemReview(review: WorkItemReview): string {
 }
 
 /**
+ * Render one replay audit as command output: the timeline size, the counts
+ * both sides recorded, then the parity verdict — every drift finding, or the
+ * clean line; an undecodable timeline reports why instead of parity.
+ * @param report - the replay read seam's outcome.
+ * @returns the multi-line command text.
+ */
+function renderReplayReport(report: ProjectReplayReport): string {
+  const header = `Project ${report.projectId} — replay audit over ${String(report.eventCount)} events, `
+    + `last sequence ${String(report.lastSequenceNo)}.`
+  if (report.outcome === 'undecodable') {
+    return [
+      header,
+      `The timeline cannot be decoded by this build: ${report.timelineError}`,
+      `Materialized: ${String(report.materialized.planVersions)} plan versions, `
+        + `${String(report.materialized.workItems)} work items, ${String(report.materialized.criteria)} criteria, `
+        + `${String(report.materialized.leases)} leases.`,
+    ].join('\n')
+  }
+  const lines = [
+    header,
+    `Replayed: ${String(report.replayed.planVersions)} plan versions, ${String(report.replayed.workItems)} work items, `
+      + `${String(report.replayed.criteria)} criteria, ${String(report.replayed.leases)} leases, `
+      + `${String(report.replayed.workPackets)} work packets.`,
+    `Materialized: ${String(report.materialized.planVersions)} plan versions, `
+      + `${String(report.materialized.workItems)} work items, ${String(report.materialized.criteria)} criteria, `
+      + `${String(report.materialized.leases)} leases.`,
+  ]
+  if (report.drift.length === 0) {
+    lines.push('Replay matches every materialized row.')
+    return lines.join('\n')
+  }
+  lines.push(`Drift (${String(report.drift.length)}):`)
+  for (const finding of report.drift) lines.push(`- ${finding.message}`)
+  return lines.join('\n')
+}
+
+/**
  * Execute one parsed `/project` invocation against the mounted ledger.
  * @param ctx - context whose `projectLedger` service owns the opened database.
  * @param rawInput - exact text after the command name.
@@ -271,6 +327,10 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
         }
         return { kind: 'success', text: renderItemReview(review) }
       }
+      case 'replay': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        return { kind: 'success', text: renderReplayReport(readProjectReplay(db, projectId)) }
+      }
       /* v8 ignore next 2 -- the parse step returns a closed union */
       default: return assertNever(command, 'project command')
     }
@@ -293,7 +353,7 @@ export function apply(ctx: Context): void {
     definitionId: CommandDefinitionId('@deepseek-ai/dsh-experimental-mini-profile'),
     name: 'project',
     description: 'Inspect Project Ledger work and run the plan doctor',
-    input: { hint: 'todo [--agent] [<project-id>] | doctor [<plan-version-id>] | item <stable-key-or-id> [<project-id>]' },
+    input: { hint: PROJECT_INPUT_HINT },
     handler: invocation => runProjectCommand(ctx, invocation.rawInput),
   }))
 }

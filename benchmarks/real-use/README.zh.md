@@ -4,7 +4,7 @@
 
 ## 摘要
 
-可重复的 §33 真实使用驱动器（docs/mini/real-use-log.md）：post-v1.6a 增量计划中的一个就绪工作项，经由 SHIPPED 的 mini-profile 表面——与 `dsh --profile mini` 会话挂载的同一个 `MiniProjectLedger` 与 `mini-project-work` 插件——完整走完，全程无模型参与。lane 本身即记录在案的执行者：经 `project_work_next` 观察、经 `project_work_claim` 领取（收到 WorkPacket，绝不读计划文档）、把 packet 内每个可观察标准的存储 verifier 命令作为真实子进程在仓库中执行、再经 `project_work_update` 逐标准报告判定，并附带观察到的 exitCode 与输出尾部——尾部与 exitCode 一并落入每条评估的 observed 载荷。唯有 DONE、doctor 无问题、事件重放一致才算通过；verifier 失败会为对应标准记入 FAIL 并使运行失败。
+可重复的 §33 真实使用驱动器（docs/mini/real-use-log.md）：post-v1.6a 增量计划中的一个就绪工作项，经由 SHIPPED 的 mini-profile 表面——与 `dsh --profile mini` 会话挂载的同一个 `MiniProjectLedger` 与 `mini-project-work` 插件——完整走完，全程无模型参与。lane 本身即记录在案的执行者：经 `project_work_next` 观察、经 `project_work_claim` 领取（收到 WorkPacket，绝不读计划文档）、把 packet 内每个可观察标准的存储 verifier 命令作为真实子进程在仓库中执行、再经 `project_work_update` 逐标准报告判定，并附带观察到的 exitCode 与输出尾部——尾部与 exitCode 一并落入每条评估的 observed 载荷。唯有 DONE、doctor 无问题、事件重放一致、重放对账零 drift 才算通过；verifier 失败会为对应标准记入 FAIL 并使运行失败。
 
 ## 目录
 
@@ -22,7 +22,7 @@
 ./benchmarks/real-use/run-real-use.sh
 ```
 
-脚本先用 benchmark tsdown 配置编译 worker，再以纯 Node 基于已构建的 workspace 库运行（全新树先 `pnpm install && pnpm run build`）。这是功能性 lane 门，不是计时 benchmark；不属于 `test:bench`。`DSH_REAL_USE_ITEM` 指定要领取的工作项（默认 `PW-ITEM-REVIEW-001`，即 `fork-mini-DSH-post-v1.6a.plan.yaml` 版本 2 的首个条目）。
+脚本先用 benchmark tsdown 配置编译 worker，再以纯 Node 基于已构建的 workspace 库运行（全新树先 `pnpm install && pnpm run build`）。这是功能性 lane 门，不是计时 benchmark；不属于 `test:bench`。`DSH_REAL_USE_ITEM` 指定要领取的工作项（默认 `PW-REPLAY-VIEW-001`，即 `fork-mini-DSH-post-v1.6a.plan.yaml` 版本 2 的第二个条目）。
 
 <a id="ledger-and-idempotency"></a>
 

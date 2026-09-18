@@ -9,8 +9,9 @@
  * stored verifier command from the packet as a real subprocess in the
  * repository, and reports one verdict per criterion through
  * project_work_update with the observed exit code and output tail. DONE with
- * a clean doctor and a matching replay is the only passing outcome; a failing
- * verifier records its criterion FAIL and fails the run.
+ * a clean doctor, a matching replay, and a drift-free replay audit is the
+ * only passing outcome; a failing verifier records its criterion FAIL and
+ * fails the run.
  *
  * The ledger is a fresh temporary file unless DSH_REAL_USE_LEDGER names a
  * persistent one (the profile default is ~/.dsh/project-ledger/ledger.sqlite),
@@ -26,6 +27,7 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { DatabaseSync } from 'node:sqlite'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { brandString } from '@deepseek-ai/dsh-brand'
@@ -37,10 +39,12 @@ import {
   importPlanVersion,
   parsePlanDocument,
   planDoctor,
+  readProjectReplay,
   replayProjectEvents,
   supersedePlanVersion,
   validatePlanSchema,
   type PlanVersionId,
+  type ProjectId,
   type WorkItemId,
 } from '@deepseek-ai/dsh-experimental-project-ledger'
 import MiniProjectLedger from '@deepseek-ai/dsh-experimental-mini-profile'
@@ -50,7 +54,7 @@ import { assertBuiltBenchmarkRuntime } from '../support/built-worker.ts'
 /** The increment plan this lane drives; the shell entry runs from the repository root. */
 const PLAN_PATH = join(process.cwd(), 'docs/mini/v1.6a/fork-mini-DSH-post-v1.6a.plan.yaml')
 /** The item this run claims; a later increment names its own item. */
-const TARGET_STABLE_KEY = process.env.DSH_REAL_USE_ITEM ?? 'PW-ITEM-REVIEW-001'
+const TARGET_STABLE_KEY = process.env.DSH_REAL_USE_ITEM ?? 'PW-REPLAY-VIEW-001'
 /** A repository suite verifier can legitimately take minutes; the bound keeps a hung one from parking the lane. */
 const VERIFIER_TIMEOUT_MS = 600_000
 /** How much verifier output the failure diagnostics carry. */
@@ -81,6 +85,7 @@ interface LaneReport {
   }[]
   readonly itemStatus: string
   readonly doctorIssues: number
+  readonly replayDrift: number
   readonly replayItemStatus: string
   readonly toolCalls: Readonly<Record<string, number>>
 }
@@ -145,6 +150,25 @@ async function runPacketVerifiers(specs: readonly PacketVerifierSpec[]): Promise
     throw new Error('real-use lane: the work packet carries no command verifier to run')
   }
   return runs
+}
+
+/**
+ * The lane's read-only integrity bar: the project's event timeline folds and
+ * the rebuilt projection matches every materialized row, both directions.
+ * @param db - the opened ledger database.
+ * @param projectId - the project the lane drives.
+ */
+function assertReplayClean(db: DatabaseSync, projectId: ProjectId): void {
+  const audit = readProjectReplay(db, projectId)
+  if (audit.outcome === 'undecodable') {
+    throw new Error(`real-use lane: replay audit cannot decode the timeline: ${audit.timelineError}`)
+  }
+  if (audit.drift.length > 0) {
+    throw new Error(
+      `real-use lane: replay audit reports ${String(audit.drift.length)} drift: `
+      + audit.drift.map(finding => finding.message).join('; '),
+    )
+  }
 }
 
 async function main(): Promise<void> {
@@ -226,6 +250,7 @@ async function main(): Promise<void> {
       if (doctor.issues.length > 0) {
         throw new Error(`real-use lane: doctor reports ${String(doctor.issues.length)} issue(s) on an already-complete item`)
       }
+      assertReplayClean(db, compiled.projectId)
       const report: LaneReport = {
         lane: 'real-use',
         ledger: ledgerPath,
@@ -236,6 +261,7 @@ async function main(): Promise<void> {
         verifierResults: [],
         itemStatus: itemRow.status,
         doctorIssues: 0,
+        replayDrift: 0,
         replayItemStatus: 'DONE',
         toolCalls,
       }
@@ -322,6 +348,7 @@ async function main(): Promise<void> {
     if (doctor.issues.length > 0) {
       throw new Error(`real-use lane: doctor reports ${String(doctor.issues.length)} issue(s) after completion`)
     }
+    assertReplayClean(db, compiled.projectId)
     const replayed = replayProjectEvents(db, compiled.projectId).workItems.get(brandString<WorkItemId>(entry.workItemId))
     if (replayed?.status !== 'DONE') {
       throw new Error(`real-use lane: replayed projection is ${replayed === undefined ? 'missing' : replayed.status}, expected DONE`)
@@ -341,6 +368,7 @@ async function main(): Promise<void> {
       })),
       itemStatus: updateValue.itemStatus,
       doctorIssues: 0,
+      replayDrift: 0,
       replayItemStatus: replayed.status,
       toolCalls,
     }

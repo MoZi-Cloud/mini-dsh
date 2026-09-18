@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
 import {
@@ -95,10 +95,18 @@ describe('resolveWorkTodoSpec', () => {
   })
 
   it('de-duplicates and sorts a named filter and carries the request clock', () => {
-    expect(resolveWorkTodoSpec({ executorKinds: ['OWNER', 'AGENT', 'OWNER'] })).toEqual({
-      executorKinds: ['AGENT', 'OWNER'],
-      nowMs: resolveWorkTodoSpec({ executorKinds: ['OWNER'] }).nowMs,
-    })
+    // Two real-clock calls straddle a millisecond tick under load; a frozen
+    // clock pins the carried request clock exactly.
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    try {
+      expect(resolveWorkTodoSpec({ executorKinds: ['OWNER', 'AGENT', 'OWNER'] })).toEqual({
+        executorKinds: ['AGENT', 'OWNER'],
+        nowMs: 1_000,
+      })
+    } finally {
+      vi.useRealTimers()
+    }
     expect(resolveWorkTodoSpec({ executorKinds: ['SYSTEM'], nowMs: 42 })).toEqual({
       executorKinds: ['SYSTEM'],
       nowMs: 42,

@@ -63,7 +63,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project')).resolves.toMatchObject({
         kind: 'success',
         text: expect.stringMatching(
-          /\/project todo \[--agent\] \[<project-id>\][\s\S]*doctor \[<plan-version-id>\][\s\S]*item <stable-key-or-id>/,
+          /\/project todo \[--agent\][\s\S]*doctor \[<plan-version-id>\][\s\S]*item <stable-key-or-id>[\s\S]*replay \[<project-id>\]/,
         ) as string,
       })
     } finally {
@@ -81,6 +81,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project doctor a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project item')).resolves.toEqual(usage)
       await expect(run(mounted, '/project item a b c')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project replay a b')).resolves.toEqual(usage)
     } finally {
       await unmount(mounted)
     }
@@ -93,6 +94,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project todo')).resolves.toEqual(empty)
       await expect(run(mounted, '/project doctor')).resolves.toEqual(empty)
       await expect(run(mounted, '/project item AGENT-FREE')).resolves.toEqual(empty)
+      await expect(run(mounted, '/project replay')).resolves.toEqual(empty)
     } finally {
       await unmount(mounted)
     }
@@ -382,6 +384,71 @@ describe('/project', () => {
       expect(result.text).toMatch(/AC-AGENT-ONLY-OPT \(TEST, optional\) PASSING — PASS by spec-worker at .*; exit 2$/mu)
       // No evaluation stored an output tail, so no excerpt line exists.
       expect(result.text.split('\n').every(line => !line.startsWith('  '))).toBe(true)
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('audits replay parity for the resolved project', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, TINY_PLAN_TEXT)
+      claimWorkItem(db, brandString<WorkItemId>('wi:tiny-proj:AGENT-FREE'), 'spec-worker')
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:tiny-proj:AGENT-FREE:AC-AGENT-FREE'),
+        'PASS',
+        { evaluatedBy: 'spec-worker' },
+      )
+    })
+    try {
+      const expected = [
+        'Project tiny-proj — replay audit over 6 events, last sequence 6.',
+        'Replayed: 1 plan versions, 3 work items, 3 criteria, 1 leases, 0 work packets.',
+        'Materialized: 1 plan versions, 3 work items, 3 criteria, 1 leases.',
+        'Replay matches every materialized row.',
+      ].join('\n')
+      await expect(run(mounted, '/project replay')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project replay tiny-proj')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project replay no-such-project')).resolves.toEqual({
+        kind: 'error',
+        text: 'No plan in this ledger records project "no-such-project".',
+      })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('reports replay drift and an undecodable timeline', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, TINY_PLAN_TEXT)
+      // An out-of-band status write is projection drift by construction; the
+      // audit must surface it through the command.
+      db.prepare("UPDATE work_items SET status = 'DONE' WHERE id = ?").run('wi:tiny-proj:OWNER-A')
+    })
+    try {
+      await expect(run(mounted, '/project replay')).resolves.toMatchObject({
+        kind: 'success',
+        text: expect.stringContaining('Drift (1):') as string,
+      })
+      await expect(run(mounted, '/project replay')).resolves.toMatchObject({
+        kind: 'success',
+        text: expect.stringContaining(
+          'work item "wi:tiny-proj:OWNER-A" has materialized status DONE but replays to READY',
+        ) as string,
+      })
+      // A row this build's event format cannot interpret fails the whole
+      // fold; the audit reports why instead of comparing parity.
+      mounted.ctx.projectLedger.db.prepare(
+        'INSERT INTO project_events '
+          + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
+          + "VALUES ('tiny-proj', 99, 2, 'plan/imported', 0, '{}', 1)",
+      ).run()
+      const result = await run(mounted, '/project replay')
+      expect(result).toMatchObject({ kind: 'success' })
+      if (result.kind !== 'success' || result.text === undefined) return
+      expect(result.text).toContain('Project tiny-proj — replay audit over 5 events, last sequence 99.')
+      expect(result.text).toContain('The timeline cannot be decoded by this build:')
+      expect(result.text).not.toContain('Replay matches')
     } finally {
       await unmount(mounted)
     }
