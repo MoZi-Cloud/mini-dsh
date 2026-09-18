@@ -15,9 +15,12 @@
  * caller-named verdict per criterion whose verifier spec stores runnable text
  * (a command or query the agent can execute through its ordinary tools),
  * covering every such criterion exactly once, and never names an
- * OWNER_CONFIRMATION. DONE happens only when every required criterion is
- * already PASSING or WAIVED — the ledger's own gate. Nothing here executes a
- * verifier command.
+ * OWNER_CONFIRMATION. Each verdict may carry the observed exit code and a
+ * bounded tail of the verifier output, both stored in the evaluation's
+ * observed payload, so a replayed ledger shows why a criterion passed or
+ * failed without re-running the command. DONE happens only when every
+ * required criterion is already PASSING or WAIVED — the ledger's own gate.
+ * Nothing here executes a verifier command.
  *
  * @module @deepseek-ai/dsh-experimental-mini-profile/project-work
  */
@@ -63,6 +66,14 @@ export const inject = ['tools', 'projectLedger']
 /** Actor recorded on ledger events this plugin writes; the observing worker is recorded separately. */
 const TOOL_ACTOR_REF = 'dsh-experimental-mini-profile/project-work'
 
+/**
+ * Final characters kept from a caller-supplied verifier output tail. A fixed
+ * storage invariant of the durable ledger — the work packet's serialized
+ * ceiling is its peer — bounding what one report can store per criterion; it
+ * is not a deployment-varying choice.
+ */
+export const REPORT_OUTPUT_TAIL_MAX_CHARS = 2048
+
 /** Model-facing project-work tool configuration. */
 export interface Config {
   /**
@@ -104,6 +115,14 @@ type CriterionRow = {
   readonly status: AcceptanceCriterionStatus
 }
 
+/** One caller-supplied report verdict over an observable criterion. */
+interface CriterionVerdict {
+  readonly criterionId: string
+  readonly result: 'PASS' | 'FAIL'
+  readonly exitCode?: number
+  readonly outputTail?: string
+}
+
 /**
  * List one work item's acceptance criteria in ordinal order.
  * @param db - open ledger database.
@@ -131,6 +150,16 @@ function isAgentObservable(db: DatabaseSync, criterionId: string): boolean {
       + 'WHERE criterion_id = ? AND (command_text IS NOT NULL OR query_text IS NOT NULL)',
   ).get(criterionId) as { count: number }
   return row.count > 0
+}
+
+/**
+ * Bound one caller-supplied verifier output tail to the stored length,
+ * keeping the end, where a verifier's summary and failure lines live.
+ * @param text - the tail the report carried.
+ * @returns the final {@link REPORT_OUTPUT_TAIL_MAX_CHARS} characters at most.
+ */
+function boundedOutputTail(text: string): string {
+  return text.length <= REPORT_OUTPUT_TAIL_MAX_CHARS ? text : text.slice(-REPORT_OUTPUT_TAIL_MAX_CHARS)
 }
 
 /**
@@ -349,9 +378,10 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'project_work_update',
     description: 'Advance your held claim. action heartbeat extends the lease; action release gives the item back; '
-      + 'action report (parameter criteria: one {criterionId, result PASS|FAIL, optional exitCode} entry per '
-      + 'observable acceptance criterion) records your verifier observations per criterion, moves the item to '
-      + 'VERIFYING or FAILED, and completes it only when every required criterion already passes — owner '
+      + 'action report (parameter criteria: one {criterionId, result PASS|FAIL, optional exitCode, optional '
+      + 'outputTail} entry per observable acceptance criterion) records your verifier observations per criterion '
+      + 'with the exit code and the bounded output tail stored in each evaluation\'s observed payload, moves the '
+      + 'item to VERIFYING or FAILED, and completes it only when every required criterion already passes — owner '
       + 'confirmations are never written here.',
     parameters: {
       action: {
@@ -370,6 +400,10 @@ export function apply(ctx: Context, config: Config = {}): void {
             criterionId: { type: 'string', required: true, description: 'Criterion id exactly as the work packet delivered it.' },
             result: { type: 'string', required: true, enum: ['PASS', 'FAIL'], description: 'Verdict you observed for this criterion.' },
             exitCode: { type: 'integer', description: 'Verifier exit code you observed for this criterion.' },
+            outputTail: {
+              type: 'string',
+              description: `Final part of the verifier output you observed for this criterion; at most the last ${String(REPORT_OUTPUT_TAIL_MAX_CHARS)} characters are stored.`,
+            },
           },
         },
       },
@@ -489,7 +523,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       const itemCriterionIds = new Set(criteriaRows.map(criterion => criterion.id))
       const observable = criteriaRows.filter(criterion => isAgentObservable(db, criterion.id))
       const observableIds = new Set(observable.map(criterion => criterion.id))
-      const verdicts = new Map<string, { criterionId: string; result: 'PASS' | 'FAIL'; exitCode?: number }>()
+      const verdicts = new Map<string, CriterionVerdict>()
       for (const entry of args.criteria) {
         if (!itemCriterionIds.has(entry.criterionId)) {
           throw new Error(`project_work_update criterion "${entry.criterionId}" is not an acceptance criterion of ${heldClaim.workItemId}`)
@@ -502,7 +536,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         }
         verdicts.set(entry.criterionId, entry)
       }
-      const ordered: { criterionId: string; result: 'PASS' | 'FAIL'; exitCode?: number }[] = []
+      const ordered: CriterionVerdict[] = []
       const missing: string[] = []
       for (const criterion of observable) {
         const verdict = verdicts.get(criterion.id)
@@ -514,13 +548,16 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
       heartbeatWorkLease(db, heldClaim.leaseId, heldClaim.leaseToken, { actorRef: TOOL_ACTOR_REF, leaseConfig })
       for (const verdict of ordered) {
+        const observed: { exitCode?: number; outputTail?: string } = {}
+        if (verdict.exitCode !== undefined) observed.exitCode = verdict.exitCode
+        if (verdict.outputTail !== undefined) observed.outputTail = boundedOutputTail(verdict.outputTail)
         evaluateAcceptanceCriterion(
           db,
           brandString<AcceptanceCriterionId>(verdict.criterionId),
           verdict.result,
           {
             evaluatedBy: identity,
-            ...(verdict.exitCode === undefined ? {} : { observed: { exitCode: verdict.exitCode } }),
+            ...(Object.keys(observed).length === 0 ? {} : { observed }),
           },
         )
       }

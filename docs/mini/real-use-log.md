@@ -30,6 +30,16 @@ The same lane drove `PW-REPORT-VERDICTS-001` (per-criterion verdicts in `project
 
 An immediate rerun passed idempotently (`alreadyComplete: true`, no writes). The 4K slice rerun after the grammar change stayed green (6 requests, max 2,427/4,096 estimated tokens, DONE), so no BOOT/4K regression accompanies this increment. The remaining plan item — `PW-OBSERVED-TAIL-001` — stays claimable for a later increment.
 
+### 2026-09-18 — PW-OBSERVED-TAIL-001 through the shipped tools
+
+The same lane drove `PW-OBSERVED-TAIL-001` (bounded verifier output tails in `project_work_update` reports: each verdict entry gained an optional `outputTail`, of which the report stores at most the final 2048 characters in the evaluation's observed payload beside the exit code, so a replayed ledger explains a verdict without re-running the command) against the persistent ledger. The lane now passes each executed verifier's captured output as the tail and asserts the bounded tail landed in `acceptance_evaluations.observed_json`. Claim by `agent:mini-real-use-lane`, verifier `pnpm exec vitest run mini-profile` (exit 0), item DONE, doctor 0 issues, event replay DONE; the recorded evaluation's observed payload holds `{exitCode: 0, outputTail: 1785 chars of real vitest output}`. First-run report line:
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v1","workItemId":"wi:mini-dsh:PW-OBSERVED-TAIL-001","stableKey":"PW-OBSERVED-TAIL-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-OBSERVED-TAIL-001:AC-PW-OBSERVED-TAIL-001","command":"pnpm exec vitest run mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+An immediate rerun passed idempotently (`alreadyComplete: true`, no writes). The 4K slice rerun after the change stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE — the scripted report now carries a short output tail), so no BOOT/4K regression accompanies this increment. This closes the post-v1.6a increment backlog; later real-use items come from new plan versions.
+
 ## Status toward the gate
 
-Items completed through the ledger: 17 (15 golden-plan items by the v1.6a build itself, plus the two entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.
+Items completed through the ledger: 18 (15 golden-plan items by the v1.6a build itself, plus the three entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.

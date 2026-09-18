@@ -68,6 +68,8 @@ const RESERVED_OUTPUT_TOKENS = 512
 const CHARS_PER_TOKEN = 4
 const VERIFIER_TIMEOUT_MS = 30_000
 const RESULT_TAIL_CHARS = 1_500
+/** The report tool's stored output-tail bound, mirrored so the fixture stores what the real tool stores. */
+const REPORT_OUTPUT_TAIL_MAX_CHARS = 2048
 
 const PERSONA = [
   'You are a project agent working from a Project Ledger.',
@@ -180,7 +182,7 @@ class ScriptedLaneAdapter extends LlmAdapter {
       if (criterionId === undefined) throw new Error('scripted lane: the packet result carries no criterion id')
       blocks = [toolCallBlock(serial, 'project_work_update', {
         action: 'report',
-        criteria: [{ criterionId, result: 'PASS' }],
+        criteria: [{ criterionId, result: 'PASS', outputTail: 'all tests passed' }],
       })]
     } else if (serial === 6) {
       blocks = [{ type: 'text', text: 'Slice complete.' }]
@@ -471,12 +473,13 @@ async function main(): Promise<void> {
                 criterionId: { type: 'string', required: true },
                 result: { type: 'string', required: true, enum: ['PASS', 'FAIL'] },
                 exitCode: { type: 'integer' },
+                outputTail: { type: 'string' },
               },
             },
           },
         },
         isConcurrencySafe: () => false,
-        execute(args: { action: string; criteria: { criterionId: string; result: string }[] }) {
+        execute(args: { action: string; criteria: { criterionId: string; result: string; outputTail?: string }[] }) {
           toolCalls['project_work_update'] = (toolCalls['project_work_update'] ?? 0) + 1
           if (args.action !== 'report') {
             throw new Error(`project_work_update fixture: action ${args.action} is outside the 4K slice flow`)
@@ -488,7 +491,16 @@ async function main(): Promise<void> {
               db,
               brandString<AcceptanceCriterionId>(verdict.criterionId),
               verdict.result === 'PASS' ? 'PASS' : 'FAIL',
-              { evaluatedBy: 'context-light/agent', attemptRef: 'context-light/4k', observed: { exitCode: verifierExitCode } },
+              {
+                evaluatedBy: 'context-light/agent',
+                attemptRef: 'context-light/4k',
+                observed: {
+                  exitCode: verifierExitCode,
+                  ...(verdict.outputTail === undefined
+                    ? {}
+                    : { outputTail: verdict.outputTail.slice(-REPORT_OUTPUT_TAIL_MAX_CHARS) }),
+                },
+              },
             )
           }
           changeWorkStatus(db, entry.workItemId, 'VERIFYING', { actorRef: 'context-light/agent' })

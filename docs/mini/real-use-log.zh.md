@@ -30,6 +30,16 @@ post-v1.6a 真实使用 lane（`./benchmarks/real-use/run-real-use.sh`）经 SHI
 
 紧接着的重跑幂等通过（`alreadyComplete: true`，零写入）。语法变更后的 4K 切片重跑保持绿色（6 请求、最大 2,427/4,096 估算 token、DONE），本增量无 BOOT/4K 回归。计划剩余项——`PW-OBSERVED-TAIL-001`——保持可领取，留给后续增量。
 
+### 2026-09-18 —— 经 shipped 工具完成 PW-OBSERVED-TAIL-001
+
+同一 lane 对持久账本驱动 `PW-OBSERVED-TAIL-001`（`project_work_update` 报告的有界 verifier 输出尾部：每条判定条目新增可选 `outputTail`，report 至多保存其末尾 2048 字符到评估的 observed 载荷中、与 exitCode 并列，账本重放因此无需重跑命令即可解释判定）。lane 现在把每个已执行 verifier 捕获的输出作为尾部传入，并断言有界尾部已落入 `acceptance_evaluations.observed_json`。由 `agent:mini-real-use-lane` 领取、verifier `pnpm exec vitest run mini-profile`（退出码 0）、工作项 DONE、doctor 0 问题、事件重放 DONE；所记评估的 observed 载荷持有 `{exitCode: 0, outputTail: 1785 字符真实 vitest 输出}`。首次运行报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v1","workItemId":"wi:mini-dsh:PW-OBSERVED-TAIL-001","stableKey":"PW-OBSERVED-TAIL-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-OBSERVED-TAIL-001:AC-PW-OBSERVED-TAIL-001","command":"pnpm exec vitest run mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+紧接着的重跑幂等通过（`alreadyComplete: true`，零写入）。变更后的 4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE——脚本化报告现在携带一条短输出尾部），本增量无 BOOT/4K 回归。至此 post-v1.6a 增量 backlog 全部完成；后续真实使用项需来自新的计划版本。
+
 ## 相对门槛的状态
 
-经账本完成的工作项：17（15 个黄金计划项由 v1.6a 构建本身完成，加上面两条）。BOOT/4K 回归：无记录；`run-4k.sh` 与 BOOT 验收套件保持绿色。用户价值确认：待定——进入决策按 §33 归 owner。
+经账本完成的工作项：18（15 个黄金计划项由 v1.6a 构建本身完成，加上面三条）。BOOT/4K 回归：无记录；`run-4k.sh` 与 BOOT 验收套件保持绿色。用户价值确认：待定——进入决策按 §33 归 owner。

@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-The repeatable §33 real-use driver (docs/mini/real-use-log.md): one ready work item of the post-v1.6a increment plan completes through the SHIPPED mini-profile surface — the same `MiniProjectLedger` and `mini-project-work` plugins a `dsh --profile mini` session mounts — with no model involved. The lane is the agent of record: it observes through `project_work_next`, claims through `project_work_claim` (receiving the WorkPacket, never the plan document), executes each observable criterion's stored verifier command from the packet as a real subprocess in the repository, and reports one verdict per criterion through `project_work_update`. DONE with a clean doctor and a matching event replay is the only passing outcome; a failing verifier records its criterion FAIL and fails the run.
+The repeatable §33 real-use driver (docs/mini/real-use-log.md): one ready work item of the post-v1.6a increment plan completes through the SHIPPED mini-profile surface — the same `MiniProjectLedger` and `mini-project-work` plugins a `dsh --profile mini` session mounts — with no model involved. The lane is the agent of record: it observes through `project_work_next`, claims through `project_work_claim` (receiving the WorkPacket, never the plan document), executes each observable criterion's stored verifier command from the packet as a real subprocess in the repository, and reports one verdict per criterion with the observed exit code and output tail through `project_work_update`, the tail landing beside the exit code in each evaluation's observed payload. DONE with a clean doctor and a matching event replay is the only passing outcome; a failing verifier records its criterion FAIL and fails the run.
 
 ## Table of Contents
 

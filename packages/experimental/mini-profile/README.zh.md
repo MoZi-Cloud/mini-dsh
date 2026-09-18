@@ -38,7 +38,7 @@ const db = ctx.projectLedger.db
 
 挂载后的 `/project` 命令在 profile 的交互式命令适配器中应答：`/project todo [--agent] [<project-id>]` 列出未完成的 owner（或 agent）工作，附带重算的 readiness 与活跃租约；`/project doctor [<plan-version-id>]` 对 current（或指定）plan 版本运行只读 plan doctor；裸 `/project` 打印用法。未指明时，命令经账本的 plan 目录解析项目与版本。
 
-profile 内的 agent 还获得三个面向模型的工具。`project_work_next` 列出 agent todo 视图，附带可认领性、阻塞原因与租约持有者；`project_work_claim` 对一个就绪条目取得租约并返回有界 work packet——目标、阶段、阻塞回执、验收标准与存储的 verifier 规格；`project_work_update` 推进持有的认领：`heartbeat` 延长租约，`release` 归还条目，`report` 记录 agent 的 verifier 观察，把条目移入 `VERIFYING` 或 `FAILED`，且只有当全部必备标准都已通过时才完成它。认领与心跳时长是部署配置（`leaseTtlMs`、`leaseHeartbeatIntervalMs`）。
+profile 内的 agent 还获得三个面向模型的工具。`project_work_next` 列出 agent todo 视图，附带可认领性、阻塞原因与租约持有者；`project_work_claim` 对一个就绪条目取得租约并返回有界 work packet——目标、阶段、阻塞回执、验收标准与存储的 verifier 规格；`project_work_update` 推进持有的认领：`heartbeat` 延长租约，`release` 归还条目，`report` 记录 agent 的 verifier 观察——判定连同可选 exitCode 与有界输出尾部，存入每条评估的 observed 载荷——把条目移入 `VERIFYING` 或 `FAILED`，且只有当全部必备标准都已通过时才完成它。认领与心跳时长是部署配置（`leaseTtlMs`、`leaseHeartbeatIntervalMs`）。
 
 <a id="understand-the-implementation"></a>
 ## 理解实现
@@ -107,7 +107,7 @@ schema 条目扩展稳定的 system-prompt 前缀；逐轮结果作为普通工�
 
 - **命令保持只读；工具只经账本写入者变更**——`/project` 只做列举与诊断；工具通过调用账本的持有接缝来认领、评估与转移，Owner 域仍是 v1.6b 范围。
 - **租约 token 存活在认领进程内**——重启后的 agent 无法心跳或释放重启前的认领；过期与 reaper 负责收回，任何 session log 重放都不携带可用 token。
-- **每个可观察标准一个判定**——`report` 为 verifier 规格存有可执行文本的每个标准恰好携带一条 `{criterionId, result, exitCode?}`；`OWNER_CONFIRMATION` 与结构性断言绝不经此写入，`DONE` 仍要求全部必备标准通过，owner 门控条目因此在 `VERIFYING` 等待。
+- **每个可观察标准一个判定**——`report` 为 verifier 规格存有可执行文本的每个标准恰好携带一条 `{criterionId, result, exitCode?, outputTail?}`；exitCode 与至多末尾 2048 字符的尾部落入该条评估的 observed 载荷，`OWNER_CONFIRMATION` 与结构性断言绝不经此写入，`DONE` 仍要求全部必备标准通过，owner 门控条目因此在 `VERIFYING` 等待。
 - **仅交互式命令适配器**——`/project` 依托 `ctx.commands`，由交互式适配器消费；headless 与 JSON-RPC 面没有命令平面。
 - **无专属 Web 卡片**——工具为 Host UI 声明纯 `presentCall` 视图；Web Client 仍从原始事件派生卡片，尚无键槽卡片。
 - **agent 由 `dsh-base` 承担**——本 bundle 刻意只新增账本面；超出 base 的 profile 组合属于用户的 patch 层。

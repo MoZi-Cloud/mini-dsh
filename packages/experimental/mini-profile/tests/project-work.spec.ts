@@ -125,10 +125,11 @@ describe('project-work tools', () => {
       expect(updateProperties.action?.enum).toEqual(['heartbeat', 'release', 'report'])
       expect(updateProperties.criteria?.type).toBe('array')
       const verdictEntry = updateProperties.criteria?.items?.properties ?? {}
-      expect(Object.keys(verdictEntry).sort()).toEqual(['criterionId', 'exitCode', 'result'])
+      expect(Object.keys(verdictEntry).sort()).toEqual(['criterionId', 'exitCode', 'outputTail', 'result'])
       expect(verdictEntry.criterionId?.type).toBe('string')
       expect(verdictEntry.result?.enum).toEqual(['PASS', 'FAIL'])
       expect(verdictEntry.exitCode?.type).toBe('integer')
+      expect(verdictEntry.outputTail?.type).toBe('string')
     } finally {
       await unmount(mounted)
     }
@@ -468,6 +469,45 @@ describe('project-work tools', () => {
         .prepare('SELECT status FROM acceptance_criteria WHERE id = ?')
         .get(ownerGate) as { status: string }).status
       expect(ownerStatus).toBe('PENDING')
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('report stores the exit code and a bounded output tail in each evaluation', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, DUAL_PLAN_TEXT)
+    })
+    try {
+      await run(mounted, 'project_work_claim', { workItemId: 'wi:dual-proj:AGENT-DUAL' }, { agent: agent('agent-1') })
+      const passing = criterionId(mounted, 'wi:dual-proj:AGENT-DUAL', 'AC-DUAL-A')
+      const failing = criterionId(mounted, 'wi:dual-proj:AGENT-DUAL', 'AC-DUAL-B')
+      const shortTail = 'Tests: 2 passed, 0 failed'
+      const longTail = `${'x'.repeat(5_000)}END-OF-OUTPUT`
+      const result = await run(
+        mounted,
+        'project_work_update',
+        {
+          action: 'report',
+          criteria: [
+            { criterionId: passing, result: 'PASS', exitCode: 0, outputTail: shortTail },
+            { criterionId: failing, result: 'FAIL', exitCode: 1, outputTail: longTail },
+          ],
+        },
+        { agent: agent('agent-1') },
+      )
+      expect(result.isError).toBe(false)
+      // The observed payload beside each verdict keeps the exit code and the
+      // final characters of the tail, so a replay explains the outcome.
+      const observedById = new Map((mounted.ctx.projectLedger.db
+        .prepare('SELECT criterion_id, observed_json FROM acceptance_evaluations')
+        .all() as { criterion_id: string; observed_json: string }[])
+        .map(row => [row.criterion_id, JSON.parse(row.observed_json) as { exitCode?: number; outputTail?: string }]))
+      expect(observedById.get(passing)).toEqual({ exitCode: 0, outputTail: shortTail })
+      const stored = observedById.get(failing)
+      expect(stored?.exitCode).toBe(1)
+      expect(stored?.outputTail).toHaveLength(miniProjectWork.REPORT_OUTPUT_TAIL_MAX_CHARS)
+      expect(stored?.outputTail).toBe(longTail.slice(-miniProjectWork.REPORT_OUTPUT_TAIL_MAX_CHARS))
     } finally {
       await unmount(mounted)
     }

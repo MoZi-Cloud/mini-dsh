@@ -8,9 +8,9 @@
  * WorkPacket, never the plan document), executes each observable criterion's
  * stored verifier command from the packet as a real subprocess in the
  * repository, and reports one verdict per criterion through
- * project_work_update. DONE with a clean doctor and a matching replay is the
- * only passing outcome; a failing verifier records its criterion FAIL and
- * fails the run.
+ * project_work_update with the observed exit code and output tail. DONE with
+ * a clean doctor and a matching replay is the only passing outcome; a failing
+ * verifier records its criterion FAIL and fails the run.
  *
  * The ledger is a fresh temporary file unless DSH_REAL_USE_LEDGER names a
  * persistent one (the profile default is ~/.dsh/project-ledger/ledger.sqlite),
@@ -251,6 +251,7 @@ async function main(): Promise<void> {
         criterionId: run.criterionId,
         result: run.exitCode === 0 ? 'PASS' as const : 'FAIL' as const,
         ...(run.exitCode === null ? {} : { exitCode: run.exitCode }),
+        ...(run.output === '' ? {} : { outputTail: run.output }),
       })),
     }) as {
       action: string
@@ -268,6 +269,25 @@ async function main(): Promise<void> {
         throw new Error(
           `real-use lane: criterion ${evaluated.criterionId} recorded ${evaluated.result}, `
           + `expected ${observed.get(evaluated.criterionId) ?? 'no verdict'}`,
+        )
+      }
+    }
+    // The bounded output tail landed beside each exit code in the evaluations'
+    // observed payload, so the ledger explains the verdicts without a rerun.
+    const observedRows = db.prepare(
+      'SELECT criterion_id, observed_json FROM acceptance_evaluations WHERE work_item_id = ?',
+    ).all(entry.workItemId) as { criterion_id: string; observed_json: string | null }[]
+    const observedTailById = new Map(observedRows.map(row => {
+      const payload = JSON.parse(row.observed_json ?? '{}') as { exitCode?: number; outputTail?: string }
+      return [row.criterion_id, payload]
+    }))
+    for (const run of verifierRuns) {
+      const payload = observedTailById.get(run.criterionId)
+      const expectedTail = run.output === '' ? undefined : run.output.slice(-miniProjectWork.REPORT_OUTPUT_TAIL_MAX_CHARS)
+      if (payload?.outputTail !== expectedTail) {
+        throw new Error(
+          `real-use lane: criterion ${run.criterionId} stored `
+          + `${String(payload?.outputTail?.length ?? 0)} output-tail character(s), expected the bounded verifier tail`,
         )
       }
     }
