@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core（docs/mini/v1.6a）的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用、层级与排序关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝负责盖章与 fail-closed 重放；`computeWorkReadiness` 重算可领取性；`evaluateAcceptanceCriterion` 追加调用方报告的评估；租约接缝为每个工作项仲裁唯一活跃租约；`buildWorkPacket` 准备有界确定性 WorkPacket；Owner/Agent todo 视图按 executor kind 列出未完成工作。本包绝不执行 verifier 命令，也绝不激活计划。
+`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core 的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用、层级与关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝 fail-closed 重放；`computeWorkReadiness` 重算可领取性；租约接缝为每个工作项仲裁唯一活跃租约；`buildWorkPacket` 准备有界确定性 WorkPacket；todo 视图按 executor kind 划分未完成工作；supersede 与 drift 退役版本、封堵漂移 baseline，绝不触碰历史。本包绝不执行 verifier 命令。
 
 ## 目录
 
@@ -71,6 +71,8 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **packet 是配方，不是行**——`buildWorkPacket` 只读 §17 列出的逐项输入（plan 身份、目标、phase 摘要、关系回执、带存储 spec 的验收标准、baseline），为每个被引用小节计算哈希，并追加携带完整配方的 `project/work-packet-prepared` 事件；不存在物化 packet 表，因为事件就是持久记录且 packet 可重建。`rebuildWorkPacket` 仅从当前行重组 packet 并点名漂移的引用，审计模型所见永远不需要 Master Plan 全文。
 - **有界靠拒绝而非截断**——`serializeWorkPacket` 输出必须低于 `maxSerializedBytes`（默认 65,536）；超限即抛错而不是截断，模型可见文档要么完整要么缺席，相同行永远序列化出相同字节。
 - **Owner 与 Agent todo 是按执行者分离的视图**——`listOwnerTodo` 与 `listAgentTodo` 对 `executor_kind`（§11）跑一条只读查询，覆盖全部非终态状态，按种类、优先级降序、年龄与 id 排序；每个条目携带重算的 readiness 与活跃租约，阻塞原因与持有者随任务一并呈现。视图绝不变更：完成权威仍在验收接缝，没有稳定 item id、没有项目身份的 session todo 在账本中没有入口。
+- **supersede 退役版本，绝不改写历史**——`supersedePlanVersion` 在单个 `BEGIN IMMEDIATE` 内只移动生命周期列（`SUPERSEDED`、`superseded_at_ms`）与 `plans.current_version_id` 指针，并随 `plan/version-superseded` 事件落库；readiness 随即以 `plan-version-not-active` 拒绝该版本的每个新认领，活跃尝试保留租约、放弃租约后落 `BLOCKED`，事件载荷记录 review 队列。工作项、plan 事实与评估逐字节不变。
+- **drift 封堵认领，绝不改写 baseline 钉**——`recordBaselineDrift` 把调用方观测的仓库事实与版本钉住的 baseline 比较，追加 `baseline/drift-detected`，并在工作项上打开 `BASELINE_DRIFT` 外部阻塞，下一次认领被拒，直到 owner 解决、豁免或 supersede；baseline 列本身绝不移动（§21）。
 
 <a id="dev-note"></a>
 ## 开发备注
@@ -102,5 +104,6 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **尚无激活与 supersede**——导入绝不激活版本，且拒绝已属于其他版本或 backlog 的工作项；这些迁移由 supersede 流程负责，指向本项的 `SUPERSEDES` 边在其落地前不进入 readiness。
 - **packet 尚无项目记忆引用**——§17 允许在存在持久记忆能力后加入显式关联的 memory 引用；v1 packet 不记录任何记忆引用，重建因此只读账本行。
 - **todo 视图只是查询**——`/project todo --owner`/`--agent` 斜杠面与 `project_work_*` 工具属于命令接缝；v1.6b 把 executor identity 扩展为 actor/role/assignment（§11）。
+- **尚无 carry-forward 绑定**——supersede 命名的继任版本只被记录、未被应用：重复声明继承的工作项属于 adoption 流程（§9.3），漂移阻塞的解决与豁免也尚无写入者。
 - **`REVOKED` 是保留行状态**——租约生命周期只写 `ACTIVE`、`RELEASED` 与 `EXPIRED`；Owner 侧吊销尚无写入者，reaper 循环节奏（`reaperIntervalMs`）属于有界 `reapExpiredLeases` 批次的调用方。
 - **英文诊断**——问题消息仅英文；它们是编译器输入，不是 UI 文案。

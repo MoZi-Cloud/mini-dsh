@@ -14,6 +14,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite'
+import type { WorkExternalBlockerId } from './versioning.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanId, PlanVersionId, ProjectId, SourceDocumentHash, WorkItemId } from './plan-compile.js'
 import type { PlanAcceptanceKind, PlanWorkItemStatus } from './plan-document.js'
@@ -81,6 +82,13 @@ export type WorkPacketReferenceKind = (typeof WORK_PACKET_REFERENCE_KINDS)[numbe
 const PACKET_REFERENCE_KIND_SET: ReadonlySet<string> = new Set<string>(WORK_PACKET_REFERENCE_KINDS)
 
 /**
+ * The supersede policy a `plan/version-superseded` payload must carry
+ * (§22). Owned here (not in the versioning module) because the payload
+ * codec validates it on read.
+ */
+export const SUPERSEDE_POLICY = 'freeze-new-claims-and-review-active'
+
+/**
  * The event envelope version recorded in the `event_format_version` column of
  * every `project_events` row — the single home of this constant. Adding a
  * required vocabulary entry bumps it together with the codec; purely
@@ -95,7 +103,9 @@ export const PROJECT_EVENT_FORMAT_VERSION = 1
  * `work/unblocked`, `work/claimed`, `work/lease-heartbeat`,
  * `work/lease-expired`, `work/lease-released`, `acceptance/evaluated`, and
  * `project/work-packet-prepared`), and a reader that does not know the type
- * fails closed.
+ * fails closed. `plan/version-superseded` and `baseline/drift-detected` are
+ * validated without state change: their writers own lifecycle columns and
+ * external blocker rows, which the fold's projection facts do not carry.
  */
 export const PROJECT_EVENT_TYPES = [
   'plan/imported',
@@ -437,6 +447,8 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
   const workItems = new Map<WorkItemId, ReplayedWorkItem>()
   const leases = new Map<WorkLeaseId, ReplayedLease>()
   const workPackets = new Map<WorkPacketId, ReplayedWorkPacket>()
+  // Validation state for the supersede applier: a version retires once.
+  const supersededPlanVersionIds = new Set<PlanVersionId>()
   for (const event of readProjectEvents(db, projectId)) {
     switch (event.eventType) {
       case 'plan/imported': {
@@ -601,6 +613,46 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         workPackets.set(payload.packetId, payload)
         break
       }
+      case 'plan/version-superseded': {
+        // Validation-only: the supersede owns lifecycle columns and the
+        // plans pointer, which the fold's version facts do not carry.
+        const payload = decodePlanVersionSupersededPayload(event)
+        const version = planVersions.get(payload.planVersionId)
+        if (version === undefined) {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "planVersionId" `
+              + `names no replayed plan version (${payload.planVersionId})`,
+          )
+        }
+        if (version.planId !== payload.planId) {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "planId" `
+              + `names plan "${payload.planId}", but version "${payload.planVersionId}" belongs to `
+              + `plan "${version.planId}"`,
+          )
+        }
+        if (supersededPlanVersionIds.has(payload.planVersionId)) {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload supersedes plan version `
+              + `"${payload.planVersionId}" twice in this timeline`,
+          )
+        }
+        for (const attempt of payload.reviewAttempts) {
+          requireReplayedWorkItem(workItems, attempt.workItemId, event)
+        }
+        supersededPlanVersionIds.add(payload.planVersionId)
+        break
+      }
+      case 'baseline/drift-detected': {
+        // Validation-only: the drift owns external blocker rows, which the
+        // fold does not project.
+        const payload = decodeBaselineDriftDetectedPayload(event)
+        requireReplayedWorkItem(workItems, payload.workItemId, event)
+        break
+      }
       default:
         break
     }
@@ -722,6 +774,36 @@ interface WorkBlockedPayload extends StatusMovePayload {
 
 /** Payload facts of one `project/work-packet-prepared` event — the recorded recipe. */
 type WorkPacketPreparedPayload = ReplayedWorkPacket
+
+/** One review attempt a `plan/version-superseded` payload names. */
+interface SupersededAttemptRef {
+  readonly workItemId: WorkItemId
+  readonly leaseId: WorkLeaseId
+  readonly workerIdentity: string
+  readonly expiresAtMs: number
+}
+
+/** Payload facts of one `plan/version-superseded` event. */
+interface PlanVersionSupersededPayload {
+  readonly planId: PlanId
+  readonly planVersionId: PlanVersionId
+  /** The successor version, when the supersede named one. */
+  readonly succeededBy: PlanVersionId | undefined
+  readonly policy: typeof SUPERSEDE_POLICY
+  readonly supersededAtMs: number
+  readonly reviewAttempts: readonly SupersededAttemptRef[]
+}
+
+/** Payload facts of one `baseline/drift-detected` event. */
+interface BaselineDriftDetectedPayload {
+  readonly workItemId: WorkItemId
+  readonly planVersionId: PlanVersionId
+  readonly blockerId: WorkExternalBlockerId
+  readonly baselineRepoHead: string | null
+  readonly baselineWorktreeHash: string | null
+  readonly observedRepoHead: string | null
+  readonly observedWorktreeHash: string | null
+}
 
 /** The event payload must be a JSON object for appliers to read fields from. */
 function payloadFields(event: ProjectEventEnvelope): Record<string, unknown> {
@@ -1110,4 +1192,104 @@ export function readWorkPacketEvent(db: DatabaseSync, packetId: WorkPacketId): P
   if (row === undefined) return undefined
   // The project id crossed the durable project_events row boundary.
   return decodeEventRow(row.project_id as ProjectId, row)
+}
+
+/** Read one required string-or-null payload field. */
+function requiredStringOrNull(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+  label: string = field,
+): string | null {
+  const value = fields[field]
+  if (value !== null && typeof value !== 'string') {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${label}" must be a string or null`,
+    )
+  }
+  return value
+}
+
+/** Read one optional string payload field; absent stays `undefined`, any present value must be a string. */
+function optionalString(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+  label: string = field,
+): string | undefined {
+  const value = fields[field]
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${label}" must be a string`,
+    )
+  }
+  return value
+}
+
+/**
+ * Decode the `reviewAttempts` array of one `plan/version-superseded`
+ * payload, failing closed on a non-array value and on entries this codec
+ * cannot read.
+ */
+function requiredReviewAttempts(event: ProjectEventEnvelope, fields: Record<string, unknown>): SupersededAttemptRef[] {
+  const value = fields.reviewAttempts
+  if (!Array.isArray(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "reviewAttempts" must be an array`,
+    )
+  }
+  return value.map((entry, index): SupersededAttemptRef => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new ProjectEventError(
+        'malformed-event-payload',
+        `project event ${event.sequenceNo} of "${event.projectId}" payload field "reviewAttempts[${index}]" must be an object`,
+      )
+    }
+    const entryFields = entry as Record<string, unknown>
+    return {
+      workItemId: requiredString(entryFields, event, 'workItemId', `reviewAttempts[${index}].workItemId`) as WorkItemId,
+      leaseId: requiredString(entryFields, event, 'leaseId', `reviewAttempts[${index}].leaseId`) as WorkLeaseId,
+      workerIdentity: requiredString(entryFields, event, 'workerIdentity', `reviewAttempts[${index}].workerIdentity`),
+      expiresAtMs: requiredNumber(entryFields, event, 'expiresAtMs', `reviewAttempts[${index}].expiresAtMs`),
+    }
+  })
+}
+
+/** Decode one `plan/version-superseded` payload, failing closed on missing or mistyped fields. */
+function decodePlanVersionSupersededPayload(event: ProjectEventEnvelope): PlanVersionSupersededPayload {
+  const fields = payloadFields(event)
+  const policy = requiredString(fields, event, 'policy')
+  if (policy !== SUPERSEDE_POLICY) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "policy" `
+        + `is not the supersede policy: ${JSON.stringify(policy)}`,
+    )
+  }
+  return {
+    planId: requiredString(fields, event, 'planId') as PlanId,
+    planVersionId: requiredString(fields, event, 'planVersionId') as PlanVersionId,
+    succeededBy: optionalString(fields, event, 'succeededBy') as PlanVersionId | undefined,
+    policy,
+    supersededAtMs: requiredNumber(fields, event, 'supersededAtMs'),
+    reviewAttempts: requiredReviewAttempts(event, fields),
+  }
+}
+
+/** Decode one `baseline/drift-detected` payload, failing closed on missing or mistyped fields. */
+function decodeBaselineDriftDetectedPayload(event: ProjectEventEnvelope): BaselineDriftDetectedPayload {
+  const fields = payloadFields(event)
+  return {
+    workItemId: requiredString(fields, event, 'workItemId') as WorkItemId,
+    planVersionId: requiredString(fields, event, 'planVersionId') as PlanVersionId,
+    blockerId: requiredString(fields, event, 'blockerId') as WorkExternalBlockerId,
+    baselineRepoHead: requiredStringOrNull(fields, event, 'baselineRepoHead'),
+    baselineWorktreeHash: requiredStringOrNull(fields, event, 'baselineWorktreeHash'),
+    observedRepoHead: requiredStringOrNull(fields, event, 'observedRepoHead'),
+    observedWorktreeHash: requiredStringOrNull(fields, event, 'observedWorktreeHash'),
+  }
 }
