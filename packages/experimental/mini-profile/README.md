@@ -109,7 +109,7 @@ These are current package constraints, not a task backlog.
 - **Lease tokens live in the claiming process** — a restarted agent cannot heartbeat or release a pre-restart claim; expiry and the reaper own recovery, and no session-log replay carries a usable token.
 - **One verdict per report** — `report` records one `PASS`/`FAIL` over the criteria whose verifier spec stores runnable text; `OWNER_CONFIRMATION` and structural assertions are never written here, and `DONE` still requires every required criterion passing, so owner-gated items wait in `VERIFYING`.
 - **Interactive command adapters only** — `/project` rides `ctx.commands`, which the interactive adapters consume; headless and JSON-RPC surfaces have no command plane.
-- **Generic UI card only** — the tools declare no dedicated presenters; sessions replay through the generic tool card.
+- **No dedicated Web card** — the tools declare pure `presentCall` views for Host UIs; the Web Client still derives its cards from the raw events, and no keyed-slot card exists.
 - **`dsh-base` carries the agent** — this bundle deliberately adds only the ledger surfaces; profile composition beyond the base is the user's patch layer.
 
 <a id="dev-note"></a>

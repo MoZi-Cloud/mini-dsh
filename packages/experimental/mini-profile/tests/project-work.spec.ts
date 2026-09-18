@@ -116,6 +116,37 @@ describe('project-work tools', () => {
     }
   })
 
+  it('presents pending calls as pure generic views over the args', async () => {
+    const mounted = await mount()
+    try {
+      const next = mounted.ctx.tools.get('project_work_next')
+      expect(next?.presentCall?.({})).toEqual({ card: 'generic', title: 'List next project tasks', kind: 'search' })
+      expect(next?.presentCall?.({ projectId: 'tiny-proj' }))
+        .toEqual({ card: 'generic', title: 'List next project tasks', kind: 'search', rawInput: 'tiny-proj' })
+      expect(next?.presentCall?.({ projectId: 42 })).toBeUndefined()
+
+      const claim = mounted.ctx.tools.get('project_work_claim')
+      expect(claim?.presentCall?.({ workItemId: 'wi:1' }))
+        .toEqual({ card: 'generic', title: 'Claim project task', kind: 'other', rawInput: 'wi:1' })
+      expect(claim?.presentCall?.({})).toBeUndefined()
+
+      const update = mounted.ctx.tools.get('project_work_update')
+      expect(update?.presentCall?.({ action: 'report', result: 'PASS', exitCode: 0 })).toEqual({
+        card: 'generic', title: 'Report verification outcome', kind: 'other', rawInput: { result: 'PASS', exitCode: 0 },
+      })
+      expect(update?.presentCall?.({ action: 'report', result: 'FAIL' })).toEqual({
+        card: 'generic', title: 'Report verification outcome', kind: 'other', rawInput: { result: 'FAIL' },
+      })
+      expect(update?.presentCall?.({ action: 'heartbeat' }))
+        .toEqual({ card: 'generic', title: 'Extend work lease', kind: 'other' })
+      expect(update?.presentCall?.({ action: 'release' }))
+        .toEqual({ card: 'generic', title: 'Release work claim', kind: 'other' })
+      expect(update?.presentCall?.({ action: 'bogus' })).toBeUndefined()
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
   it('fails next loud over an empty ledger', async () => {
     const mounted = await mount()
     try {

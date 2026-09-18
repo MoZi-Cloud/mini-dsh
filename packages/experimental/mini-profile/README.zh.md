@@ -109,7 +109,7 @@ schema 条目扩展稳定的 system-prompt 前缀；逐轮结果作为普通工�
 - **租约 token 存活在认领进程内**——重启后的 agent 无法心跳或释放重启前的认领；过期与 reaper 负责收回，任何 session log 重放都不携带可用 token。
 - **每次 report 一个判定**——`report` 对 verifier 规格存有可执行文本的标准记录一个 `PASS`/`FAIL`；`OWNER_CONFIRMATION` 与结构性断言绝不经此写入，`DONE` 仍要求全部必备标准通过，owner 门控条目因此在 `VERIFYING` 等待。
 - **仅交互式命令适配器**——`/project` 依托 `ctx.commands`，由交互式适配器消费；headless 与 JSON-RPC 面没有命令平面。
-- **仅通用 UI 卡片**——工具不声明专属 presenter；会话经通用工具卡片重放。
+- **无专属 Web 卡片**——工具为 Host UI 声明纯 `presentCall` 视图；Web Client 仍从原始事件派生卡片，尚无键槽卡片。
 - **agent 由 `dsh-base` 承担**——本 bundle 刻意只新增账本面；超出 base 的 profile 组合属于用户的 patch 层。
 
 <a id="dev-note"></a>

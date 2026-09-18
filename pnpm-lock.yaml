@@ -733,6 +733,9 @@ importers:
       '@deepseek-ai/dsh-deque':
         specifier: workspace:^
         version: link:../packages/util/deque
+      '@deepseek-ai/dsh-experimental-mini-profile':
+        specifier: workspace:^
+        version: link:../packages/experimental/mini-profile
       '@deepseek-ai/dsh-experimental-project-ledger':
         specifier: workspace:^
         version: link:../packages/experimental/project-ledger
@@ -781,6 +784,9 @@ importers:
       '@deepseek-ai/dsh-subprocess':
         specifier: workspace:^
         version: link:../packages/subprocess/subprocess
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: workspace:^
+        version: link:../packages/core/system-prompt
       '@deepseek-ai/dsh-terminal':
         specifier: workspace:^
         version: link:../packages/terminal/terminal

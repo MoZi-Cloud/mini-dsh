@@ -24,6 +24,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import z from '@deepseek-ai/schemastery'
 import { brandString } from '@deepseek-ai/dsh-brand'
@@ -161,6 +162,15 @@ function renderNextItemLine(item: {
 }
 
 /**
+ * Generic, args-only pending presentation shared by the three tools; the
+ * completed call keeps this title over the rendered result content, and the
+ * Web Client keeps deriving its own cards from the raw events.
+ */
+function present(title: string, kind: 'search' | 'other', rawInput?: unknown): GenericCallView {
+  return { card: 'generic', title, kind, ...rawInput === undefined ? {} : { rawInput } }
+}
+
+/**
  * Register the three model-facing project-work tools on `ctx.tools`.
  * @param ctx - profile context carrying the tool registry and the ledger mount.
  * @param config - deployment's lease policy for this tool's claims.
@@ -242,6 +252,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             ...value.items.map(item => renderNextItemLine(item))].join('\n'),
       }],
     },
+    presentCall: args => present('List next project tasks', 'search', args.projectId),
     execute(args, _exec) {
       const db = ctx.projectLedger.db
       const projectId = resolveProjectId(listPlans(db), args.projectId)
@@ -310,6 +321,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           + 'outcome with project_work_update.',
       }],
     },
+    presentCall: args => present('Claim project task', 'other', args.workItemId),
     execute(args, exec) {
       if (exec.agent === undefined) {
         throw new Error('project_work_claim requires an owning agent session; the claim needs a worker identity')
@@ -415,6 +427,18 @@ export function apply(ctx: Context, config: Config = {}): void {
         }
         return [{ type: 'text', text }]
       },
+    },
+    presentCall: (args) => {
+      const title = args.action === 'report'
+        ? 'Report verification outcome'
+        : args.action === 'heartbeat' ? 'Extend work lease' : 'Release work claim'
+      return present(
+        title,
+        'other',
+        args.action === 'report' && args.result !== undefined
+          ? { result: args.result, ...(args.exitCode === undefined ? {} : { exitCode: args.exitCode }) }
+          : undefined,
+      )
     },
     execute(args, exec) {
       if (exec.agent === undefined) {
