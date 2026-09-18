@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core（docs/mini/v1.6a）的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用、层级与排序关系。`compilePlan` 编译出带确定性身份的规范 IR，`importPlanVersion` 以单个原子事务写入；事件接缝负责盖章与 fail-closed 重放；`computeWorkReadiness` 从因果行重算可领取性；`evaluateAcceptanceCriterion` 追加调用方报告的评估；`claimWorkItem` 为每个工作项仲裁唯一活跃租约，并附带心跳、过期与重算投影的 reaper 生命周期。本包绝不执行 verifier 命令，也绝不激活计划。
+`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core（docs/mini/v1.6a）的 plan 文档接缝。plan 文档是惰性数据：`parsePlanDocument` 解析 YAML，拒绝重复键、锚点与别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用、层级与排序关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝负责盖章与 fail-closed 重放；`computeWorkReadiness` 重算可领取性；`evaluateAcceptanceCriterion` 追加调用方报告的评估；租约接缝为每个工作项仲裁唯一活跃租约；`buildWorkPacket` 准备有界确定性 WorkPacket，事件日志无需 plan 文档即可重建它。本包绝不执行 verifier 命令，也绝不激活计划。
 
 ## 目录
 
@@ -28,7 +28,7 @@ kind: "package-reference"
 
 ```ts
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
-import { changeWorkStatus, claimWorkItem, compilePlan, computeWorkReadiness, detectWorkGraphCycles, evaluateAcceptanceCriterion, heartbeatWorkLease, importPlanVersion, parsePlanDocument, readProjectEvents, releaseWorkLease, replayProjectEvents, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
+import { buildWorkPacket, changeWorkStatus, claimWorkItem, compilePlan, computeWorkReadiness, detectWorkGraphCycles, evaluateAcceptanceCriterion, heartbeatWorkLease, importPlanVersion, parsePlanDocument, readProjectEvents, rebuildWorkPacket, releaseWorkLease, replayProjectEvents, serializeWorkPacket, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
 
 const { text, value } = parsePlanDocument(planBytes)
 const document = validatePlanSchema(value)
@@ -44,6 +44,9 @@ const evaluation = evaluateAcceptanceCriterion(db, compiled.workItems[0].accepta
 const claim = claimWorkItem(db, compiled.workItems[0].id, 'worker/session-7')
 const lease = heartbeatWorkLease(db, claim.leaseId, claim.leaseToken)
 releaseWorkLease(db, claim.leaseId, claim.leaseToken)
+const packet = buildWorkPacket(db, compiled.workItems[0].id)
+const packetText = serializeWorkPacket(packet)
+const rebuild = rebuildWorkPacket(db, packet.packetId)
 ```
 
 一个测试把 zod 镜像钉在已发布的 schema 文件上：只改宪法或镜像其一而不同步另一方，测试套件即失败。
@@ -63,6 +66,8 @@ releaseWorkLease(db, claim.leaseId, claim.leaseToken)
 - **验收是唯一的完成权威**——`changeWorkStatus` 只能从 `VERIFYING` 到达 `DONE`，且仅当全部 required 标准处于 `PASSING` 或 `WAIVED`；session todo、plan-mode 编辑或账本之外的任何调用者都无法把项目工作抄近路变成完成。
 - **每个工作项只有一个活跃租约**——`claimWorkItem` 在单个 `BEGIN IMMEDIATE` 事务内完成 readiness 重算、陈旧租约回收与租约插入（§13），竞争的 claimer 只会在其后串行并被活跃租约阻塞项拒绝；`uq_one_active_lease_per_work` 部分唯一索引是最终仲裁者。心跳与释放必须在过期前到达，reaper 重算被遗弃项的 `READY`/`BLOCKED` 投影，绝不宣布 `FAILED`。
 - **令牌只存哈希，绝不入日志**——认领返回一次性 bearer 令牌；账本只存其 SHA-256 哈希，任何租约事件都不携带它，日志重建租约状态时无需重放机密。
+- **packet 是配方，不是行**——`buildWorkPacket` 只读 §17 列出的逐项输入（plan 身份、目标、phase 摘要、关系回执、带存储 spec 的验收标准、baseline），为每个被引用小节计算哈希，并追加携带完整配方的 `project/work-packet-prepared` 事件；不存在物化 packet 表，因为事件就是持久记录且 packet 可重建。`rebuildWorkPacket` 仅从当前行重组 packet 并点名漂移的引用，审计模型所见永远不需要 Master Plan 全文。
+- **有界靠拒绝而非截断**——`serializeWorkPacket` 输出必须低于 `maxSerializedBytes`（默认 65,536）；超限即抛错而不是截断，模型可见文档要么完整要么缺席，相同行永远序列化出相同字节。
 
 <a id="dev-note"></a>
 ## 开发备注
@@ -72,11 +77,19 @@ releaseWorkLease(db, claim.leaseId, claim.leaseToken)
 <a id="model-experience"></a>
 ## Model Experience
 
-无，因为解析器与导入器只持久化 plan 事实、不注册任何模型可见内容；verifier 命令在此是存储数据，绝不会被执行。
+### 每个已准备任务一份有界 WorkPacket
+
+#### What the model sees
+
+`serializeWorkPacket` 输出一份规范 JSON 文档：packet 与 builder 版本、带内容哈希的有序引用清单、工作项目标、父 phase 摘要、带来源状态的阻塞关系回执、带存储 verification spec 的验收标准，以及 baseline 快照。其他工作项、其他 phase 或 plan 文档的内容一律不出现，本包自身也不注册任何 prompt 或工具。
+
+#### Token effect
+
+一个已准备任务贡献一块有界的逐项事实；verification spec 以存储文本到达，绝不是执行输出。对未变更行的重复准备输出相同字节，不新增内容。
 
 #### KV Cache effect
 
-无——本包不组装也不发送任何 provider 请求。
+对相同行确定：同一账本状态以相同键序与相同引用序序列化，未变更项的重复准备精确复现模型可见前缀。
 
 <a id="known-limitations-and-deferred-work"></a>
 ## 已知限制与延迟工作
@@ -84,5 +97,6 @@ releaseWorkLease(db, claim.leaseId, claim.leaseToken)
 以下是当前包约束，不是任务清单。
 
 - **尚无激活与 supersede**——导入绝不激活版本，且拒绝已属于其他版本或 backlog 的工作项；这些迁移由 supersede 流程负责，指向本项的 `SUPERSEDES` 边在其落地前不进入 readiness。
+- **packet 尚无项目记忆引用**——§17 允许在存在持久记忆能力后加入显式关联的 memory 引用；v1 packet 不记录任何记忆引用，重建因此只读账本行。
 - **`REVOKED` 是保留行状态**——租约生命周期只写 `ACTIVE`、`RELEASED` 与 `EXPIRED`；Owner 侧吊销尚无写入者，reaper 循环节奏（`reaperIntervalMs`）属于有界 `reapExpiredLeases` 批次的调用方。
 - **英文诊断**——问题消息仅英文；它们是编译器输入，不是 UI 文案。

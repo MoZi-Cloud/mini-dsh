@@ -18,6 +18,7 @@ import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanId, PlanVersionId, ProjectId, SourceDocumentHash, WorkItemId } from './plan-compile.js'
 import type { PlanAcceptanceKind, PlanWorkItemStatus } from './plan-document.js'
 import { PLAN_ACCEPTANCE_KINDS, PLAN_WORK_ITEM_STATUSES } from './plan-schema.js'
+import type { WorkPacketId } from './work-packet.js'
 import {
   WORK_READINESS_BLOCKER_KINDS,
   type WorkReadinessBlockerKind,
@@ -60,6 +61,26 @@ const CRITERION_STATUS_SET: ReadonlySet<string> = new Set<string>(ACCEPTANCE_CRI
 const EVALUATION_RESULT_SET: ReadonlySet<string> = new Set<string>(ACCEPTANCE_EVALUATION_RESULTS)
 
 /**
+ * The closed set of work-packet reference kinds a
+ * `project/work-packet-prepared` recipe may name. Owned here (not in the
+ * packet module) because the payload codec validates it on read.
+ */
+export const WORK_PACKET_REFERENCE_KINDS = [
+  'plan-version',
+  'repo-snapshot',
+  'work-item',
+  'phase',
+  'blocking-relation',
+  'acceptance-criterion',
+  'verification-spec',
+] as const
+
+/** A reference kind of the work-packet recipe vocabulary. */
+export type WorkPacketReferenceKind = (typeof WORK_PACKET_REFERENCE_KINDS)[number]
+
+const PACKET_REFERENCE_KIND_SET: ReadonlySet<string> = new Set<string>(WORK_PACKET_REFERENCE_KINDS)
+
+/**
  * The event envelope version recorded in the `event_format_version` column of
  * every `project_events` row — the single home of this constant. Adding a
  * required vocabulary entry bumps it together with the codec; purely
@@ -72,8 +93,9 @@ export const PROJECT_EVENT_FORMAT_VERSION = 1
  * `ignorable = 0`, replay knows their projection effect (this build applies
  * `plan/imported`, `work/created`, `work/status-changed`, `work/blocked`,
  * `work/unblocked`, `work/claimed`, `work/lease-heartbeat`,
- * `work/lease-expired`, `work/lease-released`, and `acceptance/evaluated`),
- * and a reader that does not know the type fails closed.
+ * `work/lease-expired`, `work/lease-released`, `acceptance/evaluated`, and
+ * `project/work-packet-prepared`), and a reader that does not know the type
+ * fails closed.
  */
 export const PROJECT_EVENT_TYPES = [
   'plan/imported',
@@ -364,12 +386,39 @@ export interface ReplayedLease {
   readonly releasedAtMs: number | undefined
 }
 
+/** One ordered recipe entry of a replayed `project/work-packet-prepared` event. */
+export interface ReplayedWorkPacketReference {
+  readonly kind: WorkPacketReferenceKind
+  readonly refId: string
+  readonly contentHash: string
+}
+
+/**
+ * The reconstruction recipe one `project/work-packet-prepared` event records.
+ * The recipe is the whole durable record of a packet — replay keys it by
+ * packet id, and the rebuild seam decodes it to re-derive the packet from the
+ * referenced rows.
+ */
+export interface ReplayedWorkPacket {
+  readonly packetId: WorkPacketId
+  readonly packetFormatVersion: number
+  readonly builderVersion: string
+  readonly workItemId: WorkItemId
+  readonly planVersionId: PlanVersionId
+  readonly repoSnapshotId: string
+  readonly references: readonly ReplayedWorkPacketReference[]
+  readonly packetHash: string
+  readonly serializedBytes: number
+}
+
 /** The projection replaying a project's events rebuilds. */
 export interface ReplayedProjectProjection {
   readonly planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>
   readonly workItems: ReadonlyMap<WorkItemId, ReplayedWorkItem>
   /** The lease lifecycle, rebuilt from `work/claimed` and the lease end events. */
   readonly leases: ReadonlyMap<WorkLeaseId, ReplayedLease>
+  /** Every prepared packet recipe, keyed by packet id. */
+  readonly workPackets: ReadonlyMap<WorkPacketId, ReplayedWorkPacket>
 }
 
 /**
@@ -387,6 +436,7 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
   const planVersions = new Map<PlanVersionId, ReplayedPlanVersion>()
   const workItems = new Map<WorkItemId, ReplayedWorkItem>()
   const leases = new Map<WorkLeaseId, ReplayedLease>()
+  const workPackets = new Map<WorkPacketId, ReplayedWorkPacket>()
   for (const event of readProjectEvents(db, projectId)) {
     switch (event.eventType) {
       case 'plan/imported': {
@@ -538,11 +588,24 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         workItems.set(payload.workItemId, { ...replayed, criteria })
         break
       }
+      case 'project/work-packet-prepared': {
+        const payload = decodeWorkPacketPreparedPayload(event)
+        requireReplayedWorkItem(workItems, payload.workItemId, event)
+        if (workPackets.has(payload.packetId)) {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "packetId" `
+              + `names an already replayed work packet (${payload.packetId})`,
+          )
+        }
+        workPackets.set(payload.packetId, payload)
+        break
+      }
       default:
         break
     }
   }
-  return { planVersions, workItems, leases }
+  return { planVersions, workItems, leases, workPackets }
 }
 
 /** Fail closed when a payload names a work item the fold has not replayed. */
@@ -656,6 +719,9 @@ interface WorkBlockedPayload extends StatusMovePayload {
   /** The recomputed blockers materialized by the move. */
   readonly reasons: readonly WorkReadinessReason[]
 }
+
+/** Payload facts of one `project/work-packet-prepared` event — the recorded recipe. */
+type WorkPacketPreparedPayload = ReplayedWorkPacket
 
 /** The event payload must be a JSON object for appliers to read fields from. */
 function payloadFields(event: ProjectEventEnvelope): Record<string, unknown> {
@@ -953,4 +1019,95 @@ function decodeWorkBlockedPayload(event: ProjectEventEnvelope): WorkBlockedPaylo
     toStatus: requiredStatus(fields, event, 'toStatus'),
     reasons: requiredReadinessReasons(event, fields),
   }
+}
+
+/** Read one required work-packet reference kind payload field. */
+function requiredPacketReferenceKind(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  label: string,
+): WorkPacketReferenceKind {
+  const value = requiredString(fields, event, 'kind', label)
+  if (!PACKET_REFERENCE_KIND_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${label}" `
+        + `is not a work packet reference kind: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as WorkPacketReferenceKind
+}
+
+/**
+ * Decode the `references` array of one `project/work-packet-prepared`
+ * payload, failing closed on a non-array value and on entries this codec
+ * cannot read.
+ */
+function requiredPacketReferences(event: ProjectEventEnvelope, fields: Record<string, unknown>): ReplayedWorkPacketReference[] {
+  const value = fields.references
+  if (!Array.isArray(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "references" must be an array`,
+    )
+  }
+  return value.map((entry, index): ReplayedWorkPacketReference => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new ProjectEventError(
+        'malformed-event-payload',
+        `project event ${event.sequenceNo} of "${event.projectId}" payload field "references[${index}]" must be an object`,
+      )
+    }
+    const entryFields = entry as Record<string, unknown>
+    return {
+      kind: requiredPacketReferenceKind(entryFields, event, `references[${index}].kind`),
+      refId: requiredString(entryFields, event, 'refId', `references[${index}].refId`),
+      contentHash: requiredString(entryFields, event, 'contentHash', `references[${index}].contentHash`),
+    }
+  })
+}
+
+/**
+ * Decode one `project/work-packet-prepared` payload into the recorded
+ * recipe, failing closed on missing or mistyped fields. Exported for the
+ * packet rebuild seam, which re-derives the packet from the recipe's rows.
+ * @param event - the prepared-packet envelope to decode.
+ * @returns the recipe exactly as recorded.
+ * @throws {ProjectEventError} on `malformed-event-payload`.
+ */
+export function decodeWorkPacketPreparedPayload(event: ProjectEventEnvelope): WorkPacketPreparedPayload {
+  const fields = payloadFields(event)
+  return {
+    packetId: requiredString(fields, event, 'packetId') as WorkPacketId,
+    packetFormatVersion: requiredNumber(fields, event, 'packetFormatVersion'),
+    builderVersion: requiredString(fields, event, 'builderVersion'),
+    workItemId: requiredString(fields, event, 'workItemId') as WorkItemId,
+    planVersionId: requiredString(fields, event, 'planVersionId') as PlanVersionId,
+    repoSnapshotId: requiredString(fields, event, 'repoSnapshotId'),
+    references: requiredPacketReferences(event, fields),
+    packetHash: requiredString(fields, event, 'packetHash'),
+    serializedBytes: requiredNumber(fields, event, 'serializedBytes'),
+  }
+}
+
+/**
+ * Read the event that recorded one work packet, by packet id. The id embeds
+ * the owning work item and the project-local sequence, so matching on the
+ * row's entity id needs no project up front; the row still decodes through
+ * the fail-closed reader.
+ * @param db - open ledger database.
+ * @param packetId - the prepared packet to look up.
+ * @returns the envelope of the recording event, or `undefined` when no packet
+ * carries that id.
+ * @throws {ProjectEventError} the {@link readProjectEvents} row failures.
+ */
+export function readWorkPacketEvent(db: DatabaseSync, packetId: WorkPacketId): ProjectEventEnvelope | undefined {
+  const row = db.prepare(
+    'SELECT project_id, sequence_no, event_format_version, event_type, ignorable, entity_type, entity_id, '
+    + 'actor_ref, payload_json, created_at_ms '
+    + "FROM project_events WHERE event_type = 'project/work-packet-prepared' AND entity_id = ?",
+  ).get(packetId) as unknown as (ProjectEventRow & { project_id: string }) | undefined
+  if (row === undefined) return undefined
+  // The project id crossed the durable project_events row boundary.
+  return decodeEventRow(row.project_id as ProjectId, row)
 }

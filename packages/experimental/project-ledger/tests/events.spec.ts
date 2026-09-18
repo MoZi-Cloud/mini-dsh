@@ -173,7 +173,8 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       releasedAtMs: row.released_at_ms ?? undefined,
     })
   }
-  return { planVersions, workItems, leases }
+  // No test in this file prepares work packets; the rebuild seam owns packet parity.
+  return { planVersions, workItems, leases, workPackets: new Map() }
 }
 
 describe('appendProjectEvent', () => {
@@ -480,6 +481,7 @@ describe('replayProjectEvents', () => {
       planVersions: new Map(),
       workItems: new Map(),
       leases: new Map(),
+      workPackets: new Map(),
     })
     db.close()
   })
