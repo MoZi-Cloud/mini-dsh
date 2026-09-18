@@ -5,10 +5,12 @@
  * session mounts — against one Project Ledger. For one ready work item of the
  * post-v1.6a increment plan the lane is the agent of record: it observes
  * through project_work_next, claims through project_work_claim (receiving the
- * WorkPacket, never the plan document), executes the packet's stored verifier
- * command as a real subprocess in the repository, and reports through
+ * WorkPacket, never the plan document), executes each observable criterion's
+ * stored verifier command from the packet as a real subprocess in the
+ * repository, and reports one verdict per criterion through
  * project_work_update. DONE with a clean doctor and a matching replay is the
- * only passing outcome; a failing verifier records FAIL and fails the run.
+ * only passing outcome; a failing verifier records its criterion FAIL and
+ * fails the run.
  *
  * The ledger is a fresh temporary file unless DSH_REAL_USE_LEDGER names a
  * persistent one (the profile default is ~/.dsh/project-ledger/ledger.sqlite),
@@ -69,12 +71,30 @@ interface LaneReport {
   readonly planVersionId: string
   readonly workItemId: string
   readonly stableKey: string
-  readonly verifierCommand: string | null
-  readonly verifierExitCode: number | null
+  readonly verifierResults: readonly {
+    readonly criterionId: string
+    readonly command: string
+    readonly exitCode: number | null
+  }[]
   readonly itemStatus: string
   readonly doctorIssues: number
   readonly replayItemStatus: string
   readonly toolCalls: Readonly<Record<string, number>>
+}
+
+/** One executed verifier run paired with the criterion its spec belongs to. */
+interface VerifierRun {
+  readonly criterionId: string
+  readonly command: string
+  readonly exitCode: number | null
+  readonly output: string
+}
+
+/** The verifier-spec fields of a work-packet document the lane reads. */
+interface PacketVerifierSpec {
+  readonly criterionId: string
+  readonly commandText: string | null
+  readonly queryText: string | null
 }
 
 /** Run one verifier command in the repository, bounded in time and output. */
@@ -100,19 +120,28 @@ async function runVerifier(command: string): Promise<{ exitCode: number | null; 
   })
 }
 
-/** Collect every verifier command text stored in a work-packet document, in document order. */
-function collectCommandTexts(node: unknown, into: string[] = []): string[] {
-  if (Array.isArray(node)) {
-    for (const element of node) collectCommandTexts(element, into)
-    return into
-  }
-  if (typeof node === 'object' && node !== null) {
-    for (const [key, value] of Object.entries(node)) {
-      if (key === 'commandText' && typeof value === 'string') into.push(value)
-      else collectCommandTexts(value, into)
+/**
+ * Run every observable criterion's stored command verifier from a claimed
+ * work packet, in packet order. Specs without stored text are not
+ * agent-observable and are skipped; a query verifier is observable but not
+ * executable here, so it fails loud instead of being reported from nothing.
+ */
+async function runPacketVerifiers(specs: readonly PacketVerifierSpec[]): Promise<VerifierRun[]> {
+  const runs: VerifierRun[] = []
+  for (const spec of specs) {
+    if (spec.commandText === null) {
+      if (spec.queryText !== null) {
+        throw new Error(`real-use lane: criterion ${spec.criterionId} stores a query verifier, which this lane cannot execute`)
+      }
+      continue
     }
+    const verifier = await runVerifier(spec.commandText)
+    runs.push({ criterionId: spec.criterionId, command: spec.commandText, exitCode: verifier.exitCode, output: verifier.output })
   }
-  return into
+  if (runs.length === 0) {
+    throw new Error('real-use lane: the work packet carries no command verifier to run')
+  }
+  return runs
 }
 
 async function main(): Promise<void> {
@@ -191,8 +220,7 @@ async function main(): Promise<void> {
         planVersionId: versionId,
         workItemId: itemRow.id,
         stableKey: TARGET_STABLE_KEY,
-        verifierCommand: null,
-        verifierExitCode: null,
+        verifierResults: [],
         itemStatus: itemRow.status,
         doctorIssues: 0,
         replayItemStatus: 'DONE',
@@ -212,20 +240,18 @@ async function main(): Promise<void> {
     }
 
     const claimValue = await call('project_work_claim', { workItemId: entry.workItemId }) as {
-      packet: unknown
+      packet: { verifierSpecs: readonly PacketVerifierSpec[] }
     }
-    const commands = collectCommandTexts(claimValue.packet)
-    if (commands.length !== 1) {
-      throw new Error(`real-use lane: expected exactly one stored verifier command in the work packet, found ${String(commands.length)}`)
-    }
-    const command = commands[0]
-    if (command === undefined) throw new Error('real-use lane: the verifier command list is empty')
-    const verifier = await runVerifier(command)
+    const verifierRuns = await runPacketVerifiers(claimValue.packet.verifierSpecs)
+    const allPassed = verifierRuns.every(run => run.exitCode === 0)
 
     const updateValue = await call('project_work_update', {
       action: 'report',
-      result: verifier.exitCode === 0 ? 'PASS' : 'FAIL',
-      exitCode: verifier.exitCode,
+      criteria: verifierRuns.map(run => ({
+        criterionId: run.criterionId,
+        result: run.exitCode === 0 ? 'PASS' as const : 'FAIL' as const,
+        ...(run.exitCode === null ? {} : { exitCode: run.exitCode }),
+      })),
     }) as {
       action: string
       itemStatus: string
@@ -235,16 +261,27 @@ async function main(): Promise<void> {
     if (updateValue.action !== 'report') {
       throw new Error(`real-use lane: report came back as ${updateValue.action}`)
     }
-    if (verifier.exitCode === 0 && updateValue.itemStatus !== 'DONE') {
+    // Every executed criterion is recorded with exactly the verdict the lane observed.
+    const observed = new Map(verifierRuns.map(run => [run.criterionId, run.exitCode === 0 ? 'PASS' : 'FAIL']))
+    for (const evaluated of updateValue.evaluatedCriteria) {
+      if (observed.get(evaluated.criterionId) !== evaluated.result) {
+        throw new Error(
+          `real-use lane: criterion ${evaluated.criterionId} recorded ${evaluated.result}, `
+          + `expected ${observed.get(evaluated.criterionId) ?? 'no verdict'}`,
+        )
+      }
+    }
+    if (allPassed && updateValue.itemStatus !== 'DONE') {
       throw new Error(
         `real-use lane: PASS report left the item ${updateValue.itemStatus}`
         + (updateValue.pendingCriteria.length > 0 ? `; pending: ${updateValue.pendingCriteria.join(', ')}` : ''),
       )
     }
-    if (verifier.exitCode !== 0) {
+    if (!allPassed) {
+      const failing = verifierRuns.filter(run => run.exitCode !== 0)
       throw new Error(
-        `real-use lane: verifier failed (exit ${verifier.exitCode === null ? 'null' : String(verifier.exitCode)}); `
-        + `item is ${updateValue.itemStatus}; output tail: ${verifier.output.slice(-800)}`,
+        `real-use lane: ${String(failing.length)} verifier(s) failed (criterion ${failing.map(run => run.criterionId).join(', ')}); `
+        + `item is ${updateValue.itemStatus}; output tail: ${failing.map(run => run.output.slice(-800)).join('\n')}`,
       )
     }
 
@@ -264,8 +301,11 @@ async function main(): Promise<void> {
       planVersionId: versionId,
       workItemId: entry.workItemId,
       stableKey: TARGET_STABLE_KEY,
-      verifierCommand: command,
-      verifierExitCode: verifier.exitCode,
+      verifierResults: verifierRuns.map(run => ({
+        criterionId: run.criterionId,
+        command: run.command,
+        exitCode: run.exitCode,
+      })),
       itemStatus: updateValue.itemStatus,
       doctorIssues: 0,
       replayItemStatus: replayed.status,

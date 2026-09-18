@@ -4,7 +4,7 @@
 
 ## 摘要
 
-可重复的 §33 真实使用驱动器（docs/mini/real-use-log.md）：post-v1.6a 增量计划中的一个就绪工作项，经由 SHIPPED 的 mini-profile 表面——与 `dsh --profile mini` 会话挂载的同一个 `MiniProjectLedger` 与 `mini-project-work` 插件——完整走完，全程无模型参与。lane 本身即记录在案的执行者：经 `project_work_next` 观察、经 `project_work_claim` 领取（收到 WorkPacket，绝不读计划文档）、把 packet 内存储的 verifier 命令作为真实子进程在仓库中执行、再经 `project_work_update` 报告。唯有 DONE、doctor 无问题、事件重放一致才算通过；verifier 失败会记入 FAIL 并使运行失败。
+可重复的 §33 真实使用驱动器（docs/mini/real-use-log.md）：post-v1.6a 增量计划中的一个就绪工作项，经由 SHIPPED 的 mini-profile 表面——与 `dsh --profile mini` 会话挂载的同一个 `MiniProjectLedger` 与 `mini-project-work` 插件——完整走完，全程无模型参与。lane 本身即记录在案的执行者：经 `project_work_next` 观察、经 `project_work_claim` 领取（收到 WorkPacket，绝不读计划文档）、把 packet 内每个可观察标准的存储 verifier 命令作为真实子进程在仓库中执行、再经 `project_work_update` 逐标准报告判定。唯有 DONE、doctor 无问题、事件重放一致才算通过；verifier 失败会为对应标准记入 FAIL 并使运行失败。
 
 ## 目录
 

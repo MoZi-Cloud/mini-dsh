@@ -17,7 +17,7 @@ import {
   type AcceptanceCriterionId,
   type WorkItemId,
 } from '@deepseek-ai/dsh-experimental-project-ledger'
-import { GATED_PLAN_TEXT, GOLDEN_PLAN_TEXT, SOLO_PLAN_TEXT, TINY_PLAN_TEXT, seedActivePlan } from './plans.ts'
+import { DUAL_PLAN_TEXT, GATED_PLAN_TEXT, GOLDEN_PLAN_TEXT, SOLO_PLAN_TEXT, TINY_PLAN_TEXT, seedActivePlan } from './plans.ts'
 import * as miniProjectWork from '../src/project-work.ts'
 import type { Config as ProjectWorkConfig } from '../src/project-work.ts'
 import MiniProjectLedger from '../src/index.ts'
@@ -72,9 +72,23 @@ function text(result: { content: { type: string; text?: string }[] }): string {
   return result.content.filter(block => block.type === 'text').map(block => block.text).join('')
 }
 
+/** The ledger criterion id carrying the given stable-key fragment, as the packet and report name it. */
+function criterionId(mounted: Mounted, workItemId: string, fragment: string): string {
+  const rows = mounted.ctx.projectLedger.db
+    .prepare('SELECT id FROM acceptance_criteria WHERE work_item_id = ?')
+    .all(workItemId) as { id: string }[]
+  const found = rows.map(row => row.id).find(id => id.includes(fragment))
+  if (found === undefined) throw new Error(`no criterion id containing "${fragment}" on ${workItemId}`)
+  return found
+}
+
 /** The registered JSON Schema of one tool's parameters. */
 interface ToolParameterSchema {
-  properties?: Record<string, { type: string; enum?: string[] }>
+  properties?: Record<string, {
+    type: string
+    enum?: string[]
+    items?: { properties?: Record<string, { type: string; enum?: string[] }> }
+  }>
   required?: string[]
 }
 
@@ -106,11 +120,15 @@ describe('project-work tools', () => {
 
       const update = parameterSchema(mounted, 'project_work_update')
       const updateProperties = update.properties ?? {}
-      expect(Object.keys(updateProperties).sort()).toEqual(['action', 'exitCode', 'result'])
+      expect(Object.keys(updateProperties).sort()).toEqual(['action', 'criteria'])
       expect(update.required).toEqual(['action'])
       expect(updateProperties.action?.enum).toEqual(['heartbeat', 'release', 'report'])
-      expect(updateProperties.result?.enum).toEqual(['PASS', 'FAIL'])
-      expect(updateProperties.exitCode?.type).toBe('integer')
+      expect(updateProperties.criteria?.type).toBe('array')
+      const verdictEntry = updateProperties.criteria?.items?.properties ?? {}
+      expect(Object.keys(verdictEntry).sort()).toEqual(['criterionId', 'exitCode', 'result'])
+      expect(verdictEntry.criterionId?.type).toBe('string')
+      expect(verdictEntry.result?.enum).toEqual(['PASS', 'FAIL'])
+      expect(verdictEntry.exitCode?.type).toBe('integer')
     } finally {
       await unmount(mounted)
     }
@@ -131,12 +149,17 @@ describe('project-work tools', () => {
       expect(claim?.presentCall?.({})).toBeUndefined()
 
       const update = mounted.ctx.tools.get('project_work_update')
-      expect(update?.presentCall?.({ action: 'report', result: 'PASS', exitCode: 0 })).toEqual({
-        card: 'generic', title: 'Report verification outcome', kind: 'other', rawInput: { result: 'PASS', exitCode: 0 },
+      const verdicts = [{ criterionId: 'ac:1', result: 'PASS', exitCode: 0 }]
+      expect(update?.presentCall?.({ action: 'report', criteria: verdicts })).toEqual({
+        card: 'generic', title: 'Report verification outcome', kind: 'other', rawInput: verdicts,
       })
-      expect(update?.presentCall?.({ action: 'report', result: 'FAIL' })).toEqual({
-        card: 'generic', title: 'Report verification outcome', kind: 'other', rawInput: { result: 'FAIL' },
+      expect(update?.presentCall?.({ action: 'report', criteria: [{ criterionId: 'ac:1', result: 'FAIL' }] })).toEqual({
+        card: 'generic', title: 'Report verification outcome', kind: 'other',
+        rawInput: [{ criterionId: 'ac:1', result: 'FAIL' }],
       })
+      expect(update?.presentCall?.({ action: 'report' }))
+        .toEqual({ card: 'generic', title: 'Report verification outcome', kind: 'other' })
+      expect(update?.presentCall?.({ action: 'report', criteria: 'PASS' })).toBeUndefined()
       expect(update?.presentCall?.({ action: 'heartbeat' }))
         .toEqual({ card: 'generic', title: 'Extend work lease', kind: 'other' })
       expect(update?.presentCall?.({ action: 'release' }))
@@ -278,7 +301,7 @@ describe('project-work tools', () => {
       const reported = await run(
         mounted,
         'project_work_update',
-        { action: 'report', result: 'PASS' },
+        { action: 'report', criteria: [{ criterionId: criterionId(mounted, 'wi:tiny-proj:AGENT-FREE', 'AC-AGENT-FREE'), result: 'PASS' }] },
         { agent: agent('agent-1') },
       )
       expect(reported.isError).toBe(false)
@@ -302,7 +325,14 @@ describe('project-work tools', () => {
       const result = await run(
         mounted,
         'project_work_update',
-        { action: 'report', result: 'PASS', exitCode: 0 },
+        {
+          action: 'report',
+          criteria: [{
+            criterionId: criterionId(mounted, 'wi:tiny-proj:AGENT-FREE', 'AC-AGENT-FREE'),
+            result: 'PASS',
+            exitCode: 0,
+          }],
+        },
         { agent: agent('agent-1') },
       )
       expect(result.isError).toBe(false)
@@ -342,7 +372,7 @@ describe('project-work tools', () => {
       const result = await run(
         mounted,
         'project_work_update',
-        { action: 'report', result: 'PASS' },
+        { action: 'report', criteria: [] },
         { agent: agent('agent-1') },
       )
       expect(result.isError).toBe(false)
@@ -355,12 +385,12 @@ describe('project-work tools', () => {
       expect(text(result)).toContain('Awaiting: ')
 
       const db = mounted.ctx.projectLedger.db
-      const criterionId = (db.prepare(
+      const gatedCriterionId = (db.prepare(
         "SELECT id FROM acceptance_criteria WHERE work_item_id = 'wi:gated-proj:AGENT-GATED'",
       ).get() as { id: string }).id
       // The owner confirmation is the owner's write; the item completes only
       // through the acceptance seam the tool never bypasses.
-      evaluateAcceptanceCriterion(db, brandString<AcceptanceCriterionId>(criterionId), 'PASS', { evaluatedBy: 'owner' })
+      evaluateAcceptanceCriterion(db, brandString<AcceptanceCriterionId>(gatedCriterionId), 'PASS', { evaluatedBy: 'owner' })
       changeWorkStatus(db, brandString<WorkItemId>('wi:gated-proj:AGENT-GATED'), 'DONE')
       const status = (db.prepare("SELECT status FROM work_items WHERE id = 'wi:gated-proj:AGENT-GATED'")
         .get() as { status: string }).status
@@ -379,7 +409,14 @@ describe('project-work tools', () => {
       const result = await run(
         mounted,
         'project_work_update',
-        { action: 'report', result: 'FAIL', exitCode: 1 },
+        {
+          action: 'report',
+          criteria: [{
+            criterionId: criterionId(mounted, 'wi:solo-proj:AGENT-ONLY', 'AC-AGENT-ONLY'),
+            result: 'FAIL',
+            exitCode: 1,
+          }],
+        },
         { agent: agent('agent-1') },
       )
       expect(result.isError).toBe(false)
@@ -390,6 +427,104 @@ describe('project-work tools', () => {
         evaluatedCriteria: [{ result: 'FAIL', status: 'FAILING' }],
         pendingCriteria: [expect.stringContaining('AC-AGENT-ONLY') as string],
       })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('report applies one verdict per criterion, so a mixed suite fails only its failing criteria', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, DUAL_PLAN_TEXT)
+    })
+    try {
+      await run(mounted, 'project_work_claim', { workItemId: 'wi:dual-proj:AGENT-DUAL' }, { agent: agent('agent-1') })
+      const passing = criterionId(mounted, 'wi:dual-proj:AGENT-DUAL', 'AC-DUAL-A')
+      const failing = criterionId(mounted, 'wi:dual-proj:AGENT-DUAL', 'AC-DUAL-B')
+      const ownerGate = criterionId(mounted, 'wi:dual-proj:AGENT-DUAL', 'AC-DUAL-OWNER')
+      const result = await run(
+        mounted,
+        'project_work_update',
+        {
+          action: 'report',
+          criteria: [
+            { criterionId: passing, result: 'PASS', exitCode: 0 },
+            { criterionId: failing, result: 'FAIL', exitCode: 1 },
+          ],
+        },
+        { agent: agent('agent-1') },
+      )
+      expect(result.isError).toBe(false)
+      expect(result.value).toMatchObject({
+        action: 'report',
+        workItemId: 'wi:dual-proj:AGENT-DUAL',
+        itemStatus: 'FAILED',
+        evaluatedCriteria: [
+          { criterionId: passing, result: 'PASS', status: 'PASSING' },
+          { criterionId: failing, result: 'FAIL', status: 'FAILING' },
+        ],
+        pendingCriteria: [failing, ownerGate],
+      })
+      const ownerStatus = (mounted.ctx.projectLedger.db
+        .prepare('SELECT status FROM acceptance_criteria WHERE id = ?')
+        .get(ownerGate) as { status: string }).status
+      expect(ownerStatus).toBe('PENDING')
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('report passing every observable criterion still waits for the owner gate in VERIFYING', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, DUAL_PLAN_TEXT)
+    })
+    try {
+      await run(mounted, 'project_work_claim', { workItemId: 'wi:dual-proj:AGENT-DUAL' }, { agent: agent('agent-1') })
+      const first = criterionId(mounted, 'wi:dual-proj:AGENT-DUAL', 'AC-DUAL-A')
+      const second = criterionId(mounted, 'wi:dual-proj:AGENT-DUAL', 'AC-DUAL-B')
+      const result = await run(
+        mounted,
+        'project_work_update',
+        { action: 'report', criteria: [{ criterionId: first, result: 'PASS' }, { criterionId: second, result: 'PASS' }] },
+        { agent: agent('agent-1') },
+      )
+      expect(result.isError).toBe(false)
+      expect(result.value).toMatchObject({
+        action: 'report',
+        itemStatus: 'VERIFYING',
+        evaluatedCriteria: [
+          { criterionId: first, result: 'PASS', status: 'PASSING' },
+          { criterionId: second, result: 'PASS', status: 'PASSING' },
+        ],
+        pendingCriteria: [criterionId(mounted, 'wi:dual-proj:AGENT-DUAL', 'AC-DUAL-OWNER')],
+      })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('rejects verdict lists that misname, duplicate, or under-cover the observable criteria without writing', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, DUAL_PLAN_TEXT)
+    })
+    try {
+      await run(mounted, 'project_work_claim', { workItemId: 'wi:dual-proj:AGENT-DUAL' }, { agent: agent('agent-1') })
+      const first = criterionId(mounted, 'wi:dual-proj:AGENT-DUAL', 'AC-DUAL-A')
+      const second = criterionId(mounted, 'wi:dual-proj:AGENT-DUAL', 'AC-DUAL-B')
+      const ownerGate = criterionId(mounted, 'wi:dual-proj:AGENT-DUAL', 'AC-DUAL-OWNER')
+      const report = async (criteria: unknown) =>
+        await run(mounted, 'project_work_update', { action: 'report', criteria }, { agent: agent('agent-1') })
+      await expectError(await report([{ criterionId: 'ac:foreign', result: 'PASS' }]), 'is not an acceptance criterion of wi:dual-proj:AGENT-DUAL')
+      await expectError(await report([{ criterionId: ownerGate, result: 'PASS' }]), 'is not agent-observable')
+      await expectError(
+        await report([{ criterionId: first, result: 'PASS' }, { criterionId: first, result: 'FAIL' }]),
+        'lists criterion "' + first + '" twice',
+      )
+      await expectError(await report([{ criterionId: first, result: 'PASS' }]), `must cover every observable criterion; missing: ${second}`)
+      // The rejections validated before any write, so the claim is still
+      // held and a well-formed report reaches the ordinary outcome.
+      const recovered = await report([{ criterionId: first, result: 'PASS' }, { criterionId: second, result: 'PASS' }])
+      expect(recovered.isError).toBe(false)
+      expect(recovered.value).toMatchObject({ action: 'report', itemStatus: 'VERIFYING' })
     } finally {
       await unmount(mounted)
     }
@@ -438,11 +573,11 @@ describe('project-work tools', () => {
       await run(mounted, 'project_work_claim', { workItemId: 'wi:gated-proj:AGENT-GATED' }, { agent: agent('agent-1') })
       await expectError(
         await run(mounted, 'project_work_update', { action: 'report' }, { agent: agent('agent-1') }),
-        'action "report" requires result: PASS or FAIL',
+        'action "report" requires criteria: one verdict per observable acceptance criterion',
       )
       await expectError(
-        await run(mounted, 'project_work_update', { action: 'heartbeat', result: 'PASS' }, { agent: agent('agent-1') }),
-        'accepts result or exitCode only with action "report"',
+        await run(mounted, 'project_work_update', { action: 'heartbeat', criteria: [] }, { agent: agent('agent-1') }),
+        'accepts criteria only with action "report"',
       )
     } finally {
       await unmount(mounted)

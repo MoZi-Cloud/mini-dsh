@@ -20,6 +20,16 @@ The post-v1.6a real-use lane (`./benchmarks/real-use/run-real-use.sh`) drove `PW
 
 An immediate rerun passed idempotently (`alreadyComplete: true`, doctor 0 issues, no writes). The remaining plan items — `PW-REPORT-VERDICTS-001`, `PW-OBSERVED-TAIL-001` — stay claimable in the same ledger for later increments.
 
+### 2026-09-18 — PW-REPORT-VERDICTS-001 through the shipped tools
+
+The same lane drove `PW-REPORT-VERDICTS-001` (per-criterion verdicts in `project_work_update` reports: one `{criterionId, result PASS|FAIL, optional exitCode}` entry per observable acceptance criterion, exactly once each, replacing the single blanket verdict) against the persistent ledger. The report grammar changed under the lane in the same increment: the lane now runs each observable criterion's stored command from the WorkPacket and reports one verdict per criterion, and its JSON line gained per-criterion `verifierResults`. Claim by `agent:mini-real-use-lane`, verifier `pnpm exec vitest run mini-profile` (exit 0), item DONE, doctor 0 issues, event replay DONE. First-run report line:
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v1","workItemId":"wi:mini-dsh:PW-REPORT-VERDICTS-001","stableKey":"PW-REPORT-VERDICTS-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-REPORT-VERDICTS-001:AC-PW-REPORT-VERDICTS-001","command":"pnpm exec vitest run mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+An immediate rerun passed idempotently (`alreadyComplete: true`, no writes). The 4K slice rerun after the grammar change stayed green (6 requests, max 2,427/4,096 estimated tokens, DONE), so no BOOT/4K regression accompanies this increment. The remaining plan item — `PW-OBSERVED-TAIL-001` — stays claimable for a later increment.
+
 ## Status toward the gate
 
-Items completed through the ledger: 16 (15 golden-plan items by the v1.6a build itself, plus this entry). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.
+Items completed through the ledger: 17 (15 golden-plan items by the v1.6a build itself, plus the two entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.

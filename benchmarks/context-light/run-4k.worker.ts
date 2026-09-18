@@ -20,7 +20,6 @@ import { spawn } from 'node:child_process'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
-import type { DatabaseSync } from 'node:sqlite'
 import { Context } from '@deepseek-ai/cordis'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
@@ -177,7 +176,12 @@ class ScriptedLaneAdapter extends LlmAdapter {
       if (command === undefined) throw new Error('scripted lane: the packet result carries no verifier command')
       blocks = [toolCallBlock(serial, 'run_command', { command })]
     } else if (serial === 5) {
-      blocks = [toolCallBlock(serial, 'project_work_update', { result: 'PASS' })]
+      const criterionId = /criterionId\\*":\\*"([^"\\]+)/.exec(transcript)?.[1]
+      if (criterionId === undefined) throw new Error('scripted lane: the packet result carries no criterion id')
+      blocks = [toolCallBlock(serial, 'project_work_update', {
+        action: 'report',
+        criteria: [{ criterionId, result: 'PASS' }],
+      })]
     } else if (serial === 6) {
       blocks = [{ type: 'text', text: 'Slice complete.' }]
     } else {
@@ -333,14 +337,6 @@ async function runVerifier(workspaceRoot: string, command: string): Promise<{ ex
   })
 }
 
-/** The first criterion id of one work item, read from the ledger row. */
-function criterionOf(db: DatabaseSync, workItemId: WorkItemId): AcceptanceCriterionId {
-  return brandString<AcceptanceCriterionId>(
-    (db.prepare('SELECT id FROM acceptance_criteria WHERE work_item_id = ? ORDER BY ordinal LIMIT 1')
-      .get(workItemId) as { id: string }).id,
-  )
-}
-
 async function main(): Promise<void> {
   const live = process.env.DSH_4K_LIVE === '1'
   const apiKey = process.env.DEEPSEEK_API_KEY ?? ''
@@ -461,21 +457,42 @@ async function main(): Promise<void> {
       })))
       ctx.effect(() => ctx.tools.register(defineContentToolFixture({
         name: 'project_work_update',
-        description: 'Report the verifier outcome. Parameter result: "PASS" or "FAIL".',
-        parameters: { result: { type: 'string', required: true } },
+        description: 'Report the verifier outcome. Parameter criteria: one {criterionId, result PASS|FAIL} entry '
+          + 'per observable acceptance criterion the packet delivered.',
+        parameters: {
+          action: { type: 'string', required: true, enum: ['heartbeat', 'release', 'report'] },
+          criteria: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                criterionId: { type: 'string', required: true },
+                result: { type: 'string', required: true, enum: ['PASS', 'FAIL'] },
+                exitCode: { type: 'integer' },
+              },
+            },
+          },
+        },
         isConcurrencySafe: () => false,
-        execute(args: { result: string }) {
+        execute(args: { action: string; criteria: { criterionId: string; result: string }[] }) {
           toolCalls['project_work_update'] = (toolCalls['project_work_update'] ?? 0) + 1
+          if (args.action !== 'report') {
+            throw new Error(`project_work_update fixture: action ${args.action} is outside the 4K slice flow`)
+          }
           const entry = listAgentTodo(db, compiled.projectId, {}).entries[0]
           if (entry === undefined) throw new Error('project_work_update: no in-flight task found')
-          evaluateAcceptanceCriterion(
-            db,
-            criterionOf(db, entry.workItemId),
-            args.result === 'PASS' ? 'PASS' : 'FAIL',
-            { evaluatedBy: 'context-light/agent', attemptRef: 'context-light/4k', observed: { exitCode: verifierExitCode } },
-          )
+          for (const verdict of args.criteria) {
+            evaluateAcceptanceCriterion(
+              db,
+              brandString<AcceptanceCriterionId>(verdict.criterionId),
+              verdict.result === 'PASS' ? 'PASS' : 'FAIL',
+              { evaluatedBy: 'context-light/agent', attemptRef: 'context-light/4k', observed: { exitCode: verifierExitCode } },
+            )
+          }
           changeWorkStatus(db, entry.workItemId, 'VERIFYING', { actorRef: 'context-light/agent' })
-          if (args.result === 'PASS') {
+          if (args.criteria.every(verdict => verdict.result === 'PASS')) {
             changeWorkStatus(db, entry.workItemId, 'DONE', { actorRef: 'context-light/agent' })
           }
           finalItemStatus = (db.prepare('SELECT status FROM work_items WHERE id = ?')

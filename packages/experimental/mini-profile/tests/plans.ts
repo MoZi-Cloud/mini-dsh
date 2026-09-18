@@ -1,7 +1,8 @@
 /**
  * Plan fixtures and seeding helpers shared by the mini-profile specs: the
  * pinned v1.6a golden plan, a multi-project proof with claimable and blocked
- * work, a single-project unphased proof, and an owner-gated acceptance proof.
+ * work, a single-project unphased proof, an owner-gated acceptance proof, and
+ * a dual-observable-criterion proof for per-criterion report verdicts.
  */
 
 import { readFileSync } from 'node:fs'
@@ -163,6 +164,64 @@ workItems:
         verifier:
           kind: OWNER_CONFIRMATION
           instruction: Confirm the gated work.
+relations: []
+`
+
+/**
+ * A project whose only agent item carries two observable TEST criteria beside
+ * an owner confirmation, covering per-criterion verdicts, mixed outcomes, and
+ * the report path that covers the observable criteria without touching the
+ * owner's.
+ */
+export const DUAL_PLAN_TEXT = `schemaVersion: 1
+project:
+  id: dual-proj
+  name: Dual Proof
+plan:
+  id: dual-plan
+  name: Dual Proof Plan
+  version: 1
+phases:
+  - id: P0
+    title: One phase
+    ordinal: 0
+    status: ACTIVE
+workItems:
+  - id: AGENT-DUAL
+    phaseId: P0
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Do the dual work
+    priority: 10
+    status: READY
+    acceptance:
+      - id: AC-DUAL-A
+        kind: TEST
+        description: The first suite works.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm test
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+      - id: AC-DUAL-B
+        kind: TEST
+        description: The second suite works.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm test
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+      - id: AC-DUAL-OWNER
+        kind: OWNER_CONFIRMATION
+        description: Owner accepts the dual work.
+        required: true
+        verifier:
+          kind: OWNER_CONFIRMATION
+          instruction: Confirm the dual work.
 relations: []
 `
 

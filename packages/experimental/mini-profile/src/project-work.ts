@@ -11,12 +11,13 @@
  * nothing a session log replays can heartbeat or release a lease; a lost
  * holder is recovered by expiry and the reaper, not by a re-derived token.
  *
- * Completion stays with the acceptance seam (§5.3): a report records the
- * agent's observations only on criteria whose verifier spec stores runnable
- * text (a command or query the agent can execute through its ordinary tools),
- * never an OWNER_CONFIRMATION, and DONE happens only when every required
- * criterion is already PASSING or WAIVED — the ledger's own gate. Nothing
- * here executes a verifier command.
+ * Completion stays with the acceptance seam (§5.3): a report carries one
+ * caller-named verdict per criterion whose verifier spec stores runnable text
+ * (a command or query the agent can execute through its ordinary tools),
+ * covering every such criterion exactly once, and never names an
+ * OWNER_CONFIRMATION. DONE happens only when every required criterion is
+ * already PASSING or WAIVED — the ledger's own gate. Nothing here executes a
+ * verifier command.
  *
  * @module @deepseek-ai/dsh-experimental-mini-profile/project-work
  */
@@ -348,9 +349,10 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'project_work_update',
     description: 'Advance your held claim. action heartbeat extends the lease; action release gives the item back; '
-      + 'action report (parameters result PASS|FAIL, optional exitCode) records your verifier observations, moves '
-      + 'the item to VERIFYING or FAILED, and completes it only when every required criterion already passes — '
-      + 'owner confirmations are never written here.',
+      + 'action report (parameter criteria: one {criterionId, result PASS|FAIL, optional exitCode} entry per '
+      + 'observable acceptance criterion) records your verifier observations per criterion, moves the item to '
+      + 'VERIFYING or FAILED, and completes it only when every required criterion already passes — owner '
+      + 'confirmations are never written here.',
     parameters: {
       action: {
         type: 'string',
@@ -358,8 +360,19 @@ export function apply(ctx: Context, config: Config = {}): void {
         enum: ['heartbeat', 'release', 'report'],
         description: 'heartbeat | release | report.',
       },
-      result: { type: 'string', enum: ['PASS', 'FAIL'], description: 'Verdict for the report action.' },
-      exitCode: { type: 'integer', description: 'Verifier exit code observed for the report.' },
+      criteria: {
+        type: 'array',
+        description: 'For action report only: one verdict per observable acceptance criterion the work packet delivered.',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            criterionId: { type: 'string', required: true, description: 'Criterion id exactly as the work packet delivered it.' },
+            result: { type: 'string', required: true, enum: ['PASS', 'FAIL'], description: 'Verdict you observed for this criterion.' },
+            exitCode: { type: 'integer', description: 'Verifier exit code you observed for this criterion.' },
+          },
+        },
+      },
     },
     output: {
       schema: {
@@ -432,13 +445,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       const title = args.action === 'report'
         ? 'Report verification outcome'
         : args.action === 'heartbeat' ? 'Extend work lease' : 'Release work claim'
-      return present(
-        title,
-        'other',
-        args.action === 'report' && args.result !== undefined
-          ? { result: args.result, ...(args.exitCode === undefined ? {} : { exitCode: args.exitCode }) }
-          : undefined,
-      )
+      return present(title, 'other', args.action === 'report' ? args.criteria : undefined)
     },
     execute(args, exec) {
       if (exec.agent === undefined) {
@@ -449,8 +456,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       if (heldClaim === undefined) {
         throw new Error('project_work_update requires a held claim; call project_work_claim first')
       }
-      if (args.action !== 'report' && (args.result !== undefined || args.exitCode !== undefined)) {
-        throw new Error('project_work_update accepts result or exitCode only with action "report"')
+      if (args.action !== 'report' && args.criteria !== undefined) {
+        throw new Error('project_work_update accepts criteria only with action "report"')
       }
       const db = ctx.projectLedger.db
       if (args.action === 'heartbeat') {
@@ -472,34 +479,61 @@ export function apply(ctx: Context, config: Config = {}): void {
           itemStatus: readItemStatus(db, heldClaim.workItemId),
         })
       }
-      if (args.result === undefined) {
-        throw new Error('project_work_update action "report" requires result: PASS or FAIL')
+      if (args.criteria === undefined) {
+        throw new Error('project_work_update action "report" requires criteria: one verdict per observable acceptance criterion')
       }
-      // Report: prove the lease is live, record what the agent observed, then
-      // let the status table and the acceptance gate decide the outcome.
-      heartbeatWorkLease(db, heldClaim.leaseId, heldClaim.leaseToken, { actorRef: TOOL_ACTOR_REF, leaseConfig })
-      const result = args.result
-      const observable = listCriteria(db, heldClaim.workItemId).filter(criterion => isAgentObservable(db, criterion.id))
+      // Report: validate the verdict list against the item, prove the lease
+      // is live, then record one evaluation per observable criterion. The
+      // projection statuses and the acceptance gate decide the outcome.
+      const criteriaRows = listCriteria(db, heldClaim.workItemId)
+      const itemCriterionIds = new Set(criteriaRows.map(criterion => criterion.id))
+      const observable = criteriaRows.filter(criterion => isAgentObservable(db, criterion.id))
+      const observableIds = new Set(observable.map(criterion => criterion.id))
+      const verdicts = new Map<string, { criterionId: string; result: 'PASS' | 'FAIL'; exitCode?: number }>()
+      for (const entry of args.criteria) {
+        if (!itemCriterionIds.has(entry.criterionId)) {
+          throw new Error(`project_work_update criterion "${entry.criterionId}" is not an acceptance criterion of ${heldClaim.workItemId}`)
+        }
+        if (!observableIds.has(entry.criterionId)) {
+          throw new Error(`project_work_update criterion "${entry.criterionId}" is not agent-observable; the report path never evaluates it`)
+        }
+        if (verdicts.has(entry.criterionId)) {
+          throw new Error(`project_work_update lists criterion "${entry.criterionId}" twice`)
+        }
+        verdicts.set(entry.criterionId, entry)
+      }
+      const ordered: { criterionId: string; result: 'PASS' | 'FAIL'; exitCode?: number }[] = []
+      const missing: string[] = []
       for (const criterion of observable) {
+        const verdict = verdicts.get(criterion.id)
+        if (verdict === undefined) missing.push(criterion.id)
+        else ordered.push(verdict)
+      }
+      if (missing.length > 0) {
+        throw new Error(`project_work_update criteria must cover every observable criterion; missing: ${missing.join(', ')}`)
+      }
+      heartbeatWorkLease(db, heldClaim.leaseId, heldClaim.leaseToken, { actorRef: TOOL_ACTOR_REF, leaseConfig })
+      for (const verdict of ordered) {
         evaluateAcceptanceCriterion(
           db,
-          brandString<AcceptanceCriterionId>(criterion.id),
-          result,
+          brandString<AcceptanceCriterionId>(verdict.criterionId),
+          verdict.result,
           {
             evaluatedBy: identity,
-            ...(args.exitCode === undefined ? {} : { observed: { exitCode: args.exitCode } }),
+            ...(verdict.exitCode === undefined ? {} : { observed: { exitCode: verdict.exitCode } }),
           },
         )
       }
       const after = listCriteria(db, heldClaim.workItemId)
-      const observableIds = new Set(observable.map(criterion => criterion.id))
-      const evaluatedCriteria = after
-        .filter(criterion => observableIds.has(criterion.id))
-        .map(criterion => ({ criterionId: criterion.id, result, status: criterion.status }))
+      const resultById = new Map(ordered.map(verdict => [verdict.criterionId, verdict.result]))
+      const evaluatedCriteria = after.flatMap((criterion) => {
+        const result = resultById.get(criterion.id)
+        return result === undefined ? [] : [{ criterionId: criterion.id, result, status: criterion.status }]
+      })
       const pendingCriteria = after
         .filter(criterion => criterion.required === 1 && criterion.status !== 'PASSING' && criterion.status !== 'WAIVED')
         .map(criterion => criterion.id)
-      if (args.result === 'FAIL') {
+      if (ordered.some(verdict => verdict.result === 'FAIL')) {
         changeWorkStatus(db, heldClaim.workItemId, 'FAILED', { actorRef: identity })
       } else {
         changeWorkStatus(db, heldClaim.workItemId, 'VERIFYING', { actorRef: identity })
