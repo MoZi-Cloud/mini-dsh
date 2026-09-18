@@ -721,6 +721,9 @@ importers:
       '@deepseek-ai/dsh-api-session-controller':
         specifier: workspace:^
         version: link:../packages/api/session-controller
+      '@deepseek-ai/dsh-brand':
+        specifier: workspace:^
+        version: link:../packages/util/brand
       '@deepseek-ai/dsh-client-store':
         specifier: workspace:^
         version: link:../packages/client/store
@@ -730,6 +733,12 @@ importers:
       '@deepseek-ai/dsh-deque':
         specifier: workspace:^
         version: link:../packages/util/deque
+      '@deepseek-ai/dsh-experimental-project-ledger':
+        specifier: workspace:^
+        version: link:../packages/experimental/project-ledger
+      '@deepseek-ai/dsh-experimental-project-ledger-sqlite':
+        specifier: workspace:^
+        version: link:../packages/experimental/project-ledger-sqlite
       '@deepseek-ai/dsh-lazy-require':
         specifier: workspace:^
         version: link:../packages/util/lazy-require

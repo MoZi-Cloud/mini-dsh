@@ -1,5 +1,12 @@
-/** Experimental packages excluded from public releases and npm baselines. */
-export const PRIVATE_EXPERIMENTAL_PACKAGE_DIRECTORIES: readonly string[] = []
+/**
+ * Experimental packages excluded from public releases and npm baselines.
+ * `mini-profile` is this repository's own per-profile ledger attach bundle
+ * (dsh plugin add), not a publishable capability: it layers one insert over
+ * the private dsh-base proof and has no consumer outside this tree.
+ */
+export const PRIVATE_EXPERIMENTAL_PACKAGE_DIRECTORIES: readonly string[] = [
+  'packages/experimental/mini-profile',
+]
 
 /**
  * Whether an experimental package publishes under the default-public policy.

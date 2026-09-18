@@ -1,0 +1,34 @@
+schemaVersion: 1
+project:
+  id: context-light
+  name: Context-Light Slice
+plan:
+  id: context-light-slice
+  name: 4K Real-Use Slice
+  version: 1
+phases:
+  - id: P0
+    title: Slice
+    ordinal: 0
+    status: ACTIVE
+workItems:
+  - id: TASK-001
+    phaseId: P0
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Implement checksumSum in the slice workspace
+    description: Replace the stub in workspace/src/math.mjs so checksumSum(a, b) returns the sum.
+    priority: 10
+    status: READY
+    acceptance:
+      - id: AC-TASK-001
+        kind: COMMAND
+        description: The pinned workspace test passes.
+        required: true
+        verifier:
+          kind: COMMAND
+          command: node --test test/math.test.mjs
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+relations: []
