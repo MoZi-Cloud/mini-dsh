@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 
 describe('dsh-experimental-mini-profile bundle', () => {
-  it('mounts exactly the ledger row and the /project command row over its declared patch', () => {
+  it('mounts the ledger, command, and project-work rows over its declared patch', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>
@@ -24,6 +24,7 @@ describe('dsh-experimental-mini-profile bundle', () => {
     expect(rows.map(row => [row.id, row.name])).toEqual([
       ['project-ledger', '@deepseek-ai/dsh-experimental-mini-profile'],
       ['project-commands', '@deepseek-ai/dsh-experimental-mini-profile/commands'],
+      ['project-work', '@deepseek-ai/dsh-experimental-mini-profile/project-work'],
     ])
     // The patch resolves the deployment-owned path as an unevaluated `!!js`
     // expression node: env override, then the dsh home. The plugins themselves
@@ -34,9 +35,10 @@ describe('dsh-experimental-mini-profile bundle', () => {
       },
     })
     expect(rows[1]?.config).toBeUndefined()
+    expect(rows[2]?.config).toBeUndefined()
   })
 
-  it('declares the ledger capability, its store, and the command registry as dependencies', () => {
+  it('declares the ledger capability, its store, the command registry, and the tool registry as dependencies', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>
@@ -49,12 +51,16 @@ describe('dsh-experimental-mini-profile bundle', () => {
       '@deepseek-ai/dsh-commands',
       '@deepseek-ai/dsh-experimental-project-ledger',
       '@deepseek-ai/dsh-experimental-project-ledger-sqlite',
+      '@deepseek-ai/dsh-tools',
       '@deepseek-ai/schemastery',
     ])
     expect(Object.keys(manifest.devDependencies ?? {}).sort()).toEqual([
       '@deepseek-ai/cordis',
       '@deepseek-ai/dsh-agent',
+      '@deepseek-ai/dsh-llm',
       '@deepseek-ai/dsh-session',
+      '@deepseek-ai/dsh-system-prompt',
+      '@deepseek-ai/dsh-util-values',
     ])
     expect(manifest.peerDependencies).toEqual({ '@deepseek-ai/cordis': 'workspace:^' })
     expect(manifest.bin).toBeUndefined()

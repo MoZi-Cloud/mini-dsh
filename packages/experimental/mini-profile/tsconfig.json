@@ -15,7 +15,13 @@
       "path": "../../../vendor/cordis"
     },
     {
+      "path": "../../core/tools"
+    },
+    {
       "path": "../../util/brand"
+    },
+    {
+      "path": "../../util/values"
     },
     {
       "path": "../../interaction/commands"

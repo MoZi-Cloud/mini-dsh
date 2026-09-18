@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-experimental-mini-profile",
-  "description": "Experimental mini profile bundle: mounts the v1.6a Project Ledger capability and its /project command surface over dsh-base without any package bin",
+  "description": "Experimental mini profile bundle: mounts the v1.6a Project Ledger capability, its /project command surface, and its model-facing project-work tools over dsh-base without any package bin",
   "version": "0.1.6-alpha.1",
   "private": true,
   "repository": {
@@ -20,6 +20,10 @@
       "types": "./lib/types/commands.d.ts",
       "default": "./lib/commands.js"
     },
+    "./project-work": {
+      "types": "./lib/types/project-work.d.ts",
+      "default": "./lib/project-work.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./src/*": "./src/*",
     "./package.json": "./package.json"
@@ -27,6 +31,7 @@
   "files": [
     "lib/index.js",
     "lib/commands.js",
+    "lib/project-work.js",
     "cordis.patch.yml",
     "lib/types/**/*.d.ts"
   ],
@@ -41,6 +46,7 @@
     "@deepseek-ai/dsh-commands": "workspace:^",
     "@deepseek-ai/dsh-experimental-project-ledger": "workspace:^",
     "@deepseek-ai/dsh-experimental-project-ledger-sqlite": "workspace:^",
+    "@deepseek-ai/dsh-tools": "workspace:^",
     "@deepseek-ai/schemastery": "workspace:^"
   },
   "peerDependencies": {
@@ -49,6 +55,9 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-agent": "workspace:^",
-    "@deepseek-ai/dsh-session": "workspace:^"
+    "@deepseek-ai/dsh-llm": "workspace:^",
+    "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-system-prompt": "workspace:^",
+    "@deepseek-ai/dsh-util-values": "workspace:^"
   }
 }

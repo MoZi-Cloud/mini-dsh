@@ -236,9 +236,10 @@ export function expectedDshPackageFiles(manifest: PackageManifest): readonly str
     // A surface bundle's startup row is its own bundle: the Loader imports it
     // as a row module, so it cannot ride inside the package entry.
     ...exportDefault(manifest, './startup') === './lib/startup.js' ? ['lib/startup.js'] : [],
-    // A commands subpath is its own plugin bundle: a profile patch loads it as
-    // a distinct row module beside the package entry.
-    ...exportDefault(manifest, './commands') === './lib/commands.js' ? ['lib/commands.js'] : [],
+    // A commands or project-work subpath is its own plugin bundle: a profile
+    // patch loads each as a distinct row module beside the package entry.
+    ...(['./commands', './project-work'] as const).flatMap(sub =>
+      exportDefault(manifest, sub) === `./lib/${sub.slice(2)}.js` ? [`lib/${sub.slice(2)}.js`] : []),
     ...extras,
     // Subpaths whose runtime default is the tsc-emitted tree (lib/types/*.js —
     // browser-safe source channels rehomed off src so plain Node can import

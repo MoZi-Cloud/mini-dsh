@@ -1,10 +1,9 @@
 /** The /project command surface: todo views, doctor passes, and their resolution over the mounted ledger. */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
@@ -14,127 +13,12 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { describe, expect, it } from 'vitest'
 import {
   claimWorkItem,
-  compilePlan,
   importPlanVersion,
-  parsePlanDocument,
-  validatePlanSchema,
   type WorkItemId,
 } from '@deepseek-ai/dsh-experimental-project-ledger'
+import { GOLDEN_PLAN_TEXT, SOLO_PLAN_TEXT, TINY_PLAN_TEXT, compilePlanText, seedActivePlan } from './plans.ts'
 import * as miniProjectCommands from '../src/commands.ts'
 import MiniProjectLedger from '../src/index.ts'
-
-const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
-const GOLDEN_PLAN_TEXT = new TextDecoder('utf8').decode(
-  readFileSync(`${REPO_ROOT}/docs/mini/v1.6a/fork-mini-DSH-v1.6a.plan.yaml`),
-)
-
-/**
- * A second project whose owner work carries a blocking relation and whose
- * one agent item is claimable, so the command's rendering covers blocked
- * readiness and live leases through real writers.
- */
-const TINY_PLAN_TEXT = `schemaVersion: 1
-project:
-  id: tiny-proj
-  name: Tiny Proof
-plan:
-  id: tiny-plan
-  name: Tiny Proof Plan
-  version: 1
-phases:
-  - id: P0
-    title: One phase
-    ordinal: 0
-    status: ACTIVE
-workItems:
-  - id: OWNER-A
-    phaseId: P0
-    type: REVIEW
-    executorKind: OWNER
-    title: Review the first thing
-    priority: 50
-    status: READY
-    acceptance:
-      - id: AC-OWNER-A
-        kind: OWNER_CONFIRMATION
-        description: Owner accepts the first thing.
-        required: true
-        verifier:
-          kind: OWNER_CONFIRMATION
-          instruction: Confirm the first thing.
-  - id: OWNER-B
-    phaseId: P0
-    type: REVIEW
-    executorKind: OWNER
-    title: Review the second thing
-    priority: 40
-    status: READY
-    acceptance:
-      - id: AC-OWNER-B
-        kind: OWNER_CONFIRMATION
-        description: Owner accepts the second thing.
-        required: true
-        verifier:
-          kind: OWNER_CONFIRMATION
-          instruction: Confirm the second thing.
-  - id: AGENT-FREE
-    phaseId: P0
-    type: IMPLEMENTATION
-    executorKind: AGENT
-    title: Do the free work
-    priority: 30
-    status: READY
-    acceptance:
-      - id: AC-AGENT-FREE
-        kind: TEST
-        description: It works.
-        required: true
-        verifier:
-          kind: TEST
-          command: pnpm test
-          expectedExitCode: 0
-          sandboxRequired: true
-          approvalRequired: false
-relations:
-  - from: OWNER-A
-    to: OWNER-B
-    kind: BLOCKS
-`
-
-/** A single-project plan with only unphased agent work, covering the empty owner view and phase-less rendering. */
-const SOLO_PLAN_TEXT = `schemaVersion: 1
-project:
-  id: solo-proj
-  name: Solo Proof
-plan:
-  id: solo-plan
-  name: Solo Proof Plan
-  version: 1
-phases:
-  - id: P0
-    title: One phase
-    ordinal: 0
-    status: ACTIVE
-workItems:
-  - id: AGENT-ONLY
-    type: IMPLEMENTATION
-    executorKind: AGENT
-    title: Do the solo work
-    priority: 20
-    status: READY
-    acceptance:
-      - id: AC-AGENT-ONLY
-        kind: TEST
-        description: It works.
-        required: true
-        verifier:
-          kind: TEST
-          command: pnpm test
-          expectedExitCode: 0
-          sandboxRequired: true
-          approvalRequired: false
-relations: []
-`
 
 /** One mounted profile under test. */
 interface Mounted {
@@ -161,12 +45,6 @@ async function mount(seed?: (db: DatabaseSync) => void): Promise<Mounted> {
 async function unmount(mounted: Mounted): Promise<void> {
   await mounted.ctx.fiber.dispose()
   rmSync(mounted.root, { recursive: true, force: true })
-}
-
-/** Parse, validate, and compile a plan document. */
-function compilePlanText(text: string): ReturnType<typeof compilePlan> {
-  const { value } = parsePlanDocument(text)
-  return compilePlan(validatePlanSchema(value), { sourceText: text })
 }
 
 /** Execute one /project line and return the settled result. */
@@ -310,11 +188,7 @@ describe('/project', () => {
   it('renders blocked readiness, live leases, empty views, and phase-less items', async () => {
     const mounted = await mount((db) => {
       importPlanVersion(db, compilePlanText(GOLDEN_PLAN_TEXT))
-      const { planVersionId } = importPlanVersion(db, compilePlanText(TINY_PLAN_TEXT))
-      // Activation is an owner seam without an exported writer (v1.6a §5);
-      // the claim below requires an ACTIVE version, so the test activates
-      // the tiny plan the same way the pinned-fixture generator does.
-      db.prepare("UPDATE plan_versions SET status = 'ACTIVE', activated_at_ms = ? WHERE id = ?").run(1_000, planVersionId)
+      seedActivePlan(db, TINY_PLAN_TEXT)
       claimWorkItem(db, brandString<WorkItemId>('wi:tiny-proj:AGENT-FREE'), 'spec-worker')
     })
     try {

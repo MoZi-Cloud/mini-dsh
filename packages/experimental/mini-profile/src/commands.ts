@@ -22,12 +22,11 @@ import {
   listOwnerTodo,
   listPlans,
   planDoctor,
-  type PlanDirectoryEntry,
   type PlanDoctorReport,
   type PlanVersionId,
-  type ProjectId,
   type WorkTodoView,
 } from '@deepseek-ai/dsh-experimental-project-ledger'
+import { ProjectResolutionError, resolveProjectId } from './project-resolution.js'
 
 /** Stable Cordis plugin name. */
 export const name = 'mini-project-commands'
@@ -41,13 +40,10 @@ type ProjectCommand =
   | { readonly kind: 'todo'; readonly agentView: boolean; readonly projectId: string | undefined }
   | { readonly kind: 'doctor'; readonly planVersionId: string | undefined }
 
-/** @param value - a value whose union membership is exhaustively handled. @returns never; every caller is the switch default. */
+/* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
   throw new Error(`unhandled ${label}: ${String(value)}`)
 }
-
-/** Internal control-flow signal carrying user-facing error text out of a resolver. */
-class ProjectCommandError extends Error {}
 
 const HELP_TEXT = [
   'Inspect the mounted Project Ledger.',
@@ -84,54 +80,27 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
 }
 
 /**
- * Resolve which project a todo view lists.
- * @param plans - the ledger's plan directory.
- * @param explicit - the project id the command named, if any.
- * @returns the project id to list.
- * @throws {ProjectCommandError} when the named project is absent, or the implicit single-project resolution is ambiguous or empty.
- */
-function resolveProjectId(plans: readonly PlanDirectoryEntry[], explicit: string | undefined): ProjectId {
-  if (explicit !== undefined) {
-    const named = plans.find(plan => plan.projectId === explicit)
-    if (named === undefined) {
-      throw new ProjectCommandError(`No plan in this ledger records project "${explicit}".`)
-    }
-    return named.projectId
-  }
-  const [only, ...rest] = plans
-  if (only === undefined) {
-    throw new ProjectCommandError('This ledger records no plan yet. Import a plan version first.')
-  }
-  if (rest.length > 0) {
-    throw new ProjectCommandError(
-      'This ledger records more than one project. Name one: ' + plans.map(plan => plan.projectId).join(', ') + '.',
-    )
-  }
-  return only.projectId
-}
-
-/**
  * Resolve which plan version a doctor pass checks.
  * @param db - the opened ledger database.
  * @param explicit - the plan version id the command named, if any.
  * @returns the plan version id to check.
- * @throws {ProjectCommandError} when the implicit single-plan resolution is empty, ambiguous, or names no current version.
+ * @throws {ProjectResolutionError} when the implicit single-plan resolution is empty, ambiguous, or names no current version.
  */
 function resolveDoctorVersion(db: DatabaseSync, explicit: string | undefined): PlanVersionId {
   if (explicit !== undefined) return brandString<PlanVersionId>(explicit)
   const plans = listPlans(db)
   const [only, ...rest] = plans
   if (only === undefined) {
-    throw new ProjectCommandError('This ledger records no plan yet. Import a plan version first.')
+    throw new ProjectResolutionError('This ledger records no plan yet. Import a plan version first.')
   }
   if (rest.length > 0) {
-    throw new ProjectCommandError(
+    throw new ProjectResolutionError(
       'This ledger records more than one plan. Pass a plan version id: /project doctor <plan-version-id>.',
     )
   }
   const current = only.currentVersionId
   if (current === null) {
-    throw new ProjectCommandError(
+    throw new ProjectResolutionError(
       'The plan names no current version yet. Pass a plan version id: /project doctor <plan-version-id>.',
     )
   }
@@ -219,7 +188,7 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
       default: return assertNever(command, 'project command')
     }
   } catch (error) {
-    if (error instanceof ProjectCommandError) return { kind: 'error', text: error.message }
+    if (error instanceof ProjectResolutionError) return { kind: 'error', text: error.message }
     if (error instanceof PlanDoctorError) {
       return { kind: 'error', text: `The plan doctor rejected the request: ${error.message}` }
     }
