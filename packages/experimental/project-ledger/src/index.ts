@@ -7,11 +7,12 @@
  * work-status transition writer, append-only acceptance evaluations, the
  * work lease lifecycle with the readiness projection writers, the bounded
  * deterministic WorkPacket builder that records its reconstruction recipe,
- * the executor-separated Owner/Agent todo views, and the immutable
- * plan-version supersede and baseline-drift writers. Compiling, importing,
- * replaying, reading readiness, recording evaluations, claiming, reaping,
- * building packets, listing todos, superseding, and recording drift never
- * execute verifier commands.
+ * the executor-separated Owner/Agent todo views, the immutable plan-version
+ * supersede and baseline-drift writers, and the read-only plan doctor.
+ * Compiling, importing, replaying, reading readiness, recording
+ * evaluations, claiming, reaping, building packets, listing todos,
+ * superseding, recording drift, and doctoring never execute verifier
+ * commands.
  */
 export { PLAN_SCHEMA_VERSION, type PlanAcceptanceCriterion, type PlanAcceptanceKind, type PlanBaseline, type PlanDocumentV1, type PlanExecutorKind, type PlanPhase, type PlanPhaseStatus, type PlanPlan, type PlanProject, type PlanRelation, type PlanRelationKind, type PlanVerifier, type PlanVerifierAssertion, type PlanVerifierCommand, type PlanVerifierOwnerConfirmation, type PlanWorkItem, type PlanWorkItemStatus, type PlanWorkItemType } from './plan-document.js'
 export { PlanDocumentError, type PlanIssue, type PlanIssueCode, positionAtOffset, type PlanSourcePosition } from './plan-issues.js'
@@ -29,3 +30,4 @@ export { DEFAULT_LEASE_ACTOR_REF, DEFAULT_LEASE_CONFIG, DEFAULT_READINESS_ACTOR_
 export { DEFAULT_PACKET_ACTOR_REF, WORK_PACKET_BUILDER_VERSION, WORK_PACKET_FORMAT_VERSION, WORK_PACKET_MAX_SERIALIZED_BYTES, WorkPacketError, buildWorkPacket, rebuildWorkPacket, serializeWorkPacket, type BuildWorkPacketOptions, type WorkPacket, type WorkPacketCriterion, type WorkPacketDocument, type WorkPacketErrorCode, type WorkPacketId, type WorkPacketObjective, type WorkPacketPhaseSummary, type WorkPacketPlanIdentity, type WorkPacketReference, type WorkPacketRelationReceipt, type WorkPacketRebuild, type WorkPacketRepoSnapshot, type WorkPacketVerifierSpec } from './work-packet.js'
 export { AGENT_TODO_EXECUTOR_KINDS, OWNER_TODO_EXECUTOR_KINDS, TODO_VIEW_STATUSES, WorkTodoError, listAgentTodo, listOwnerTodo, listWorkTodo, resolveWorkTodoSpec, type WorkTodoEntry, type WorkTodoErrorCode, type WorkTodoLeaseRef, type WorkTodoRequest, type WorkTodoSpec, type WorkTodoView } from './todo-views.js'
 export { DEFAULT_DRIFT_ACTOR_REF, DEFAULT_SUPERSEDE_ACTOR_REF, PLAN_VERSION_STATUSES, BaselineDriftError, PlanSupersedeError, recordBaselineDrift, supersedePlanVersion, type BaselineDrift, type BaselineDriftErrorCode, type ObservedBaseline, type PlanSupersedeErrorCode, type PlanVersionStatus, type PlanVersionSupersede, type RecordBaselineDriftOptions, type SupersededAttempt, type SupersedePlanVersionOptions, type WorkExternalBlockerId } from './versioning.js'
+export { PLAN_DOCTOR_ISSUE_CODES, PlanDoctorError, planDoctor, type PlanDoctorCounts, type PlanDoctorErrorCode, type PlanDoctorIssue, type PlanDoctorReport } from './doctor.js'
