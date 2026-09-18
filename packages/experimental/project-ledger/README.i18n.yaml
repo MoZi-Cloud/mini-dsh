@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/experimental/project-ledger/README.md
-README.md: 77786ecef081cb727538df4cccaeeb1812650c6d
-README.zh.md: 3f518cf472fd98412d210003186da4eb15dd0847
+README.md: 87c854fbfd8e7f1ffc93ec71b5521d748a5bd043
+README.zh.md: 5bcc676c1c282c51a3b4151ae7cf6d3a582befdb

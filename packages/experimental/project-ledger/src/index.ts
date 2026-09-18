@@ -5,11 +5,12 @@
  * project-event envelope with its fail-closed read/replay codec, work
  * readiness recomputation with ledger-side cycle detection, the generic
  * work-status transition writer, append-only acceptance evaluations, the
- * work lease lifecycle with the readiness projection writers, and the
- * bounded deterministic WorkPacket builder that records its reconstruction
- * recipe. Compiling, importing, replaying, reading readiness, recording
- * evaluations, claiming, reaping, and building packets never execute
- * verifier commands and never activate a plan.
+ * work lease lifecycle with the readiness projection writers, the bounded
+ * deterministic WorkPacket builder that records its reconstruction recipe,
+ * and the executor-separated Owner/Agent todo views. Compiling, importing,
+ * replaying, reading readiness, recording evaluations, claiming, reaping,
+ * building packets, and listing todos never execute verifier commands and
+ * never activate a plan.
  */
 export { PLAN_SCHEMA_VERSION, type PlanAcceptanceCriterion, type PlanAcceptanceKind, type PlanBaseline, type PlanDocumentV1, type PlanExecutorKind, type PlanPhase, type PlanPhaseStatus, type PlanPlan, type PlanProject, type PlanRelation, type PlanRelationKind, type PlanVerifier, type PlanVerifierAssertion, type PlanVerifierCommand, type PlanVerifierOwnerConfirmation, type PlanWorkItem, type PlanWorkItemStatus, type PlanWorkItemType } from './plan-document.js'
 export { PlanDocumentError, type PlanIssue, type PlanIssueCode, positionAtOffset, type PlanSourcePosition } from './plan-issues.js'
@@ -25,3 +26,4 @@ export { DEFAULT_STATUS_ACTOR_REF, WORK_STATUS_TRANSITIONS, WorkStatusError, cha
 export { DEFAULT_EVALUATION_ACTOR_REF, AcceptanceEvaluationError, evaluateAcceptanceCriterion, type AcceptanceEvaluation, type AcceptanceEvaluationErrorCode, type AcceptanceEvaluationId, type EvaluateAcceptanceCriterionOptions } from './acceptance.js'
 export { DEFAULT_LEASE_ACTOR_REF, DEFAULT_LEASE_CONFIG, DEFAULT_READINESS_ACTOR_REF, LeaseError, blockWorkItem, claimWorkItem, heartbeatWorkLease, reapExpiredLeases, releaseWorkLease, resolveLeaseConfig, unblockWorkItem, type ClaimWorkItemOptions, type HeartbeatWorkLeaseOptions, type LeaseConfig, type LeaseErrorCode, type LeaseStatus, type ReadinessProjectionOptions, type ReapExpiredLeasesOptions, type ReapedLease, type ReleaseWorkLeaseOptions, type WorkLease, type WorkLeaseClaim, type WorkLeaseId, type WorkReadinessProjectionChange } from './lease.js'
 export { DEFAULT_PACKET_ACTOR_REF, WORK_PACKET_BUILDER_VERSION, WORK_PACKET_FORMAT_VERSION, WORK_PACKET_MAX_SERIALIZED_BYTES, WorkPacketError, buildWorkPacket, rebuildWorkPacket, serializeWorkPacket, type BuildWorkPacketOptions, type WorkPacket, type WorkPacketCriterion, type WorkPacketDocument, type WorkPacketErrorCode, type WorkPacketId, type WorkPacketObjective, type WorkPacketPhaseSummary, type WorkPacketPlanIdentity, type WorkPacketReference, type WorkPacketRelationReceipt, type WorkPacketRebuild, type WorkPacketRepoSnapshot, type WorkPacketVerifierSpec } from './work-packet.js'
+export { AGENT_TODO_EXECUTOR_KINDS, OWNER_TODO_EXECUTOR_KINDS, TODO_VIEW_STATUSES, WorkTodoError, listAgentTodo, listOwnerTodo, listWorkTodo, resolveWorkTodoSpec, type WorkTodoEntry, type WorkTodoErrorCode, type WorkTodoLeaseRef, type WorkTodoRequest, type WorkTodoSpec, type WorkTodoView } from './todo-views.js'

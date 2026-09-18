@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-experimental-project-ledger` owns the plan document seam of the v1.6a Ledger Core (docs/mini/v1.6a). A plan document is inert data: `parsePlanDocument` parses YAML and rejects duplicate keys, anchors, and aliases; `validatePlanSchema` mirrors the constitution schema; `validatePlanSemantics` checks references, hierarchy, and ordering relations. `compilePlan` builds a canonical IR, `importPlanVersion` writes it atomically, the event seam stamps and replays fail-closed, `computeWorkReadiness` recomputes claimability, `evaluateAcceptanceCriterion` appends caller-reported outcomes, the lease seam arbitrates one active lease per item, and `buildWorkPacket` prepares the bounded deterministic packet the event log can rebuild without the plan document. Nothing here executes a verifier command or activates a plan.
+`dsh-experimental-project-ledger` owns the plan document seam of the v1.6a Ledger Core (docs/mini/v1.6a). A plan document is inert data: `parsePlanDocument` parses YAML and rejects duplicate keys, anchors, and aliases; `validatePlanSchema` mirrors the constitution schema; `validatePlanSemantics` checks references, hierarchy, and ordering relations. `compilePlan` builds a canonical IR, `importPlanVersion` writes it atomically, the event seam stamps and replays fail-closed, `computeWorkReadiness` recomputes claimability, `evaluateAcceptanceCriterion` appends caller-reported outcomes, the lease seam arbitrates one active lease per item, `buildWorkPacket` prepares the bounded deterministic packet, and the Owner/Agent todo views list outstanding work by executor kind. Nothing here executes a verifier command or activates a plan.
 
 ## Table of Contents
 
@@ -28,7 +28,7 @@ Parse bytes, validate the schema, check semantics, compile, then import; every r
 
 ```ts
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
-import { buildWorkPacket, changeWorkStatus, claimWorkItem, compilePlan, computeWorkReadiness, detectWorkGraphCycles, evaluateAcceptanceCriterion, heartbeatWorkLease, importPlanVersion, parsePlanDocument, readProjectEvents, rebuildWorkPacket, releaseWorkLease, replayProjectEvents, serializeWorkPacket, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
+import { buildWorkPacket, changeWorkStatus, claimWorkItem, compilePlan, computeWorkReadiness, detectWorkGraphCycles, evaluateAcceptanceCriterion, heartbeatWorkLease, importPlanVersion, listAgentTodo, listOwnerTodo, parsePlanDocument, readProjectEvents, rebuildWorkPacket, releaseWorkLease, replayProjectEvents, serializeWorkPacket, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
 
 const { text, value } = parsePlanDocument(planBytes)
 const document = validatePlanSchema(value)
@@ -47,6 +47,8 @@ releaseWorkLease(db, claim.leaseId, claim.leaseToken)
 const packet = buildWorkPacket(db, compiled.workItems[0].id)
 const packetText = serializeWorkPacket(packet)
 const rebuild = rebuildWorkPacket(db, packet.packetId)
+const ownerTodo = listOwnerTodo(db, compiled.projectId)
+const agentTodo = listAgentTodo(db, compiled.projectId)
 ```
 
 A test pins the zod mirror to the published schema file, so editing either the constitution or the mirror without the other fails the suite.
@@ -68,6 +70,7 @@ A test pins the zod mirror to the published schema file, so editing either the c
 - **Tokens are hashed, never logged** — a claim returns a one-time bearer token; only its SHA-256 hash is stored, and no lease event carries it, so the log rebuilds lease state without replaying secrets.
 - **Packets are recipes, not rows** — `buildWorkPacket` reads only the per-item inputs §17 lists (plan identity, objective, phase summary, relation receipts, criteria with stored specs, baseline), hashes every referenced section, and appends `project/work-packet-prepared` carrying the whole recipe; no materialized packet table exists, because the event is the durable record and a packet is rebuildable. `rebuildWorkPacket` recomposes the packet from current rows alone and names the references that drifted, so auditing what a model saw never requires the Master Plan text.
 - **Bounded by refusal** — `serializeWorkPacket` output must stay under `maxSerializedBytes` (default 65,536); an oversized packet throws instead of truncating, so the model-visible document is always whole or absent, and identical rows always serialize to identical bytes.
+- **Owner and Agent todos are executor-separated views** — `listOwnerTodo` and `listAgentTodo` run one read-only query over `executor_kind` (§11) across the non-terminal statuses, ordered by kind, descending priority, age, and id; every entry carries the recomputed readiness and the live lease, so blocking causes and holders surface with the task. Views never mutate: completion stays with the acceptance seam, and a session todo — no stable item ids, no project identity — has no path into the ledger.
 
 <a id="dev-note"></a>
 ## Dev Note
@@ -97,5 +100,6 @@ These are current package constraints, not a task backlog.
 
 - **No activation or supersede yet** — importing never activates a version and rejects work items that already belong to another version or the backlog; the supersede flow owns those transitions, and incoming `SUPERSEDES` edges are excluded from readiness until it lands.
 - **No project memory refs in packets yet** — §17 admits explicitly associated memory references once a durable memory capability exists; v1 packets record none, so the rebuild reads ledger rows only.
+- **Todo views are queries only** — the `/project todo --owner`/`--agent` slash surface and the `project_work_*` tools belong to the command seam; v1.6b extends executor identity into actor/role/assignment (§11).
 - **`REVOKED` is a reserved row status** — the lease lifecycle writes `ACTIVE`, `RELEASED`, and `EXPIRED`; owner-side revocation has no writer yet, and the reaper loop's cadence (`reaperIntervalMs`) belongs to the caller of the bounded `reapExpiredLeases` batch.
 - **English diagnostics** — issue messages are English-only; they are compiler input, not UI copy.
