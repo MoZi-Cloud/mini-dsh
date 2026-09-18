@@ -63,6 +63,25 @@ export interface WorkItemReview {
 }
 
 /**
+ * Keep only the newest evaluation row per criterion from rows already sorted
+ * newest-first: the first row seen per criterion is its latest, later rows are
+ * earlier attempts. `rowid` breaks same-millisecond ties exactly (the table is
+ * append-only, so rowid order is write order); the id string cannot, because
+ * its sequence number does not sort numerically across digit boundaries.
+ * @param rows - evaluation rows sorted newest-first.
+ * @returns one row per criterion id — the newest.
+ */
+export function latestEvaluationPerCriterion<T extends { readonly criterion_id: string }>(
+  rows: readonly T[],
+): Map<string, T> {
+  const latest = new Map<string, T>()
+  for (const row of rows) {
+    if (!latest.has(row.criterion_id)) latest.set(row.criterion_id, row)
+  }
+  return latest
+}
+
+/**
  * Read one work item's review: the item's identity and status over every
  * acceptance criterion with its latest evaluation. The ref matches the item's
  * full ledger id or its stable key within the project.
@@ -107,11 +126,6 @@ export function readWorkItemReview(
     required: number
     status: AcceptanceCriterionStatus
   }[]
-  // Evaluations arrive newest-first; the first row per criterion is its latest,
-  // later rows for the same criterion are earlier attempts. `rowid` breaks
-  // same-millisecond ties exactly (the table is append-only, so rowid order is
-  // write order); the id string cannot, because its sequence number does not
-  // sort numerically across digit boundaries.
   const evaluations = db.prepare(
     'SELECT criterion_id, result, observed_json, evaluated_by, evaluated_at_ms FROM acceptance_evaluations '
       + 'WHERE work_item_id = ? ORDER BY evaluated_at_ms DESC, rowid DESC',
@@ -122,17 +136,7 @@ export function readWorkItemReview(
     evaluated_by: string
     evaluated_at_ms: number
   }[]
-  const latestByCriterion = new Map<string, {
-    result: AcceptanceEvaluationResult
-    observed_json: string | null
-    evaluated_by: string
-    evaluated_at_ms: number
-  }>()
-  for (const evaluation of evaluations) {
-    if (!latestByCriterion.has(evaluation.criterion_id)) {
-      latestByCriterion.set(evaluation.criterion_id, evaluation)
-    }
-  }
+  const latestByCriterion = latestEvaluationPerCriterion(evaluations)
   return {
     workItemId: brandString<WorkItemId>(item.id),
     planVersionId: item.plan_version_id === null

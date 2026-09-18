@@ -63,7 +63,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project')).resolves.toMatchObject({
         kind: 'success',
         text: expect.stringMatching(
-          /\/project todo \[--agent\][\s\S]*doctor \[<plan-version-id>\][\s\S]*item <stable-key-or-id>[\s\S]*replay \[<project-id>\]/,
+          /todo \[--agent\][\s\S]*doctor \[<plan-version-id>\][\s\S]*item <stable-key-or-id>[\s\S]*replay \[<project-id>\][\s\S]*digest/,
         ) as string,
       })
     } finally {
@@ -82,6 +82,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project item')).resolves.toEqual(usage)
       await expect(run(mounted, '/project item a b c')).resolves.toEqual(usage)
       await expect(run(mounted, '/project replay a b')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project digest a b')).resolves.toEqual(usage)
     } finally {
       await unmount(mounted)
     }
@@ -95,6 +96,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project doctor')).resolves.toEqual(empty)
       await expect(run(mounted, '/project item AGENT-FREE')).resolves.toEqual(empty)
       await expect(run(mounted, '/project replay')).resolves.toEqual(empty)
+      await expect(run(mounted, '/project digest')).resolves.toEqual(empty)
     } finally {
       await unmount(mounted)
     }
@@ -449,6 +451,95 @@ describe('/project', () => {
       expect(result.text).toContain('Project tiny-proj — replay audit over 5 events, last sequence 99.')
       expect(result.text).toContain('The timeline cannot be decoded by this build:')
       expect(result.text).not.toContain('Replay matches')
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('digests plan versions, item completion, and verdicts for the resolved project', async () => {
+    const mounted = await mount()
+    try {
+      const db = mounted.ctx.projectLedger.db
+      seedActivePlan(db, TINY_PLAN_TEXT)
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:tiny-proj:AGENT-FREE:AC-AGENT-FREE'),
+        'PASS',
+        { evaluatedBy: 'spec-worker', nowMs: 60_000 },
+      )
+      // Naming the current version is an owner seam without an exported
+      // writer (v1.6a §5); the retire and baseline writes are display facts
+      // the replay never projects, set the way the doctor test sets its facts.
+      db.prepare('UPDATE plans SET current_version_id = ? WHERE id = ?').run('plv:tiny-plan:v1', 'tiny-plan')
+      db.prepare(
+        "UPDATE plan_versions SET status = 'SUPERSEDED', superseded_at_ms = 61_000, baseline_repo_head = 'repo-head-v1' "
+          + "WHERE id = 'plv:tiny-plan:v1'",
+      ).run()
+      const expected = [
+        'Project tiny-proj — evidence digest.',
+        'Plan Tiny Proof Plan (tiny-plan) — current version plv:tiny-plan:v1.',
+        '  v1 SUPERSEDED — baseline repo-head-v1, superseded 1970-01-01T00:01:01.000Z',
+        'Items (3):',
+        '- AGENT-FREE (agent, priority 30) READY — criteria 1/1 passing, verdicts PASS 1; last evidence 1970-01-01T00:01:00.000Z',
+        '- OWNER-A (owner, priority 50) READY — criteria 0/1 passing, verdicts none',
+        '- OWNER-B (owner, priority 40) READY — criteria 0/1 passing, verdicts none',
+        'Replay audit: clean over 5 events (last sequence 5).',
+      ].join('\n')
+      await expect(run(mounted, '/project digest')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project digest tiny-proj')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project digest no-such-project')).resolves.toEqual({
+        kind: 'error',
+        text: 'No plan in this ledger records project "no-such-project".',
+      })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('digests a versionless plan, drift findings, and an undecodable timeline', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, TINY_PLAN_TEXT)
+    })
+    try {
+      // A plans row without versions has no writer — import always lands a
+      // version beside it; the out-of-band insert mirrors the ledger specs.
+      mounted.ctx.projectLedger.db.prepare(
+        'INSERT INTO plans (id, project_id, name, current_version_id, created_at_ms) '
+          + "VALUES ('side-plan', 'tiny-proj', 'Side Plan', NULL, 1)",
+      ).run()
+      // The second plans row makes implicit resolution ambiguous; the digest
+      // names the project, the way the resolution seam requires.
+      const first = await run(mounted, '/project digest tiny-proj')
+      expect(first).toMatchObject({ kind: 'success' })
+      if (first.kind !== 'success' || first.text === undefined) return
+      expect(first.text).toContain('Plan Side Plan (side-plan) — current version none.')
+      expect(first.text).toContain('  No plan versions recorded.')
+
+      // An out-of-band status write is projection drift by construction; the
+      // digest carries both the DONE display fact and the audit finding.
+      mounted.ctx.projectLedger.db.prepare("UPDATE work_items SET status = 'DONE' WHERE id = 'wi:tiny-proj:OWNER-A'").run()
+      const drifted = await run(mounted, '/project digest tiny-proj')
+      expect(drifted).toMatchObject({ kind: 'success' })
+      if (drifted.kind !== 'success' || drifted.text === undefined) return
+      expect(drifted.text).toContain('- OWNER-A (owner, priority 50) DONE — criteria 0/1 passing, verdicts none')
+      expect(drifted.text).toContain('Replay audit: 1 drift findings over 4 events:')
+      expect(drifted.text).toContain(
+        'work item "wi:tiny-proj:OWNER-A" has materialized status DONE but replays to READY',
+      )
+
+      // A row this build's event format cannot interpret fails the whole
+      // fold; the digest reports why instead of a parity verdict.
+      mounted.ctx.projectLedger.db.prepare(
+        'INSERT INTO project_events '
+          + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
+          + "VALUES ('tiny-proj', 99, 2, 'plan/imported', 0, '{}', 1)",
+      ).run()
+      const broken = await run(mounted, '/project digest tiny-proj')
+      expect(broken).toMatchObject({ kind: 'success' })
+      if (broken.kind !== 'success' || broken.text === undefined) return
+      expect(broken.text).toContain('Replay audit: the timeline cannot be decoded by this build — ')
+      expect(broken.text).toContain('carries event format 2; this build reads format 1')
+      expect(broken.text).not.toContain('Replay audit: clean')
     } finally {
       await unmount(mounted)
     }

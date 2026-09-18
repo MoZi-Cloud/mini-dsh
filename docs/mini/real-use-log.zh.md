@@ -70,6 +70,17 @@ post-v1.6a 真实使用 lane（`./benchmarks/real-use/run-real-use.sh`）经 SHI
 
 紧接着的重跑幂等通过（`alreadyComplete: true`、`replayDrift: 0`、零写入）。4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`PW-EVIDENCE-DIGEST-001` 在版本 3 中保持可领取，留给后续增量。
 
+### 2026-09-19 —— 经 shipped 工具完成 PW-EVIDENCE-DIGEST-001
+
+同一 lane 对持久账本驱动了 `PW-EVIDENCE-DIGEST-001`：新的 `readProjectDigest` 账本读取接缝以一次只读遍历聚合整个 owner 记录——每个 plan 及其全部版本的生命周期状态与钉定 baseline、每个条目的标准计数与最新判定计数（每条标准的最新选取抽成与 review 接缝共享的辅助函数，两者保持同一 rowid 决胜规则）、以及按报告原样内嵌的重放对账结论。`/project digest [<project-id>]` 渲染它，owner 无需 SQL 或逐条目命令即可读完整个 §33 记录。`agent:mini-real-use-lane` 领取，存储 verifier `pnpm exec vitest run mini-profile`（退出码 0），工作项 DONE、doctor 0 问题、重放对账 0 drift、事件重放 DONE；项目时间线现有 61 事件，三个版本下全部七条真实使用条目均 DONE。首次运行报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v3","workItemId":"wi:mini-dsh:PW-EVIDENCE-DIGEST-001","stableKey":"PW-EVIDENCE-DIGEST-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-EVIDENCE-DIGEST-001:AC-PW-EVIDENCE-DIGEST-001","command":"pnpm exec vitest run mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+紧接着的重跑幂等通过（`alreadyComplete: true`、`replayDrift: 0`、零写入）。4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE），仓库完整 doc-sync 门也保持绿色（41/41），新接缝已双语成文。
+
 ## 相对门槛的状态
 
-经账本完成的工作项：21（15 个黄金计划项由 v1.6a 构建本身完成，加上面六条）。BOOT/4K 回归：无记录；`run-4k.sh` 与 BOOT 验收套件保持绿色。用户价值确认：待定——进入决策按 §33 归 owner。
+
+经账本完成的工作项：22（15 个黄金计划项由 v1.6a 构建本身完成，加上面七条）。BOOT/4K 回归：无记录；`run-4k.sh` 与 BOOT 验收套件保持绿色。用户价值确认：待定——进入决策按 §33 归 owner。

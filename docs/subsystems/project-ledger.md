@@ -12,7 +12,7 @@ The `mini` profile composition mounts [`dsh-experimental-mini-profile`](../../pa
 
 Nothing writes to the ledger tables directly. [`dsh-experimental-project-ledger`](../../packages/experimental/project-ledger/README.md) owns the seams: importing a plan version, recomputing work readiness, the lease lifecycle, appending acceptance evaluations, superseding versions, recording baseline drift, and building bounded work packets. Two profile surfaces consume them:
 
-- The `/project` command reads: todo views by executor kind, the plan doctor, per-item reviews with observed evidence, and the replay audit that compares the rebuilt projection with the materialized rows in both directions.
+- The `/project` command reads: todo views by executor kind, the plan doctor, per-item reviews with observed evidence, the replay audit that compares the rebuilt projection with the materialized rows in both directions, and the evidence digest that aggregates plan versions, item completion with latest verdicts, and the replay verdict.
 - The `project_work_next`, `project_work_claim`, and `project_work_update` tools give an agent the same work through one bounded WorkPacket per task; the claim's bearer token never enters a model-visible value.
 
 ## Integrity is a fact, not a repair

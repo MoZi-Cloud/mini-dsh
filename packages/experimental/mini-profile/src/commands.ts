@@ -5,12 +5,13 @@
  * §11), `doctor` runs the read-only plan doctor pass (F05), `item`
  * reviews one work item over its criteria and latest evaluations — including
  * each evaluation's observed exit code and output-tail excerpt — through the
- * ledger's review read seam, and `replay` audits ledger integrity through
+ * ledger's review read seam, `replay` audits ledger integrity through
  * the replay read seam, folding the project's events and comparing the
- * projection with the materialized rows. The project and plan version
- * resolve through the ledger's plan directory when the command names none.
- * The handler never mutates ledger state, never sends anything to the
- * model, and never executes a verifier command — mutating surfaces stay
+ * projection with the materialized rows, and `digest` reads the whole-project
+ * evidence summary through the ledger's digest read seam. The project and
+ * plan version resolve through the ledger's plan directory when the command
+ * names none. The handler never mutates ledger state, never sends anything to
+ * the model, and never executes a verifier command — mutating surfaces stay
  * with their owning writers and later work.
  *
  * @module @deepseek-ai/dsh-experimental-mini-profile/commands
@@ -27,10 +28,12 @@ import {
   listOwnerTodo,
   listPlans,
   planDoctor,
+  readProjectDigest,
   readProjectReplay,
   readWorkItemReview,
   type PlanDoctorReport,
   type PlanVersionId,
+  type ProjectDigest,
   type ProjectReplayReport,
   type WorkItemReview,
   type WorkTodoView,
@@ -50,6 +53,7 @@ type ProjectCommand =
   | { readonly kind: 'doctor'; readonly planVersionId: string | undefined }
   | { readonly kind: 'item'; readonly itemRef: string; readonly projectId: string | undefined }
   | { readonly kind: 'replay'; readonly projectId: string | undefined }
+  | { readonly kind: 'digest'; readonly projectId: string | undefined }
 
 /* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
@@ -62,6 +66,7 @@ const HELP_TEXT = [
   '/project doctor [<plan-version-id>] — run the read-only plan doctor on the current (or named) plan version',
   '/project item <stable-key-or-id> [<project-id>] — review one work item: criteria statuses, latest evaluations, observed evidence',
   '/project replay [<project-id>] — replay the project\'s events and compare the projection with materialized rows',
+  '/project digest [<project-id>] — read the whole-project evidence digest: plan versions, item completion, replay verdict',
 ].join('\n')
 
 /** The usage hint the command registry shows for /project. */
@@ -70,6 +75,7 @@ const PROJECT_INPUT_HINT = [
   'doctor [<plan-version-id>]',
   'item <stable-key-or-id> [<project-id>]',
   'replay [<project-id>]',
+  'digest [<project-id>]',
 ].join(' | ')
 
 /**
@@ -105,6 +111,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
   if (tokens[0] === 'replay') {
     return tokens.length <= 2
       ? { kind: 'replay', projectId: tokens[1] }
+      : undefined
+  }
+  if (tokens[0] === 'digest') {
+    return tokens.length <= 2
+      ? { kind: 'digest', projectId: tokens[1] }
       : undefined
   }
   return undefined
@@ -295,6 +306,58 @@ function renderReplayReport(report: ProjectReplayReport): string {
 }
 
 /**
+ * Render one evidence digest as command output: every plan with its versions,
+ * lifecycle statuses, and pinned baselines, every item with its completion
+ * and latest verdict counts, then the replay audit verdict — clean, every
+ * drift finding, or why the timeline cannot be decoded.
+ * @param digest - the digest read seam's outcome.
+ * @returns the multi-line command text.
+ */
+function renderDigest(digest: ProjectDigest): string {
+  const lines = [`Project ${digest.projectId} — evidence digest.`]
+  for (const plan of digest.plans) {
+    lines.push(`Plan ${plan.planName} (${plan.planId}) — current version ${plan.currentVersionId ?? 'none'}.`)
+    if (plan.versions.length === 0) {
+      lines.push('  No plan versions recorded.')
+      continue
+    }
+    for (const version of plan.versions) {
+      const retired = version.supersededAtMs === null
+        ? ''
+        : `, superseded ${new Date(version.supersededAtMs).toISOString()}`
+      lines.push(`  v${version.versionNo} ${version.status} — baseline ${version.baselineRepoHead ?? 'none'}${retired}`)
+    }
+  }
+  lines.push(`Items (${digest.items.length}):`)
+  for (const item of digest.items) {
+    const total = Object.values(item.criteriaByStatus).reduce((sum, count) => sum + count, 0)
+    const verdictCounts = Object.entries(item.latestResults)
+      .filter(([, count]) => count > 0)
+      .map(([result, count]) => `${result} ${count}`)
+    const evidence = item.lastEvaluatedAtMs === null
+      ? ''
+      : `; last evidence ${new Date(item.lastEvaluatedAtMs).toISOString()}`
+    lines.push(
+      `- ${item.stableKey} (${item.executorKind.toLowerCase()}, priority ${item.priority}) ${item.status} `
+        + `— criteria ${item.criteriaByStatus.PASSING}/${total} passing, `
+        + `verdicts ${verdictCounts.length === 0 ? 'none' : verdictCounts.join(', ')}${evidence}`,
+    )
+  }
+  const replay = digest.replay
+  if (replay.outcome === 'undecodable') {
+    lines.push(`Replay audit: the timeline cannot be decoded by this build — ${replay.timelineError}`)
+  } else if (replay.drift.length === 0) {
+    lines.push(
+      `Replay audit: clean over ${replay.eventCount} events (last sequence ${replay.lastSequenceNo}).`,
+    )
+  } else {
+    lines.push(`Replay audit: ${replay.drift.length} drift findings over ${replay.eventCount} events:`)
+    for (const finding of replay.drift) lines.push(`- ${finding.message}`)
+  }
+  return lines.join('\n')
+}
+
+/**
  * Execute one parsed `/project` invocation against the mounted ledger.
  * @param ctx - context whose `projectLedger` service owns the opened database.
  * @param rawInput - exact text after the command name.
@@ -330,6 +393,10 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
       case 'replay': {
         const projectId = resolveProjectId(listPlans(db), command.projectId)
         return { kind: 'success', text: renderReplayReport(readProjectReplay(db, projectId)) }
+      }
+      case 'digest': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        return { kind: 'success', text: renderDigest(readProjectDigest(db, projectId)) }
       }
       /* v8 ignore next 2 -- the parse step returns a closed union */
       default: return assertNever(command, 'project command')
