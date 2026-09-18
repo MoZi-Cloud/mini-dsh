@@ -456,7 +456,7 @@ v1.6b 再把 executor identity 扩展为 actor/role/assignment。
 
 实现：
 
-```ts
+```text
 computeWorkReadiness(workItemId): WorkReadiness
 ```
 
@@ -474,7 +474,7 @@ work item superseded/cancelled?
 
 返回：
 
-```ts
+```text
 interface WorkReadiness {
   ready: boolean
   reasons: ReadonlyArray<{
@@ -539,13 +539,13 @@ reaper 不直接宣布任务 failed。
 
 常量：
 
-```ts
+```text
 PROJECT_EVENT_FORMAT_VERSION = 1
 ```
 
 事件 envelope：
 
-```ts
+```text
 interface ProjectEventEnvelope {
   readonly version: number
   readonly type: string
@@ -661,7 +661,7 @@ packetHash
 
 # 17. `buildWorkPacket()` v1.6a
 
-```ts
+```text
 function buildWorkPacket(
   ledger: ProjectLedger,
   workItemId: WorkItemId,

@@ -32,6 +32,9 @@ dsh plugin --profile mini add @deepseek-ai/dsh-experimental-mini-profile
 启动前把 `DSH_MINI_LEDGER_PATH` 设为绝对文件路径，可将账本放到 Harness home 之外；目录与文件在首次使用时以 owner-only 权限创建。profile 内任何插件或命令都读取同一个已打开的句柄：
 
 ```ts
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-experimental-mini-profile'
+
 declare const ctx: Context
 const db = ctx.projectLedger.db
 ```

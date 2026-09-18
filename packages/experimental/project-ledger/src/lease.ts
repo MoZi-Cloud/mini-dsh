@@ -103,6 +103,7 @@ export type LeaseErrorCode =
  * so the rejection itself never writes.
  */
 export class LeaseError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: LeaseErrorCode
   /** The recomputed blockers behind a `work-not-ready` or projection rejection. */
   readonly reasons: readonly WorkReadinessReason[]

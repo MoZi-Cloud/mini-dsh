@@ -101,7 +101,11 @@ function walk(
   }
 }
 
-/** Map a file path to the stored language tag. @param path - file path. @returns the language tag. */
+/**
+ * Map a file path to the stored language tag.
+ * @param path - file path.
+ * @returns the language tag.
+ */
 export function languageOf(path: string): string {
   if (path.endsWith('.md')) return 'markdown'
   if (path.endsWith('.d.ts')) return 'typescript-declaration'

@@ -44,6 +44,7 @@ export type PlanImportErrorCode = 'version-conflict' | 'work-item-conflict'
  * has already rolled back, so the rejection itself never writes.
  */
 export class PlanImportError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: PlanImportErrorCode
 
   /** @param code - why the import was rejected. @param message - the concrete reason. */

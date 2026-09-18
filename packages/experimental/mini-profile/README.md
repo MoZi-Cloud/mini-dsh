@@ -32,6 +32,9 @@ dsh plugin --profile mini add @deepseek-ai/dsh-experimental-mini-profile
 Set `DSH_MINI_LEDGER_PATH` to an absolute file path before launch to place the ledger outside the Harness home; the directory and file are created owner-only on first use. Any plugin or command in the profile reads the same opened handle:
 
 ```ts
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-experimental-mini-profile'
+
 declare const ctx: Context
 const db = ctx.projectLedger.db
 ```

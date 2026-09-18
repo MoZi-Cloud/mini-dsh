@@ -30,6 +30,10 @@ Parse bytes, validate the schema, check semantics, compile, then import; every r
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
 import { buildWorkPacket, changeWorkStatus, claimWorkItem, compilePlan, computeWorkReadiness, detectWorkGraphCycles, evaluateAcceptanceCriterion, heartbeatWorkLease, importPlanVersion, listAgentTodo, listOwnerTodo, parsePlanDocument, readProjectEvents, rebuildWorkPacket, releaseWorkLease, replayProjectEvents, serializeWorkPacket, validatePlanSchema, validatePlanSemantics } from '@deepseek-ai/dsh-experimental-project-ledger'
 
+declare const planBytes: string
+declare const ledgerPath: string
+declare const planPath: string
+
 const { text, value } = parsePlanDocument(planBytes)
 const document = validatePlanSchema(value)
 validatePlanSemantics(document)
@@ -38,13 +42,17 @@ const db = await openProjectLedgerDatabase(ledgerPath)
 const result = importPlanVersion(db, compiled, { sourcePath: planPath })
 const timeline = readProjectEvents(db, compiled.projectId)
 const projection = replayProjectEvents(db, compiled.projectId)
-const readiness = computeWorkReadiness(db, compiled.workItems[0].id)
+const first = compiled.workItems[0]
+if (first === undefined) throw new Error('plan records no work item')
+const readiness = computeWorkReadiness(db, first.id)
 const cycles = detectWorkGraphCycles(db, compiled.projectId)
-const evaluation = evaluateAcceptanceCriterion(db, compiled.workItems[0].acceptance[0].id, 'PASS')
-const claim = claimWorkItem(db, compiled.workItems[0].id, 'worker/session-7')
+const criterion = first.acceptance[0]
+if (criterion === undefined) throw new Error('work item records no criterion')
+const evaluation = evaluateAcceptanceCriterion(db, criterion.id, 'PASS')
+const claim = claimWorkItem(db, first.id, 'worker/session-7')
 const lease = heartbeatWorkLease(db, claim.leaseId, claim.leaseToken)
 releaseWorkLease(db, claim.leaseId, claim.leaseToken)
-const packet = buildWorkPacket(db, compiled.workItems[0].id)
+const packet = buildWorkPacket(db, first.id)
 const packetText = serializeWorkPacket(packet)
 const rebuild = rebuildWorkPacket(db, packet.packetId)
 const ownerTodo = listOwnerTodo(db, compiled.projectId)

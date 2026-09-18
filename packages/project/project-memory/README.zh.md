@@ -28,6 +28,7 @@ kind: "package-reference"
 
 ```ts
 import { ProjectMemory, buildContextPacket } from '@deepseek-ai/dsh-project-memory'
+import { indexRepository } from '@deepseek-ai/dsh-project-analysis'
 
 const memory = await ProjectMemory.open('.mini-dsh/project-memory.sqlite')
 const report = indexRepository(memory, { root: '.', snapshotKind: 'worktree' })

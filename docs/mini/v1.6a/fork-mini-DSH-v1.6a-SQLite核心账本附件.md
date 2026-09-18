@@ -11,7 +11,7 @@
 
 概念常量：
 
-```ts
+```text
 PROJECT_LEDGER_SCHEMA_VERSION = 1
 PROJECT_EVENT_FORMAT_VERSION = 1
 ```

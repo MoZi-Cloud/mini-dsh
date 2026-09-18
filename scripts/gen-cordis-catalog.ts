@@ -68,6 +68,7 @@ export const SERVICE_PAGE: Record<string, string> = {
   browserUse: 'browser-use.md',
   computerUse: 'computer-use.md',
   commands: 'commands.md',
+  projectLedger: 'project-ledger.md',
   compaction: 'compaction.md',
   cordisInspect: 'extensions.md',
   authorization: 'credentials.md',

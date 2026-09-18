@@ -52,6 +52,7 @@ export type PlanSupersedeErrorCode =
 
 /** Thrown by {@link supersedePlanVersion}; the rejection writes nothing. */
 export class PlanSupersedeError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: PlanSupersedeErrorCode
 
   /** @param code - why the supersede was rejected. @param message - the concrete reason. */
@@ -71,6 +72,7 @@ export type BaselineDriftErrorCode =
 
 /** Thrown by {@link recordBaselineDrift}; the rejection writes nothing. */
 export class BaselineDriftError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: BaselineDriftErrorCode
 
   /** @param code - why the drift report was rejected. @param message - the concrete reason. */

@@ -13,6 +13,7 @@ export type ProjectMemoryErrorCode =
 
 /** A project memory store failure, carrying a stable machine-readable code. */
 export class ProjectMemoryError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: ProjectMemoryErrorCode
 
   /**

@@ -798,7 +798,7 @@ ValidatedPlanIR
 
 # 23. `parsePlanDocument()`
 
-```ts
+```text
 function parsePlanDocument(
   yamlText: string,
 ): RawPlanDocument
@@ -828,7 +828,7 @@ YAML bytes。
 
 # 24. `validatePlanSchema()`
 
-```ts
+```text
 function validatePlanSchema(
   raw: RawPlanDocument,
   schema: JsonSchema,
@@ -843,7 +843,7 @@ function validatePlanSchema(
 
 # 25. `resolvePlanBaseline()`
 
-```ts
+```text
 async function resolvePlanBaseline(
   repo: RepositoryIndex,
   selector: BaselineSelector,
@@ -869,7 +869,7 @@ Active plan 必须 pinned 到明确 repo snapshot。
 
 # 26. `bindObservedDesignTargets()`
 
-```ts
+```text
 function bindObservedDesignTargets(
   db: ProjectMemory,
   plan: ValidatedPlanIR,
@@ -893,7 +893,7 @@ ambiguous match = hard error。
 
 # 27. `captureBaselineFunctionContract()`
 
-```ts
+```text
 function captureBaselineFunctionContract(
   db: ProjectMemory,
   symbolVersionId: string,
@@ -912,7 +912,7 @@ source anchors
 
 ## 输出
 
-```ts
+```text
 interface ObservedFunctionContract {
   symbolVersionId: string
   signature: string
@@ -934,7 +934,7 @@ interface ObservedFunctionContract {
 
 # 28. `compileTargetFunctionContract()`
 
-```ts
+```text
 function compileTargetFunctionContract(
   planContract: PlanFunctionContract,
   baseline?: ObservedFunctionContract,
@@ -964,7 +964,7 @@ return:
 
 # 29. `compilePlannedCallEdges()`
 
-```ts
+```text
 function compilePlannedCallEdges(
   target: TargetFunctionContract,
   bindings: DesignBindingIndex,
@@ -992,7 +992,7 @@ EXTERNAL
 
 # 30. `compileAcceptanceCriteria()`
 
-```ts
+```text
 function compileAcceptanceCriteria(
   specs: readonly PlanAcceptanceSpec[],
 ): AcceptanceCriterion[]
@@ -1014,7 +1014,7 @@ Owner/manual criterion 可以没有 command，但必须有 actor role。
 
 # 31. `compilePlan()`
 
-```ts
+```text
 async function compilePlan(
   input: PlanCompileInput,
 ): Promise<PlanCompileResult>
@@ -1042,7 +1042,7 @@ parse YAML
 
 # 32. `importPlanVersion()`
 
-```ts
+```text
 function importPlanVersion(
   tx: ProjectTransaction,
   ir: CompiledPlanIR,
@@ -1072,7 +1072,7 @@ project events
 
 # 33. `planDoctor()`
 
-```ts
+```text
 function planDoctor(
   db: ProjectMemory,
   planVersionId: string,
@@ -1104,7 +1104,7 @@ Activation 前 `errors=0`。
 
 # 34. `activatePlanVersion()`
 
-```ts
+```text
 function activatePlanVersion(
   tx: ProjectTransaction,
   planVersionId: string,
@@ -1126,7 +1126,7 @@ supersede prior active version
 
 # 35. `computeWorkReadiness()`
 
-```ts
+```text
 function computeWorkReadiness(
   db: ProjectMemory,
   workItemId: string,
@@ -1148,7 +1148,7 @@ function computeWorkReadiness(
 
 输出：
 
-```ts
+```text
 {
   ready: boolean
   blockers: Blocker[]
@@ -1161,7 +1161,7 @@ function computeWorkReadiness(
 
 # 36. `claimWorkItem()`
 
-```ts
+```text
 function claimWorkItem(
   db: ProjectMemory,
   request: ClaimWorkRequest,
@@ -1187,7 +1187,7 @@ COMMIT
 
 这是 Project Ledger 与 Context-Light 的连接点。
 
-```ts
+```text
 function buildWorkPacket(
   db: ProjectMemory,
   claimed: ClaimedWork,
@@ -1215,7 +1215,7 @@ resource/decision facts
 
 # 38. `startWorkAttempt()` / `finishWorkAttempt()`
 
-```ts
+```text
 function startWorkAttempt(...): WorkAttempt
 function finishWorkAttempt(...): WorkAttemptResult
 ```
@@ -1230,7 +1230,7 @@ function finishWorkAttempt(...): WorkAttemptResult
 
 代码修改后：
 
-```ts
+```text
 function bindImplementation(
   db: ProjectMemory,
   changeSpecId: string,
@@ -1254,7 +1254,7 @@ ambiguous implementation
 
 # 40. `compareFunctionContracts()`
 
-```ts
+```text
 function compareFunctionContracts(
   target: TargetFunctionContract,
   implemented: ObservedFunctionContract,
@@ -1277,7 +1277,7 @@ required/prohibited outgoing calls
 
 # 41. `evaluateAcceptance()`
 
-```ts
+```text
 async function evaluateAcceptance(
   db: ProjectMemory,
   criterionId: string,
@@ -1305,7 +1305,7 @@ manual
 
 # 42. `evaluateTargetState()`
 
-```ts
+```text
 function evaluateTargetState(
   db: ProjectMemory,
   targetAssertionId: string,
@@ -1593,13 +1593,13 @@ Agent1/Agent2 同时 claim W100。
 Agent1：
 
 ```text
-packages/project-memory/**
+packages/project/project-memory/**
 ```
 
 Agent2：
 
 ```text
-packages/project-analysis/**
+packages/project/project-analysis/**
 ```
 
 允许并行。
@@ -1648,7 +1648,7 @@ Failed acceptance
 
 # 58. `computeProjectStatus()`
 
-```ts
+```text
 function computeProjectStatus(
   db: ProjectMemory,
   projectId: string,

@@ -60,6 +60,16 @@ post-v1.6a 真实使用 lane（`./benchmarks/real-use/run-real-use.sh`）经 SHI
 
 紧接着的重跑幂等通过（`alreadyComplete: true`、`replayDrift: 0`、零写入）。4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。版本 2 的两个条目至此全部完成；后续真实使用条目来自新的计划版本。
 
+### 2026-09-19 —— 计划版本 3 与经 shipped 工具完成 PW-DOCSYNC-GREEN-001
+
+计划文档升到版本 3 并携带全新一批条目（`PW-DOCSYNC-GREEN-001`、`PW-EVIDENCE-DIGEST-001`），同一 lane 对持久账本完整驱动了这次升版：版本 3 导入，版本 2 经 §22 接缝 supersede（事件序号 47；此前每个条目保持 DONE 且逐字节不变），随后 `PW-DOCSYNC-GREEN-001`（仓库完整 doc-sync 门在本 fork 转绿：补全 40 处导出 API JSDoc、把 `ctx.projectLedger` 服务登记进 cordis catalog、capability-seams 表与新增的双语 subsystems 页、再生成双语言同步的各 catalog、修复归档方案文档的代码围栏与包路径引用）由 `agent:mini-real-use-lane` 领取。其存储 verifier 就是门本身——`pnpm run doc-sync` 作为真实子进程运行（退出码 0、41/41 检查、约 6 分钟），这同时逼出一处 lane 修复：工作插件现在以两倍 verifier 超时的 `leaseTtlMs` 挂载，因为默认租约在 verifier 中途过期、报告落在 reaper 接管的租约上。工作项 DONE、doctor 0 问题、重放对账 0 drift、事件重放 DONE。首次运行报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v3","workItemId":"wi:mini-dsh:PW-DOCSYNC-GREEN-001","stableKey":"PW-DOCSYNC-GREEN-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-DOCSYNC-GREEN-001:AC-PW-DOCSYNC-GREEN-001","command":"pnpm run doc-sync","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+紧接着的重跑幂等通过（`alreadyComplete: true`、`replayDrift: 0`、零写入）。4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`PW-EVIDENCE-DIGEST-001` 在版本 3 中保持可领取，留给后续增量。
+
 ## 相对门槛的状态
 
-经账本完成的工作项：20（15 个黄金计划项由 v1.6a 构建本身完成，加上面五条）。BOOT/4K 回归：无记录；`run-4k.sh` 与 BOOT 验收套件保持绿色。用户价值确认：待定——进入决策按 §33 归 owner。
+经账本完成的工作项：21（15 个黄金计划项由 v1.6a 构建本身完成，加上面六条）。BOOT/4K 回归：无记录；`run-4k.sh` 与 BOOT 验收套件保持绿色。用户价值确认：待定——进入决策按 §33 归 owner。

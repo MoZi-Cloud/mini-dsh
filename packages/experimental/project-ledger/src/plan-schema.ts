@@ -50,11 +50,13 @@ export const PLAN_ACCEPTANCE_KINDS = [
   'OWNER_CONFIRMATION',
 ] as const
 
+/** The constitution mirror of the `project` block. */
 export const planProjectSchema = zod.strictObject({
   id: zod.string().min(1),
   name: zod.string().min(1),
 })
 
+/** The constitution mirror of the optional `baseline` block. */
 export const planBaselineSchema = zod
   .strictObject({
     repoHead: zod.string().min(1).optional(),
@@ -69,6 +71,7 @@ export const planBaselineSchema = zod
     }
   })
 
+/** The constitution mirror of the `plan` block. */
 export const planPlanSchema = zod.strictObject({
   id: zod.string().min(1),
   name: zod.string().min(1),
@@ -76,6 +79,7 @@ export const planPlanSchema = zod.strictObject({
   baseline: planBaselineSchema.optional(),
 })
 
+/** The constitution mirror of one `phases` entry. */
 export const planPhaseSchema = zod.strictObject({
   id: zod.string().min(1),
   title: zod.string().min(1),
@@ -84,6 +88,7 @@ export const planPhaseSchema = zod.strictObject({
   description: zod.string().optional(),
 })
 
+/** The mirror of a COMMAND or TEST verifier entry. */
 export const commandVerifierSchema = zod.strictObject({
   kind: zod.enum(['COMMAND', 'TEST']),
   command: zod.string().min(1),
@@ -92,6 +97,7 @@ export const commandVerifierSchema = zod.strictObject({
   approvalRequired: zod.boolean(),
 })
 
+/** The mirror of an SQL_ASSERTION or GRAPH_ASSERTION verifier entry. */
 export const assertionVerifierSchema = zod.strictObject({
   kind: zod.enum(['SQL_ASSERTION', 'GRAPH_ASSERTION']),
   query: zod.string().min(1),
@@ -100,17 +106,20 @@ export const assertionVerifierSchema = zod.strictObject({
   expected: zod.custom<unknown>(value => value !== undefined, 'expected is required'),
 })
 
+/** The mirror of an OWNER_CONFIRMATION verifier entry. */
 export const ownerConfirmationVerifierSchema = zod.strictObject({
   kind: zod.literal('OWNER_CONFIRMATION'),
   instruction: zod.string().min(1),
 })
 
+/** The verifier-entry union, discriminated by `kind`. */
 export const planVerifierSchema = zod.discriminatedUnion('kind', [
   commandVerifierSchema,
   assertionVerifierSchema,
   ownerConfirmationVerifierSchema,
 ])
 
+/** The constitution mirror of one acceptance entry. */
 export const planAcceptanceSchema = zod.strictObject({
   id: zod.string().min(1),
   kind: zod.enum(PLAN_ACCEPTANCE_KINDS),
@@ -119,6 +128,7 @@ export const planAcceptanceSchema = zod.strictObject({
   verifier: planVerifierSchema,
 })
 
+/** The constitution mirror of one `workItems` entry. */
 export const planWorkItemSchema = zod.strictObject({
   id: zod.string().min(1),
   phaseId: zod.string().min(1).optional(),
@@ -132,6 +142,7 @@ export const planWorkItemSchema = zod.strictObject({
   acceptance: zod.array(planAcceptanceSchema).min(1),
 })
 
+/** The constitution mirror of one `relations` entry. */
 export const planRelationSchema = zod.strictObject({
   from: zod.string().min(1),
   to: zod.string().min(1),
@@ -192,7 +203,11 @@ function displayValue(value: unknown): string {
   return typeof value === 'string' ? `'${value}'` : String(value)
 }
 
-/** Render a zod issue path as the dotted document path used by every plan issue. */
+/**
+ * Render a zod issue path as the dotted document path used by every plan issue.
+ * @param path - the zod issue path segments.
+ * @returns the dotted document path (`$` for the document root).
+ */
 export function formatZodPath(path: PropertyKey[]): string {
   if (path.length === 0) {
     return '$'

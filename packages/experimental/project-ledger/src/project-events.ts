@@ -143,6 +143,7 @@ export type ProjectEventErrorCode =
  * rollback.
  */
 export class ProjectEventError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: ProjectEventErrorCode
 
   /** @param code - why the event draft or row was rejected. @param message - the concrete reason. */

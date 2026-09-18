@@ -51,6 +51,7 @@ export interface PlanIssue {
  * found by the pass that rejected it; the message names the first issue.
  */
 export class PlanDocumentError extends Error {
+  /** Every issue found by the rejecting pass; never empty. */
   readonly issues: readonly PlanIssue[]
 
   /** @param issues - every issue found by the rejecting pass; never empty. */

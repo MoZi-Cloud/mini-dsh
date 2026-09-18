@@ -67,6 +67,7 @@ export type WorkReadinessErrorCode = 'unknown-work-item'
  * record. Nothing is written, so there is nothing to roll back.
  */
 export class WorkReadinessError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: WorkReadinessErrorCode
 
   /** @param code - why the readiness query was rejected. @param message - the concrete reason. */

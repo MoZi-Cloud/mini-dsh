@@ -44,6 +44,7 @@ export type WorkTodoErrorCode = 'empty-executor-kinds'
 
 /** Thrown by the todo-view resolve step; queries themselves only read. */
 export class WorkTodoError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: WorkTodoErrorCode
 
   /** @param code - why the request was rejected. @param message - the concrete reason. */

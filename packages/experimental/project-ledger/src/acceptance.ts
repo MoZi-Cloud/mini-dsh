@@ -46,6 +46,7 @@ export type AcceptanceEvaluationErrorCode = 'unknown-criterion'
  * transaction has already rolled back, so the rejection itself never writes.
  */
 export class AcceptanceEvaluationError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: AcceptanceEvaluationErrorCode
 
   /** @param code - why the evaluation was rejected. @param message - the concrete reason. */

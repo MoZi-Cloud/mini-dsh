@@ -73,6 +73,7 @@ export type PlanDoctorErrorCode = 'unknown-plan-version'
 
 /** Thrown when the doctor is asked about a version the ledger does not record. */
 export class PlanDoctorError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: PlanDoctorErrorCode
 
   /** @param code - why the doctor pass was rejected. @param message - the concrete reason. */

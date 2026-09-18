@@ -1398,6 +1398,28 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'projectLedger',
+    summary: 'The mounted Project Ledger capability, exposed as `ctx.projectLedger`.',
+    description: 'The mounted Project Ledger capability, exposed as `ctx.projectLedger`.',
+    methods: [
+      {
+        signature: 'readonly ledgerPath: string',
+        description: 'The resolved ledger path this process owns.',
+        parameters: [],
+      },
+      {
+        signature: 'readonly busyTimeoutMs: number | undefined',
+        description: 'The optional write-wait override handed to the store\'s open.',
+        parameters: [],
+      },
+      {
+        signature: 'db!: DatabaseSync',
+        description: 'The opened ledger handle; assigned during Service.init before availability.',
+        parameters: [],
+      },
+    ],
+  },
+  {
     key: 'ptcRuntime',
     summary: 'Registers one `ctx.ptcRuntime` implementation.',
     description: 'Registers one `ctx.ptcRuntime` implementation. Program, budget, abort, and substrate failures resolve in PtcRunResult; only Service Definition contract misuse rejects. Implementations bridge structured-cloneable bindings, materialize each declared namespace rejection class, treat programs as hostile peers, isolate runs from one another, and terminate and await in-flight runs during disposal.',

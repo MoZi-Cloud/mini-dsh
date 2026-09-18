@@ -54,7 +54,7 @@ import { assertBuiltBenchmarkRuntime } from '../support/built-worker.ts'
 /** The increment plan this lane drives; the shell entry runs from the repository root. */
 const PLAN_PATH = join(process.cwd(), 'docs/mini/v1.6a/fork-mini-DSH-post-v1.6a.plan.yaml')
 /** The item this run claims; a later increment names its own item. */
-const TARGET_STABLE_KEY = process.env.DSH_REAL_USE_ITEM ?? 'PW-REPLAY-VIEW-001'
+const TARGET_STABLE_KEY = process.env.DSH_REAL_USE_ITEM ?? 'PW-DOCSYNC-GREEN-001'
 /** A repository suite verifier can legitimately take minutes; the bound keeps a hung one from parking the lane. */
 const VERIFIER_TIMEOUT_MS = 600_000
 /** How much verifier output the failure diagnostics carry. */
@@ -191,7 +191,10 @@ async function main(): Promise<void> {
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(MiniProjectLedger, { ledgerPath })
-    await ctx.plugin(miniProjectWork)
+    // A stored verifier may legitimately run for minutes (doc-sync's gate
+    // suite alone takes ~6); the lease must outlive the longest verifier, or
+    // the report lands on an expired lease the reaper owns.
+    await ctx.plugin(miniProjectWork, { leaseTtlMs: VERIFIER_TIMEOUT_MS * 2 })
     const db = ctx.projectLedger.db
 
     const existing = db.prepare('SELECT id, status FROM plan_versions WHERE plan_id = ? AND version_no = ?')

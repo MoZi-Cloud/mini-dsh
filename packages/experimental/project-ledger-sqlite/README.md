@@ -29,6 +29,8 @@ Open a database path (or `:memory:`); the returned handle is a `node:sqlite` `Da
 ```ts
 import { openProjectLedgerDatabase, PROJECT_LEDGER_SCHEMA_VERSION } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
 
+declare const ledgerPath: string
+
 const db = await openProjectLedgerDatabase(ledgerPath, { journalMode: 'wal', busyTimeoutMs: 5000 })
 // STRICT tables, foreign keys on, stamped with PROJECT_LEDGER_SCHEMA_VERSION
 db.close()

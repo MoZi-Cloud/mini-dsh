@@ -47,6 +47,7 @@ export type WorkStatusErrorCode = 'unknown-work-item' | 'transition-not-allowed'
  * transaction has already rolled back, so the rejection itself never writes.
  */
 export class WorkStatusError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: WorkStatusErrorCode
 
   /** @param code - why the transition was rejected. @param message - the concrete reason. */

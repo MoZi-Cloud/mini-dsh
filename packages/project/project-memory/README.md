@@ -28,6 +28,7 @@ Open a store (created owner-only on first use), fill it through the `project-ana
 
 ```ts
 import { ProjectMemory, buildContextPacket } from '@deepseek-ai/dsh-project-memory'
+import { indexRepository } from '@deepseek-ai/dsh-project-analysis'
 
 const memory = await ProjectMemory.open('.mini-dsh/project-memory.sqlite')
 const report = indexRepository(memory, { root: '.', snapshotKind: 'worktree' })

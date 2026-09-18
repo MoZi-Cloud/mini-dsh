@@ -732,6 +732,26 @@ export interface InspectorOptions {
 
 来源：[`packages/experimental/inspector/src/index.ts:66`](../packages/experimental/inspector/src/index.ts)
 
+<a id="deepseek-aidsh-experimental-mini-profile"></a>
+
+## `@deepseek-ai/dsh-experimental-mini-profile`
+
+```ts config-catalog
+/** Plugin config: where the ledger lives and how long writes wait. */
+export interface Config {
+  /**
+   * Path of the ledger database file. The mini patch resolves it from
+   * `DSH_MINI_LEDGER_PATH` with a dsh-home fallback, and a profile's
+   * cordis.patch.yml may pin any path; an empty value fails the load.
+   */
+  readonly ledgerPath: string
+  /** Milliseconds a write waits on a competing writer; omitted keeps the store default. */
+  readonly busyTimeoutMs?: number
+}
+```
+
+来源：[`packages/experimental/mini-profile/src/index.ts:23`](../packages/experimental/mini-profile/src/index.ts)
+
 <a id="deepseek-aidsh-experimental-ptc-runtime-python"></a>
 
 ## `@deepseek-ai/dsh-experimental-ptc-runtime-python`
@@ -3725,6 +3745,8 @@ export interface Config {
 - `@deepseek-ai/dsh-experimental-agent-team-profile`（[`packages/experimental/agent-team-profile/src/index.ts`](../packages/experimental/agent-team-profile/src/index.ts)）
 - `@deepseek-ai/dsh-experimental-agent-team-web-profile`（[`packages/experimental/agent-team-web-profile/src/index.ts`](../packages/experimental/agent-team-web-profile/src/index.ts)）
 - `@deepseek-ai/dsh-experimental-browser-use-runtime` ([`packages/experimental/browser-use-runtime/src/index.ts`](../packages/experimental/browser-use-runtime/src/index.ts))
+- `@deepseek-ai/dsh-experimental-project-ledger`（[`packages/experimental/project-ledger/src/index.ts`](../packages/experimental/project-ledger/src/index.ts)）
+- `@deepseek-ai/dsh-experimental-project-ledger-sqlite`（[`packages/experimental/project-ledger-sqlite/src/index.ts`](../packages/experimental/project-ledger-sqlite/src/index.ts)）
 - `@deepseek-ai/dsh-experimental-webworker-packer`（[`packages/experimental/webworker-packer/src/index.ts`](../packages/experimental/webworker-packer/src/index.ts)）
 - `@deepseek-ai/dsh-experimental-webworker-runtime`（[`packages/experimental/webworker-runtime/src/index.ts`](../packages/experimental/webworker-runtime/src/index.ts)）
 - `@deepseek-ai/dsh-home-paths`（[`packages/util/home-paths/src/index.ts`](../packages/util/home-paths/src/index.ts)）
@@ -3737,6 +3759,8 @@ export interface Config {
 - `@deepseek-ai/dsh-native-command`（[`packages/util/native-command/src/index.ts`](../packages/util/native-command/src/index.ts)）
 - `@deepseek-ai/dsh-output-retention`（[`packages/util/output-retention/src/index.ts`](../packages/util/output-retention/src/index.ts)）
 - `@deepseek-ai/dsh-package-manifest` ([`packages/util/package-manifest/src/index.ts`](../packages/util/package-manifest/src/index.ts))
+- `@deepseek-ai/dsh-project-analysis` ([`packages/project/project-analysis/src/index.ts`](../packages/project/project-analysis/src/index.ts))
+- `@deepseek-ai/dsh-project-memory` ([`packages/project/project-memory/src/index.ts`](../packages/project/project-memory/src/index.ts))
 - `@deepseek-ai/dsh-remote-mock`（[`packages/test-support/remote-mock/src/index.ts`](../packages/test-support/remote-mock/src/index.ts)）
 - `@deepseek-ai/dsh-sandbox-windows-acl`（[`packages/sandbox/sandbox-windows-acl/src/index.ts`](../packages/sandbox/sandbox-windows-acl/src/index.ts)）
 - `@deepseek-ai/dsh-scope`（[`packages/core/scope/src/index.ts`](../packages/core/scope/src/index.ts)）

@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-19-docsync-green-on-fork.md
+2026-09-19-docsync-green-on-fork.md: aa4082f063695faf960568a797a01588a245fbf7
+2026-09-19-docsync-green-on-fork.zh.md: 581aa9951959d1da732577dd4123f870fa164711

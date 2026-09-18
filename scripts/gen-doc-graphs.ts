@@ -135,6 +135,15 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'The host commits accepted images before session events; provider adapters resolve authorized durable references into provider-native content.',
   },
   {
+    key: 'projectLedger',
+    pkg: 'mini-profile',
+    title: 'Mounted Project Ledger database',
+    mode: 'seam',
+    implementations: ['project-ledger-sqlite'],
+    consumers: ['mini-profile'],
+    note: 'The mini-profile mount opens the SQLite ledger fail-closed and exposes the handle as ctx.projectLedger; the /project commands and the project_work tools go through ledger seams, never raw SQL.',
+  },
+  {
     key: 'fileUploads',
     pkg: 'client-file-upload',
     title: 'Agent-scoped staged file uploads',

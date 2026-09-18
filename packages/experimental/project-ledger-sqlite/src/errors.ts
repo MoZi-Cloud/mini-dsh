@@ -11,6 +11,7 @@ export type ProjectLedgerErrorCode =
 
 /** A project ledger database failure, carrying a stable machine-readable code. */
 export class ProjectLedgerError extends Error {
+  /** Stable failure kind for programmatic handling. */
   readonly code: ProjectLedgerErrorCode
 
   /**

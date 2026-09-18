@@ -60,6 +60,16 @@ The same lane drove `PW-REPLAY-VIEW-001` (the `/project replay` audit view over 
 
 An immediate rerun passed idempotently (`alreadyComplete: true`, `replayDrift: 0`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE). Both version-2 items are now complete; later real-use items come from new plan versions.
 
+### 2026-09-19 — plan version 3 and PW-DOCSYNC-GREEN-001 through the shipped tools
+
+The plan document bumped to version 3 with a fresh batch (`PW-DOCSYNC-GREEN-001`, `PW-EVIDENCE-DIGEST-001`), and the same lane drove the bump end to end against the persistent ledger: version 3 imported, version 2 superseded through the §22 seam (event sequence 47; every prior item stays DONE and byte-identical), then `PW-DOCSYNC-GREEN-001` (the repository's complete doc-sync gate green on the fork: 40 exported-API JSDoc completions, the `ctx.projectLedger` service registered across the cordis catalog, capability-seams tables, and a new bilingual subsystems page, regenerated catalogs with both language sides in sync, and the archived proposals' code fences and package-path references repaired) claimed by `agent:mini-real-use-lane`. Its stored verifier is the gate itself — `pnpm run doc-sync` ran as a real subprocess (exit 0, 41/41 checks, ~6 minutes), which also forced a lane fix: the work plugins now mount with `leaseTtlMs` at twice the verifier timeout, because the default lease expired mid-verifier and the report landed on a lease the reaper owned. Item DONE, doctor 0 issues, replay audit 0 drift, event replay DONE. First-run report line:
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v3","workItemId":"wi:mini-dsh:PW-DOCSYNC-GREEN-001","stableKey":"PW-DOCSYNC-GREEN-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-DOCSYNC-GREEN-001:AC-PW-DOCSYNC-GREEN-001","command":"pnpm run doc-sync","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+An immediate rerun passed idempotently (`alreadyComplete: true`, `replayDrift: 0`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE). `PW-EVIDENCE-DIGEST-001` stays claimable in version 3 for a later increment.
+
 ## Status toward the gate
 
-Items completed through the ledger: 20 (15 golden-plan items by the v1.6a build itself, plus the five entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.
+Items completed through the ledger: 21 (15 golden-plan items by the v1.6a build itself, plus the six entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.

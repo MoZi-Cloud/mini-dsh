@@ -5,7 +5,7 @@ project:
 plan:
   id: mini-dsh-post-v16a-increments
   name: Post-v1.6a Real-Use Increments
-  version: 2
+  version: 3
 phases:
   - id: INC1
     title: Post-v1.6a increments
@@ -15,50 +15,55 @@ phases:
       Real repository work claimed, verified, and completed through the mounted
       Project Ledger, accumulating the §33 real-use record one increment at a
       time. Items land in the order priority names; each carries a stored
-      verifier command the real-use lane executes. Version 2 supersedes the
-      completed version-1 items (PW-PRESENTERS-001, PW-REPORT-VERDICTS-001,
-      PW-OBSERVED-TAIL-001) with a fresh batch.
+      verifier command the real-use lane executes. Version 3 supersedes the
+      completed version-2 items (PW-ITEM-REVIEW-001, PW-REPLAY-VIEW-001) with
+      a fresh batch.
 workItems:
-  - id: PW-ITEM-REVIEW-001
+  - id: PW-DOCSYNC-GREEN-001
     phaseId: INC1
-    type: IMPLEMENTATION
+    type: MAINTENANCE
     executorKind: AGENT
-    title: Item review view in /project
+    title: Full doc-sync gate green on the fork
     description: >
-      Give /project an item subcommand over a new ledger read seam: one work
-      item resolved by stable key or id, showing each acceptance criterion's
-      status and latest evaluation — verdict, evaluator, exit code, and a
-      bounded excerpt of the observed output tail — so the owner reads why an
-      item passed or failed without SQL. The view only reads; the Owner domain
-      stays v1.6b scope.
+      Make the repository's complete documentation gate pass on this fork:
+      document every exported API the gate demands (error codes, schema
+      mirrors, id factories), register the ctx.projectLedger service in the
+      cordis catalog and capability-seam tables with its own subsystems page
+      carried bilingually, regenerate the generated catalogs (config catalog,
+      capability seams) with their language sides in sync, and repair the
+      archived proposal documents' code fences and package-path references.
+      The verifier is the gate itself.
     priority: 10
     status: READY
     acceptance:
-      - id: AC-PW-ITEM-REVIEW-001
+      - id: AC-PW-DOCSYNC-GREEN-001
         kind: TEST
-        description: The mini-profile package suite passes with the item review path covered.
+        description: The repository's complete doc-sync gate passes with zero failed checks.
         required: true
         verifier:
           kind: TEST
-          command: pnpm exec vitest run mini-profile
+          command: pnpm run doc-sync
           expectedExitCode: 0
           sandboxRequired: true
           approvalRequired: false
-  - id: PW-REPLAY-VIEW-001
+  - id: PW-EVIDENCE-DIGEST-001
     phaseId: INC1
     type: IMPLEMENTATION
     executorKind: AGENT
-    title: Replay projection view in /project
+    title: Owner evidence digest view in /project
     description: >
-      Give /project a replay subcommand that runs the ledger's event replay
-      for the resolved project and reports the replayed projection against the
-      materialized rows, so the owner audits ledger integrity read-only.
+      Give /project a digest subcommand that aggregates the ledger's
+      read-only evidence into one owner-facing summary — plan versions and
+      their statuses, per-item completion with latest verdicts, and the
+      replay audit verdict — so the owner reads the whole §33 record without
+      SQL or per-item commands. The view only reads; the Owner domain stays
+      v1.6b scope.
     priority: 20
     status: READY
     acceptance:
-      - id: AC-PW-REPLAY-VIEW-001
+      - id: AC-PW-EVIDENCE-DIGEST-001
         kind: TEST
-        description: The mini-profile package suite passes with the replay view path covered.
+        description: The mini-profile package suite passes with the digest view path covered.
         required: true
         verifier:
           kind: TEST

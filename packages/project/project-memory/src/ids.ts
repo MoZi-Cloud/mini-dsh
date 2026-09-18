@@ -62,62 +62,98 @@ function newId(prefix: string): string {
   return `${prefix}_${randomUUID()}`
 }
 
-/** Allocate a repository row id. @returns the branded row id. */
+/**
+ * Allocate a repository row id.
+ * @returns the branded row id.
+ */
 export function RepositoryId(): RepositoryId {
   return brandString<RepositoryId>(newId('repo'))
 }
 
-/** Allocate a snapshot row id. @returns the branded row id. */
+/**
+ * Allocate a snapshot row id.
+ * @returns the branded row id.
+ */
 export function SnapshotId(): SnapshotId {
   return brandString<SnapshotId>(newId('snap'))
 }
 
-/** Allocate a file row id. @returns the branded row id. */
+/**
+ * Allocate a file row id.
+ * @returns the branded row id.
+ */
 export function FileId(): FileId {
   return brandString<FileId>(newId('file'))
 }
 
-/** Allocate a symbol identity row id. @returns the branded row id. */
+/**
+ * Allocate a symbol identity row id.
+ * @returns the branded row id.
+ */
 export function SymbolId(): SymbolId {
   return brandString<SymbolId>(newId('symb'))
 }
 
-/** Allocate a symbol-version row id. @returns the branded row id. */
+/**
+ * Allocate a symbol-version row id.
+ * @returns the branded row id.
+ */
 export function SymbolVersionId(): SymbolVersionId {
   return brandString<SymbolVersionId>(newId('sv'))
 }
 
-/** Allocate an import row id. @returns the branded row id. */
+/**
+ * Allocate an import row id.
+ * @returns the branded row id.
+ */
 export function ImportId(): ImportId {
   return brandString<ImportId>(newId('imp'))
 }
 
-/** Allocate a call-site row id. @returns the branded row id. */
+/**
+ * Allocate a call-site row id.
+ * @returns the branded row id.
+ */
 export function CallSiteId(): CallSiteId {
   return brandString<CallSiteId>(newId('call'))
 }
 
-/** Allocate a symbol-reference row id. @returns the branded row id. */
+/**
+ * Allocate a symbol-reference row id.
+ * @returns the branded row id.
+ */
 export function SymbolReferenceId(): SymbolReferenceId {
   return brandString<SymbolReferenceId>(newId('sref'))
 }
 
-/** Allocate a project-object row id. @returns the branded row id. */
+/**
+ * Allocate a project-object row id.
+ * @returns the branded row id.
+ */
 export function ProjectObjectId(): ProjectObjectId {
   return brandString<ProjectObjectId>(newId('pobj'))
 }
 
-/** Allocate a memory row id. @returns the branded row id. */
+/**
+ * Allocate a memory row id.
+ * @returns the branded row id.
+ */
 export function MemoryId(): MemoryId {
   return brandString<MemoryId>(newId('memo'))
 }
 
-/** Allocate a document-heading row id. @returns the branded row id. */
+/**
+ * Allocate a document-heading row id.
+ * @returns the branded row id.
+ */
 export function DocumentHeadingId(): DocumentHeadingId {
   return brandString<DocumentHeadingId>(newId('head'))
 }
 
-/** Allocate an analysis-unit row id. @returns the branded row id. */
+/**
+ * Allocate an analysis-unit row id.
+ * @returns the branded row id.
+ */
 export function AnalysisUnitId(): AnalysisUnitId {
   return brandString<AnalysisUnitId>(newId('unit'))
 }
