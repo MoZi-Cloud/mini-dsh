@@ -7,6 +7,7 @@ import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project
 import {
   PlanDoctorError,
   assignRole,
+  assignWorkItem,
   claimWorkItem,
   compilePlan,
   decideApproval,
@@ -105,8 +106,8 @@ describe('planDoctor', () => {
         versionNo: 1,
         status: 'DRAFT',
         projectId: 'mini-dsh',
-        databaseUserVersion: 5,
-        eventFormatVersion: 5,
+        databaseUserVersion: 6,
+        eventFormatVersion: 6,
         baselineRepoHead: null,
         baselineWorktreeHash: null,
         counts: { phases: 13, workItems: 15, relations: 14, criteria: 16, events: 16 },
@@ -267,7 +268,7 @@ describe('planDoctor', () => {
       const issues = planDoctor(unreadable, GOLDEN_VERSION).issues
       expect(issues).toHaveLength(1)
       expect(issues[0]?.code).toBe('event-timeline-unreadable')
-      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 5')
+      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 6')
     } finally {
       unreadable.close()
     }
@@ -511,6 +512,7 @@ describe('planDoctor', () => {
         'INSERT INTO actor_roles (id, actor_id, role_id, valid_from_ms, valid_to_ms) '
         + "VALUES ('asg:mini-dsh:hand', 'actor:mini-dsh:hand', 'role:mini-dsh:hand', 45, NULL)",
       ).run()
+      actorDrift.prepare('UPDATE actor_roles SET role_id = ? WHERE actor_id = ?').run('role:mini-dsh:hand', owner.actorId)
       actorDrift.prepare('UPDATE actor_roles SET valid_to_ms = 5 WHERE actor_id = ?').run(owner.actorId)
       const issues = planDoctor(actorDrift, GOLDEN_VERSION, { nowMs: 46 }).issues
       expect(issues).toEqual([
@@ -542,6 +544,12 @@ describe('planDoctor', () => {
         {
           code: 'projection-drift',
           refId: 'asg:mini-dsh:19',
+          message: 'actor role "asg:mini-dsh:19" materializes actor "actor:mini-dsh:owner" over role "role:mini-dsh:hand" '
+            + `but replays actor "actor:mini-dsh:owner" over role "${role.roleId}"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: 'asg:mini-dsh:19',
           message: 'actor role "asg:mini-dsh:19" materializes valid until 5 but replays valid until now',
         },
         {
@@ -552,6 +560,77 @@ describe('planDoctor', () => {
       ])
     } finally {
       actorDrift.close()
+    }
+
+    const workAssignmentDrift = await goldenLedger()
+    try {
+      const actor = registerActor(workAssignmentDrift, brandString<ProjectId>('mini-dsh'), {
+        actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+      }, { nowMs: 40, actorRef: 'doctor/agent' })
+      const reviewerRole = defineRole(workAssignmentDrift, brandString<ProjectId>('mini-dsh'), {
+        roleName: 'reviewer', roleKind: 'GOVERNANCE',
+      }, { nowMs: 41, actorRef: 'doctor/agent' })
+      const assignment = assignWorkItem(workAssignmentDrift, {
+        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
+        actorId: actor.actorId,
+        assignmentKind: 'PRIMARY',
+        roleId: reviewerRole.roleId,
+      }, { nowMs: 42, actorRef: 'doctor/agent' })
+      const handActor = registerActor(workAssignmentDrift, brandString<ProjectId>('mini-dsh'), {
+        actorKey: 'hand', actorKind: 'SERVICE', displayName: 'Hand row',
+      }, { nowMs: 43, actorRef: 'doctor/agent' })
+      const secondAssignment = assignWorkItem(workAssignmentDrift, {
+        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
+        actorId: actor.actorId,
+        assignmentKind: 'COLLABORATOR',
+      }, { nowMs: 44, actorRef: 'doctor/agent' })
+      workAssignmentDrift.prepare('UPDATE work_assignments SET actor_id = ?, assignment_kind = ?, role_id = NULL, status = ? WHERE id = ?')
+        .run(handActor.actorId, 'TESTER', 'ENDED', assignment.assignmentId)
+      workAssignmentDrift.prepare('UPDATE work_assignments SET role_id = ? WHERE id = ?')
+        .run(reviewerRole.roleId, secondAssignment.assignmentId)
+      workAssignmentDrift.prepare(
+        'INSERT INTO work_assignments '
+        + '(id, work_item_id, actor_id, role_id, assignment_kind, status, assigned_at_ms) '
+        + "VALUES ('wa:mini-dsh:hand', 'wi:mini-dsh:DB-001', ?, NULL, 'OBSERVER', 'ACTIVE', 45)",
+      ).run(handActor.actorId)
+      const issues = planDoctor(workAssignmentDrift, GOLDEN_VERSION).issues
+      expect(issues).toEqual([
+        {
+          code: 'projection-drift',
+          refId: assignment.assignmentId,
+          message: `work assignment "${assignment.assignmentId}" materializes actor "actor:mini-dsh:hand" over item "wi:mini-dsh:DB-001" `
+            + `but replays actor "${actor.actorId}" over item "wi:mini-dsh:DB-001"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: assignment.assignmentId,
+          message: `work assignment "${assignment.assignmentId}" materializes with role none `
+            + `but replays with role "${reviewerRole.roleId}"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: assignment.assignmentId,
+          message: `work assignment "${assignment.assignmentId}" materializes TESTER but replays PRIMARY`,
+        },
+        {
+          code: 'projection-drift',
+          refId: assignment.assignmentId,
+          message: `work assignment "${assignment.assignmentId}" has materialized status ENDED but replays to ACTIVE`,
+        },
+        {
+          code: 'projection-drift',
+          refId: secondAssignment.assignmentId,
+          message: `work assignment "${secondAssignment.assignmentId}" materializes with role "${reviewerRole.roleId}" `
+            + 'but replays with role none',
+        },
+        {
+          code: 'projection-drift',
+          refId: 'wa:mini-dsh:hand',
+          message: 'work assignment "wa:mini-dsh:hand" is materialized but no replayed work/assigned event',
+        },
+      ])
+    } finally {
+      workAssignmentDrift.close()
     }
 
     const rawCriterion = await goldenLedger()

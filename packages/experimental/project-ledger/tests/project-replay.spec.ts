@@ -7,6 +7,7 @@ import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project
 import {
   appendProjectEvent,
   assignRole,
+  assignWorkItem,
   claimWorkItem,
   decideApproval,
   compilePlan,
@@ -102,13 +103,13 @@ describe('readProjectReplay', () => {
         planVersions: 1, workItems: 1, criteria: 1, leases: 1, workPackets: 0,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-        actors: 0, roles: 0, actorRoles: 0,
+        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0,
       },
       materialized: {
         planVersions: 1, workItems: 1, criteria: 1, leases: 1,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-        actors: 0, roles: 0, actorRoles: 0,
+        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0,
       },
       drift: [],
     })
@@ -186,13 +187,13 @@ describe('readProjectReplay', () => {
       planVersions: 2, workItems: 2, criteria: 2, leases: 1,
       workPackets: 0, decisionRequests: 0, decisions: 0, approvals: 0,
       resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-      actors: 0, roles: 0, actorRoles: 0,
+      actors: 0, roles: 0, actorRoles: 0, workAssignments: 0,
     })
     expect(report.materialized).toEqual({
       planVersions: 1, workItems: 1, criteria: 1, leases: 0,
       decisionRequests: 0, decisions: 0, approvals: 0,
       resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-      actors: 0, roles: 0, actorRoles: 0,
+      actors: 0, roles: 0, actorRoles: 0, workAssignments: 0,
     })
     expect(report.drift.map(finding => finding.message)).toEqual([
       'plan version "plv:replay-plan:v9" replays from a plan/imported event but no row is materialized',
@@ -505,12 +506,71 @@ describe('readProjectReplay', () => {
     ])
   })
 
+  it('flags materialized work assignments no event replays, and disagreeing assignment facts', async () => {
+    const db = await ledgerOf(REPLAY_PLAN_TEXT)
+    const actor = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'spec-owner' })
+    const reviewerRole = defineRole(db, PROJECT, {
+      roleName: 'reviewer', roleKind: 'GOVERNANCE',
+    }, { nowMs: 11, actorRef: 'spec-owner' })
+    const assignment = assignWorkItem(db, {
+      workItemId: brandString<WorkItemId>(WORK_ITEM),
+      actorId: actor.actorId,
+      assignmentKind: 'PRIMARY',
+      roleId: reviewerRole.roleId,
+    }, { nowMs: 12, actorRef: 'spec-owner' })
+    const second = assignWorkItem(db, {
+      workItemId: brandString<WorkItemId>(WORK_ITEM),
+      actorId: actor.actorId,
+      assignmentKind: 'COLLABORATOR',
+    }, { nowMs: 13, actorRef: 'spec-owner' })
+    // Tampered facts in both directions, plus materialized- and replayed-only
+    // ghosts; the retargets point at the hand row because the foreign keys
+    // require real rows.
+    db.prepare(
+      'INSERT INTO actors '
+      + '(id, project_id, actor_key, actor_kind, display_name, external_identity, metadata_json, status, created_at_ms) '
+      + "VALUES ('actor:replay-proj:hand', 'replay-proj', 'hand', 'SERVICE', 'Hand row', NULL, NULL, 'ACTIVE', 5)",
+    ).run()
+    db.prepare('UPDATE work_assignments SET actor_id = ?, assignment_kind = ?, role_id = NULL, status = ? WHERE id = ?')
+      .run('actor:replay-proj:hand', 'COLLABORATOR', 'ENDED', assignment.assignmentId)
+    db.prepare('UPDATE work_assignments SET role_id = ? WHERE id = ?').run(reviewerRole.roleId, second.assignmentId)
+    db.prepare(
+      'INSERT INTO work_assignments '
+      + '(id, work_item_id, actor_id, role_id, assignment_kind, status, assigned_at_ms) '
+      + "VALUES ('wa:replay-proj:hand', ?, 'actor:replay-proj:hand', NULL, 'TESTER', 'ACTIVE', 6)",
+    ).run(WORK_ITEM)
+    appendProjectEvent(db, PROJECT, 'work/assigned', {
+      assignmentId: 'wa:replay-proj:event-only',
+      workItemId: WORK_ITEM,
+      actorId: actor.actorId,
+      assignmentKind: 'OBSERVER',
+    }, { entityType: 'work_assignment', entityId: 'wa:replay-proj:event-only', nowMs: 13, actorRef: 'spec-owner' })
+
+    const report = readProjectReplay(db, PROJECT)
+    expect(report.outcome).toBe('compared')
+    if (report.outcome !== 'compared') return
+    expect(report.drift.map(finding => finding.message)).toEqual([
+      'actor "actor:replay-proj:hand" is materialized but no actor/registered event replays it',
+      `work assignment "${assignment.assignmentId}" materializes actor "actor:replay-proj:hand" over item "${WORK_ITEM}" `
+        + `but replays actor "${actor.actorId}" over item "${WORK_ITEM}"`,
+      `work assignment "${assignment.assignmentId}" materializes with role none `
+        + `but replays with role "${reviewerRole.roleId}"`,
+      `work assignment "${assignment.assignmentId}" materializes COLLABORATOR but replays PRIMARY`,
+      `work assignment "${assignment.assignmentId}" has materialized status ENDED but replays to ACTIVE`,
+      `work assignment "${second.assignmentId}" materializes with role "${reviewerRole.roleId}" but replays with role none`,
+      'work assignment "wa:replay-proj:hand" is materialized but no work/assigned event replays it',
+      'work assignment "wa:replay-proj:event-only" replays from a work/assigned event but no row is materialized',
+    ])
+  })
+
   it('reports an undecodable timeline without comparing parity', async () => {
     const db = await ledgerOf(REPLAY_PLAN_TEXT)
     db.prepare(
       'INSERT INTO project_events '
         + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-        + "VALUES (?, 99, 6, 'plan/imported', 0, '{}', 1)",
+        + "VALUES (?, 99, 7, 'plan/imported', 0, '{}', 1)",
     ).run(PROJECT)
     const report = readProjectReplay(db, PROJECT)
     expect(report).toMatchObject({
@@ -522,11 +582,11 @@ describe('readProjectReplay', () => {
         planVersions: 1, workItems: 1, criteria: 1, leases: 0,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-        actors: 0, roles: 0, actorRoles: 0,
+        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0,
       },
     })
     expect(report.outcome).toBe('undecodable')
     if (report.outcome !== 'undecodable') return
-    expect(report.timelineError).toMatch(/carries event format 6; this build reads up to format 5/u)
+    expect(report.timelineError).toMatch(/carries event format 7; this build reads up to format 6/u)
   })
 })

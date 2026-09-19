@@ -8,8 +8,10 @@
  * decision-domain layout (decision requests, options, decisions), its
  * approval layout (blueprint §24: approvals over a typed subject reference,
  * kept separate from decisions), its resource layout (blueprint
- * §25/§26/§27: requirements, instances, verifications), and its actor/role
- * layout (blueprint §3/§4: actors, roles, and the assignments between them).
+ * §25/§26/§27: requirements, instances, verifications), its actor/role
+ * layout (blueprint §3/§4: actors, roles, and the assignments between them),
+ * and the v1.6d work-assignment layout (blueprint §18: an actor's duty on
+ * one work item).
  *
  * The database is a source of truth, not a rebuildable index: a stamped
  * `user_version` newer than this build rejects, upgrades advance one
@@ -100,6 +102,12 @@ export const PROJECT_LEDGER_MIGRATIONS: readonly ProjectLedgerMigration[] = [
     toVersion: 5,
     description: 'v1.6b actor/role domain (actors, roles, actor roles)',
     apply: createActorTables,
+  },
+  {
+    fromVersion: 5,
+    toVersion: 6,
+    description: 'v1.6d work-assignment domain (work assignments)',
+    apply: createWorkAssignmentTables,
   },
 ]
 
@@ -653,5 +661,42 @@ function createActorTables(db: DatabaseSync): void {
       WHERE valid_to_ms IS NULL;
     CREATE INDEX IF NOT EXISTS idx_actor_roles_actor
       ON actor_roles(actor_id, role_id);
+  `)
+}
+
+/**
+ * Materialize the v1.6d work-assignment table (blueprint §18, adapted like
+ * the earlier domains: the blueprint's actor_id/role_id columns reference
+ * the v1.6b actors/roles rows directly, the blueprint's six assignment
+ * kinds close uppercase to the ledger convention, and `ENDED` plus the
+ * acceptance and completion timestamps are reserved with no writer yet).
+ * One work item holds at most one live PRIMARY assignment, enforced by the
+ * partial unique index over live primary rows; the item/actor indexes cover
+ * the blueprint §57 query requirement. Idempotent by design.
+ */
+function createWorkAssignmentTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS work_assignments (
+      id               TEXT PRIMARY KEY,
+      work_item_id     TEXT NOT NULL REFERENCES work_items(id),
+      actor_id         TEXT NOT NULL REFERENCES actors(id),
+      role_id          TEXT REFERENCES roles(id),
+      assignment_kind  TEXT NOT NULL CHECK(assignment_kind IN (
+        'PRIMARY','COLLABORATOR','REVIEWER','TESTER','OBSERVER','ACCOUNTABLE'
+      )),
+      status           TEXT NOT NULL CHECK(status IN (
+        'ACTIVE','ENDED'
+      )),
+      assigned_at_ms   INTEGER NOT NULL,
+      accepted_at_ms   INTEGER,
+      completed_at_ms  INTEGER
+    ) STRICT;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_one_live_primary_per_work
+      ON work_assignments(work_item_id)
+      WHERE status = 'ACTIVE' AND assignment_kind = 'PRIMARY';
+    CREATE INDEX IF NOT EXISTS idx_work_assignments_item
+      ON work_assignments(work_item_id, status);
+    CREATE INDEX IF NOT EXISTS idx_work_assignments_actor
+      ON work_assignments(actor_id, status);
   `)
 }

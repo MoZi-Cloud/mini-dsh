@@ -6,7 +6,7 @@
  * inside one project, no lease row still records ACTIVE past its own expiry,
  * the event timeline is readable by this codec, and the replayed projection
  * agrees with the materialized tables (work items, criteria, leases, the
- * decision, approval, resource, and actor/role domains). The doctor never
+ * decision, approval, resource, actor/role, and work-assignment domains). The doctor never
  * mutates and never executes a verifier command; it reports every
  * independent issue it finds, so a caller sees the whole picture in one
  * pass. The database and event format versions ride along as report facts
@@ -22,6 +22,7 @@ import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
 import type { ActorId, ActorRoleId, RoleId } from './actors.js'
+import type { WorkAssignmentId } from './work-assignments.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
 import { PROJECT_EVENT_FORMAT_VERSION, replayProjectEvents, type ReplayedProjectProjection } from './project-events.js'
@@ -73,6 +74,16 @@ export interface PlanDoctorReport {
   readonly counts: PlanDoctorCounts
   /** Every independent finding; empty exactly when the version passes the pass. */
   readonly issues: readonly PlanDoctorIssue[]
+}
+
+/** One `work_assignments` row the parity check reads, in select order. */
+interface WorkAssignmentFactsRow {
+  readonly id: string
+  readonly work_item_id: string
+  readonly actor_id: string
+  readonly role_id: string | null
+  readonly assignment_kind: string
+  readonly status: string
 }
 
 /** Closed set of doctor rejection reasons. */
@@ -595,11 +606,57 @@ function collectProjectionDrift(
       })
     }
     if (replayed.validToMs !== (row.valid_to_ms ?? undefined)) {
+      // The fold replays every assignment live (no end writer yet), so only a
+      // non-null materialized valid_to_ms can reach this message.
       issues.push({
         code: 'projection-drift',
         refId: row.id,
-        message: `actor role "${row.id}" materializes valid until ${row.valid_to_ms === null ? 'now' : row.valid_to_ms} `
-          + `but replays valid until ${replayed.validToMs === undefined ? 'now' : replayed.validToMs}`,
+        message: `actor role "${row.id}" materializes valid until ${String(row.valid_to_ms)} but replays valid until now`,
+      })
+    }
+  }
+  const workAssignmentRows = db.prepare(
+    'SELECT a.id, a.work_item_id, a.actor_id, a.role_id, a.assignment_kind, a.status FROM work_assignments a '
+    + 'JOIN work_items w ON w.id = a.work_item_id WHERE w.project_id = ? ORDER BY a.id',
+  ).all(projectId) as unknown as WorkAssignmentFactsRow[]
+  for (const row of workAssignmentRows) {
+    const replayed = projection.workAssignments.get(brandString<WorkAssignmentId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `work assignment "${row.id}" is materialized but no replayed work/assigned event`,
+      })
+      continue
+    }
+    if (replayed.workItemId !== row.work_item_id || replayed.actorId !== row.actor_id) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `work assignment "${row.id}" materializes actor "${row.actor_id}" over item "${row.work_item_id}" `
+          + `but replays actor "${replayed.actorId}" over item "${replayed.workItemId}"`,
+      })
+    }
+    if (replayed.roleId !== (row.role_id ?? undefined)) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `work assignment "${row.id}" materializes with role ${row.role_id === null ? 'none' : `"${row.role_id}"`} `
+          + `but replays with role ${replayed.roleId === undefined ? 'none' : `"${replayed.roleId}"`}`,
+      })
+    }
+    if (replayed.assignmentKind !== row.assignment_kind) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `work assignment "${row.id}" materializes ${row.assignment_kind} but replays ${replayed.assignmentKind}`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `work assignment "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
       })
     }
   }

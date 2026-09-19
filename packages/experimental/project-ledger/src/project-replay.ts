@@ -20,6 +20,7 @@ import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
+import type { WorkAssignmentId } from './work-assignments.js'
 import { replayProjectEvents, type ReplayedProjectProjection } from './project-events.js'
 
 /** One replay-audit finding: the rebuilt projection and the materialized rows disagree. */
@@ -45,6 +46,7 @@ export interface ProjectReplayEntityCounts {
   readonly actors: number
   readonly roles: number
   readonly actorRoles: number
+  readonly workAssignments: number
 }
 
 /** What the fold rebuilt, plus the packet recipes that have no materialized table. */
@@ -181,6 +183,16 @@ interface AssignmentFactsRow {
   readonly valid_to_ms: number | null
 }
 
+/** One `work_assignments` row the audit reads, in select order. */
+interface WorkAssignmentFactsRow {
+  readonly id: string
+  readonly work_item_id: string
+  readonly actor_id: string
+  readonly role_id: string | null
+  readonly assignment_kind: string
+  readonly status: string
+}
+
 /**
  * Audit one project's ledger integrity read-only: fold the project's event
  * timeline and compare the rebuilt projection with the materialized tables,
@@ -240,6 +252,10 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     'SELECT a.id, a.actor_id, a.role_id, a.valid_to_ms FROM actor_roles a '
     + 'JOIN actors c ON c.id = a.actor_id WHERE c.project_id = ? ORDER BY a.id',
   ).all(projectId) as unknown as AssignmentFactsRow[]
+  const workAssignmentRows = db.prepare(
+    'SELECT a.id, a.work_item_id, a.actor_id, a.role_id, a.assignment_kind, a.status FROM work_assignments a '
+    + 'JOIN work_items w ON w.id = a.work_item_id WHERE w.project_id = ? ORDER BY a.id',
+  ).all(projectId) as unknown as WorkAssignmentFactsRow[]
   const materialized: ProjectReplayEntityCounts = {
     planVersions: versionRows.length,
     workItems: itemRows.length,
@@ -254,6 +270,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     actors: actorRows.length,
     roles: roleRows.length,
     actorRoles: assignmentRows.length,
+    workAssignments: workAssignmentRows.length,
   }
   let projection: ReplayedProjectProjection
   try {
@@ -280,6 +297,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
   collectApprovalDrift(approvalRows, projection, drift)
   collectResourceDrift(requirementRows, instanceRows, verificationRows, projection, drift)
   collectActorDrift(actorRows, roleRows, assignmentRows, projection, drift)
+  collectWorkAssignmentDrift(workAssignmentRows, projection, drift)
   return {
     outcome: 'compared',
     projectId,
@@ -300,6 +318,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
       actors: projection.actors.size,
       roles: projection.roles.size,
       actorRoles: projection.actorRoles.size,
+      workAssignments: projection.workAssignments.size,
     },
     materialized,
     drift,
@@ -715,12 +734,64 @@ function collectActorDrift(
       })
     }
     if (replayed.validToMs !== (row.valid_to_ms ?? undefined)) {
+      // The fold replays every assignment live (no end writer yet), so only a
+      // non-null materialized valid_to_ms can reach this message.
       drift.push({
         refId: row.id,
-        message: `actor role "${row.id}" materializes valid until ${row.valid_to_ms === null ? 'now' : row.valid_to_ms} `
-          + `but replays valid until ${replayed.validToMs === undefined ? 'now' : replayed.validToMs}`,
+        message: `actor role "${row.id}" materializes valid until ${String(row.valid_to_ms)} but replays valid until now`,
       })
     }
   }
   pushReplayOnlyDrift(replayedAssignmentIds, drift, refId => `actor role "${refId}" replays from a role/assigned event but no row is materialized`)
+}
+
+/**
+ * Compare the work-assignment family, both directions: existence, then item
+ * and actor references, role reference, kind, and status.
+ */
+function collectWorkAssignmentDrift(
+  rows: readonly WorkAssignmentFactsRow[],
+  projection: ReplayedProjectProjection,
+  drift: ProjectReplayDrift[],
+): void {
+  const replayedIds = new Set(projection.workAssignments.keys())
+  for (const row of rows) {
+    const id = brandString<WorkAssignmentId>(row.id)
+    const replayed = projection.workAssignments.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `work assignment "${row.id}" is materialized but no work/assigned event replays it`,
+      })
+      continue
+    }
+    replayedIds.delete(id)
+    if (replayed.workItemId !== row.work_item_id || replayed.actorId !== row.actor_id) {
+      drift.push({
+        refId: row.id,
+        message: `work assignment "${row.id}" materializes actor "${row.actor_id}" over item "${row.work_item_id}" `
+          + `but replays actor "${replayed.actorId}" over item "${replayed.workItemId}"`,
+      })
+    }
+    if (replayed.roleId !== (row.role_id ?? undefined)) {
+      drift.push({
+        refId: row.id,
+        message: `work assignment "${row.id}" materializes with role ${row.role_id === null ? 'none' : `"${row.role_id}"`} `
+          + `but replays with role ${replayed.roleId === undefined ? 'none' : `"${replayed.roleId}"`}`,
+      })
+    }
+    if (replayed.assignmentKind !== row.assignment_kind) {
+      drift.push({
+        refId: row.id,
+        message: `work assignment "${row.id}" materializes ${row.assignment_kind} but replays ${replayed.assignmentKind}`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      drift.push({
+        refId: row.id,
+        message: `work assignment "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedIds, drift, refId => `work assignment "${refId}" replays from a work/assigned event but no row is materialized`)
 }

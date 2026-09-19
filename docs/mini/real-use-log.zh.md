@@ -165,7 +165,17 @@ v1.6b 计划 supersede 了自己的版本 1，本增量完成版本 2 批次的�
 
 来自 v1.6b 收尾门的 v1.6d 前置物——双语协作范围提案（`docs/mini/v1.6d/fork-mini-DSH-v1.6d-collaboration-scope-proposal.md`）——以 §33 进入门收束，本条就是这道门的运行：owner 在以本入场决策为第一选项的门上给出 go，`dr:mini-dsh:v1.6d-entry` 以 `BLOCKING` 打开（三个选项：推荐 `enter-v1.6d-stage-a`、`enter-v1.6d-one-batch`、`keep-accumulating`），裁决选中 `enter-v1.6d-stage-a`——决策 `dc:dr:mini-dsh:v1.6d-entry:147`，事件 146–147，这是 decisions 域在 `dr:mini-dsh:v1.6b-entry`（事件 109）之后的第二次门用途。本增量没有 lane 运行、没有工作项：入账的活动就是门本身，经 shipped 的 `openDecisionRequest`/`recordDecision` 接缝写入。持久账本现在把 1/2/3/4/5 混合时间线折叠干净（147 事件中 97 + 19 + 2 + 14 + 15 个戳记）；replay 审计 0 drift，doctor 在活跃的 v1.6b 计划版本上 0 issues。下一步：v1.6d 计划 yaml（阶段 A 批次——工作指派、交接、按 actor 的领取可见性）随第一个阶段 A 增量起草，其条目届时才可领取。
 
+### 2026-09-20 —— PA-WORK-ASSIGNMENT-001：工作指派成为职责行
+
+阶段 A 的第一个增量作为 v1.6d 计划版本 1 的开篇落地：工作指派域（蓝图 §18，经适配——蓝图的 actor/role 外键直接引用 v1.6b 的行，六种指派职责闭合为大写），以一次追加的 5→6 迁移达到 schema 版本 6。一个 required 词表事件（`work/assigned`）在相邻读取契约下把事件格式升到 6；`assignWorkItem` 原子写入指派及其事件，并拒绝同一事项上第二条活跃 `PRIMARY`——部分唯一索引、接缝与 replay fold 三层共同执法；`readProjectWorkAssignments` 按最新在前列出项目指派，item、actor、role 标签经 join 解析；replay 审计与 doctor 的 parity 在两个 sweep 覆盖该族；只读的 `/project assignments` 视图负责呈现。`ENDED` 与接受、完成时间戳保持为无写入者的预留状态。由 `agent:mini-real-use-lane` 领取，存储 verifier `pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile`（退出码 0；330 测试，三包 per-file 100% 覆盖率），条目 DONE，doctor 0 issues，replay 审计 0 drift。首跑报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-v16d-collaboration:v1","workItemId":"wi:mini-dsh:PA-WORK-ASSIGNMENT-001","stableKey":"PA-WORK-ASSIGNMENT-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PA-WORK-ASSIGNMENT-001:AC-PA-WORK-ASSIGNMENT-001","command":"pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+运行之后，本域首批行把阶段 A 的职责结构记在 lane 下一个要领取的条目上：`wa:mini-dsh:159`——lane 以 `executor` 角色担 `PRIMARY`——与 `wa:mini-dsh:160`——`owner` 的 `ACCOUNTABLE`——都落在 `PA-HANDOFF-RECORD-001` 上，即事件 159–160，时间线的首批 format-6 戳。持久账本首次打开时就地迁移 schema 5→6，现在把 1/2/3/4/5/6 混合时间线折叠干净（160 事件中 97 + 19 + 2 + 14 + 15 + 13 个戳记）。幂等重跑通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`PA-HANDOFF-RECORD-001`（schema 6→7）与 `PA-CLAIM-VISIBILITY-001` 在版本 1 中保持 READY。
+
 ## 相对门槛的状态
 
 
-经账本完成的工作项：30（15 个黄金计划项由 v1.6a 构建本身完成，加上面十五条 lane 条目；最新一条是 v1.6d 入场决策，不完成工作项）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入并随其完成报告关闭；**v1.6d 已于 2026-09-20 给出**——决策 `dr:mini-dsh:v1.6d-entry`（选中 `enter-v1.6d-stage-a`）——v1.6d 阶段 A 已进入。
+经账本完成的工作项：31（15 个黄金计划项由 v1.6a 构建本身完成，加上面十六条 lane 条目——第 17 条是 v1.6d 入场决策，不完成工作项）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入并随其完成报告关闭；**v1.6d 已于 2026-09-20 给出**——决策 `dr:mini-dsh:v1.6d-entry`（选中 `enter-v1.6d-stage-a`）——v1.6d 阶段 A 已进入。

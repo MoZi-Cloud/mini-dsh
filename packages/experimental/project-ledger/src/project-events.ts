@@ -21,6 +21,7 @@ import type { ActorId, ActorRoleId, RoleId } from './actors.js'
 import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
+import type { WorkAssignmentId } from './work-assignments.js'
 import type { WorkExternalBlockerId } from './versioning.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanId, PlanVersionId, ProjectId, SourceDocumentHash, WorkItemId } from './plan-compile.js'
@@ -189,6 +190,24 @@ export type RoleKind = (typeof ROLE_KINDS)[number]
 const ROLE_KIND_SET: ReadonlySet<string> = new Set<string>(ROLE_KINDS)
 
 /**
+ * The duties a `work/assigned` payload may name (blueprint §18's assignment
+ * kinds, uppercased to the ledger convention).
+ */
+export const WORK_ASSIGNMENT_KINDS = [
+  'PRIMARY',
+  'COLLABORATOR',
+  'REVIEWER',
+  'TESTER',
+  'OBSERVER',
+  'ACCOUNTABLE',
+] as const
+
+/** A duty kind of one work assignment. */
+export type WorkAssignmentKind = (typeof WORK_ASSIGNMENT_KINDS)[number]
+
+const WORK_ASSIGNMENT_KIND_SET: ReadonlySet<string> = new Set<string>(WORK_ASSIGNMENT_KINDS)
+
+/**
  * The event envelope version recorded in the `event_format_version` column of
  * every `project_events` row — the single home of this constant. Adding a
  * required vocabulary entry bumps it together with the codec; purely
@@ -197,7 +216,7 @@ const ROLE_KIND_SET: ReadonlySet<string> = new Set<string>(ROLE_KINDS)
  * (the vocabulary is cumulative), and only a row stamped newer than this
  * build rejects.
  */
-export const PROJECT_EVENT_FORMAT_VERSION = 5
+export const PROJECT_EVENT_FORMAT_VERSION = 6
 
 /**
  * The event vocabulary. Every listed type is required: rows carry
@@ -208,7 +227,8 @@ export const PROJECT_EVENT_FORMAT_VERSION = 5
  * `project/work-packet-prepared`, `decision/requested`,
  * `decision/recorded`, `approval/requested`, `approval/decided`,
  * `resource/required`, `resource/provided`, `resource/verified`,
- * `actor/registered`, `role/defined`, and `role/assigned`), and a
+ * `actor/registered`, `role/defined`, `role/assigned`, and
+ * `work/assigned`), and a
  * reader that does not know the type
  * fails closed. `plan/version-superseded` and `baseline/drift-detected` are
  * validated without state change: their writers own lifecycle columns and
@@ -239,6 +259,7 @@ export const PROJECT_EVENT_TYPES = [
   'actor/registered',
   'role/defined',
   'role/assigned',
+  'work/assigned',
 ] as const
 
 /** A vocabulary type of the v1 event format. */
@@ -613,6 +634,20 @@ export interface ReplayedActorRole {
   readonly validToMs: number | undefined
 }
 
+/**
+ * Work-assignment facts the `work/assigned` event replays; the assignment's
+ * `assigned_at_ms` is the event's `createdAtMs`. `ENDED` and the acceptance
+ * and completion timestamps are reserved with no writer yet, so the fold
+ * always replays `ACTIVE`.
+ */
+export interface ReplayedWorkAssignment {
+  readonly workItemId: WorkItemId
+  readonly actorId: ActorId
+  readonly roleId: RoleId | undefined
+  readonly assignmentKind: WorkAssignmentKind
+  readonly status: 'ACTIVE'
+}
+
 /** The projection replaying a project's events rebuilds. */
 export interface ReplayedProjectProjection {
   readonly planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>
@@ -634,6 +669,8 @@ export interface ReplayedProjectProjection {
   readonly actors: ReadonlyMap<ActorId, ReplayedActor>
   readonly roles: ReadonlyMap<RoleId, ReplayedRole>
   readonly actorRoles: ReadonlyMap<ActorRoleId, ReplayedActorRole>
+  /** The work-assignment domain, rebuilt from the `work/assigned` event. */
+  readonly workAssignments: ReadonlyMap<WorkAssignmentId, ReplayedWorkAssignment>
 }
 
 /**
@@ -661,6 +698,7 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
   const actors = new Map<ActorId, ReplayedActor>()
   const roles = new Map<RoleId, ReplayedRole>()
   const actorRoles = new Map<ActorRoleId, ReplayedActorRole>()
+  const workAssignments = new Map<WorkAssignmentId, ReplayedWorkAssignment>()
   // Validation state for the supersede applier: a version retires once.
   const supersededPlanVersionIds = new Set<PlanVersionId>()
   for (const event of readProjectEvents(db, projectId)) {
@@ -996,6 +1034,32 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         })
         break
       }
+      case 'work/assigned': {
+        const payload = decodeWorkAssignedPayload(event)
+        requireReplayedWorkItem(workItems, payload.workItemId, event)
+        requireReplayedActor(actors, payload.actorId, event)
+        if (payload.roleId !== undefined) requireReplayedRole(roles, payload.roleId, event)
+        if (payload.assignmentKind === 'PRIMARY') {
+          for (const [assignmentId, assignment] of workAssignments) {
+            if (assignment.assignmentKind === 'PRIMARY' && assignment.workItemId === payload.workItemId) {
+              throw new ProjectEventError(
+                'malformed-event-payload',
+                `project event ${event.sequenceNo} of "${event.projectId}" assigns a second `
+                  + `PRIMARY to work item "${payload.workItemId}" while live assignment `
+                  + `"${assignmentId}" already holds it`,
+              )
+            }
+          }
+        }
+        workAssignments.set(payload.assignmentId, {
+          workItemId: payload.workItemId,
+          actorId: payload.actorId,
+          roleId: payload.roleId,
+          assignmentKind: payload.assignmentKind,
+          status: 'ACTIVE',
+        })
+        break
+      }
       default:
         break
     }
@@ -1014,6 +1078,7 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
     actors,
     roles,
     actorRoles,
+    workAssignments,
   }
 }
 
@@ -1412,6 +1477,15 @@ interface RoleAssignedPayload {
   readonly assignmentId: ActorRoleId
   readonly actorId: ActorId
   readonly roleId: RoleId
+}
+
+/** Payload facts of one `work/assigned` event; the assignment stamp is the envelope's `createdAtMs`. */
+interface WorkAssignedPayload {
+  readonly assignmentId: WorkAssignmentId
+  readonly workItemId: WorkItemId
+  readonly actorId: ActorId
+  readonly roleId: RoleId | undefined
+  readonly assignmentKind: WorkAssignmentKind
 }
 
 /** The event payload must be a JSON object for appliers to read fields from. */
@@ -2170,5 +2244,34 @@ function decodeRoleAssignedPayload(event: ProjectEventEnvelope): RoleAssignedPay
     assignmentId: requiredString(fields, event, 'assignmentId') as ActorRoleId,
     actorId: requiredString(fields, event, 'actorId') as ActorId,
     roleId: requiredString(fields, event, 'roleId') as RoleId,
+  }
+}
+
+/** Read one required work-assignment kind payload field. */
+function requiredWorkAssignmentKind(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+): WorkAssignmentKind {
+  const value = requiredString(fields, event, field)
+  if (!WORK_ASSIGNMENT_KIND_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not a work-assignment kind: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as WorkAssignmentKind
+}
+
+/** Decode one `work/assigned` payload, failing closed on missing or mistyped fields. */
+function decodeWorkAssignedPayload(event: ProjectEventEnvelope): WorkAssignedPayload {
+  const fields = payloadFields(event)
+  return {
+    assignmentId: requiredString(fields, event, 'assignmentId') as WorkAssignmentId,
+    workItemId: requiredString(fields, event, 'workItemId') as WorkItemId,
+    actorId: requiredString(fields, event, 'actorId') as ActorId,
+    roleId: optionalString(fields, event, 'roleId') as RoleId | undefined,
+    assignmentKind: requiredWorkAssignmentKind(fields, event, 'assignmentKind'),
   }
 }

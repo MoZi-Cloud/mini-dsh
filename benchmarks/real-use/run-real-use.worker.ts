@@ -3,7 +3,7 @@
  * repository work through the SHIPPED mini-profile surface — the same
  * MiniProjectLedger and mini-project-work plugins a `dsh --profile mini`
  * session mounts — against one Project Ledger. For one ready work item of
- * the current increment plan (v1.6b: docs/mini/v1.6b) the lane is the agent of record: it observes
+ * the current increment plan (v1.6d: docs/mini/v1.6d) the lane is the agent of record: it observes
  * through project_work_next, claims through project_work_claim (receiving the
  * WorkPacket, never the plan document), executes each observable criterion's
  * stored verifier command from the packet as a real subprocess in the
@@ -51,10 +51,10 @@ import MiniProjectLedger from '@deepseek-ai/dsh-experimental-mini-profile'
 import * as miniProjectWork from '@deepseek-ai/dsh-experimental-mini-profile/project-work'
 import { assertBuiltBenchmarkRuntime } from '../support/built-worker.ts'
 
-/** The v1.6b decision-domain plan this lane drives; the shell entry runs from the repository root. */
-const PLAN_PATH = join(process.cwd(), 'docs/mini/v1.6b/fork-mini-DSH-v1.6b.plan.yaml')
+/** The v1.6d collaboration plan this lane drives; the shell entry runs from the repository root. */
+const PLAN_PATH = join(process.cwd(), 'docs/mini/v1.6d/fork-mini-DSH-v1.6d.plan.yaml')
 /** The item this run claims; a later increment names its own item. */
-const TARGET_STABLE_KEY = process.env.DSH_REAL_USE_ITEM ?? 'PB-ACTOR-ROLE-001'
+const TARGET_STABLE_KEY = process.env.DSH_REAL_USE_ITEM ?? 'PA-WORK-ASSIGNMENT-001'
 /** A repository suite verifier can legitimately take minutes; the bound keeps a hung one from parking the lane. */
 const VERIFIER_TIMEOUT_MS = 600_000
 /** How much verifier output the failure diagnostics carry. */

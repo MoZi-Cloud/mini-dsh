@@ -15,8 +15,10 @@
  * that resolved them, `approvals` lists the project's approvals over
  * their typed subjects with the decisions that answered them,
  * `resources` lists the project's resource requirements with their
- * instances and verification verdicts, and `actors` lists the project's
- * registered actors, defined roles, and live assignments. The project and plan version
+ * instances and verification verdicts, `actors` lists the project's
+ * registered actors, defined roles, and live assignments, and `assignments`
+ * lists the project's work assignments with their item, actor, and role
+ * labels. The project and plan version
  * resolve through the ledger's plan directory when the command names none. The handler never mutates ledger state, never sends anything to
  * the model, and never executes a verifier command — mutating surfaces stay
  * with their owning writers and later work.
@@ -42,6 +44,7 @@ import {
   readProjectResources,
   readProjectDigest,
   readProjectReplay,
+  readProjectWorkAssignments,
   readWorkItemHistory,
   readWorkItemReview,
   type ActorDirectory,
@@ -54,6 +57,7 @@ import {
   type ProjectReplayReport,
   type ResourceRequirement,
   type ReviewedCriterion,
+  type WorkAssignment,
   type WorkItemHistory,
   type WorkItemReview,
   type WorkTodoView,
@@ -80,6 +84,7 @@ type ProjectCommand =
   | { readonly kind: 'approvals'; readonly projectId: string | undefined }
   | { readonly kind: 'resources'; readonly projectId: string | undefined }
   | { readonly kind: 'actors'; readonly projectId: string | undefined }
+  | { readonly kind: 'assignments'; readonly projectId: string | undefined }
 
 /* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
@@ -99,6 +104,7 @@ const HELP_TEXT = [
   '/project approvals [<project-id>] — list approvals over their typed subjects with the decisions that answered them',
   '/project resources [<project-id>] — list resource requirements with instances and verification verdicts',
   '/project actors [<project-id>] — list registered actors, defined roles, and live assignments',
+  '/project assignments [<project-id>] — list work assignments with their item, actor, and role labels',
 ].join('\n')
 
 /** The usage hint the command registry shows for /project. */
@@ -114,6 +120,7 @@ const PROJECT_INPUT_HINT = [
   'approvals [<project-id>]',
   'resources [<project-id>]',
   'actors [<project-id>]',
+  'assignments [<project-id>]',
 ].join(' | ')
 
 /**
@@ -184,6 +191,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
   if (tokens[0] === 'actors') {
     return tokens.length <= 2
       ? { kind: 'actors', projectId: tokens[1] }
+      : undefined
+  }
+  if (tokens[0] === 'assignments') {
+    return tokens.length <= 2
+      ? { kind: 'assignments', projectId: tokens[1] }
       : undefined
   }
   return undefined
@@ -677,6 +689,28 @@ function renderActors(projectId: ProjectId, directory: ActorDirectory): string {
 }
 
 /**
+ * Render the project's work assignments as command output: one line per
+ * assignment with its item, actor, role, and duty labels.
+ * @param projectId - the project whose assignments are listed.
+ * @param assignments - the listed assignments, newest-first.
+ * @returns the multi-line command text.
+ */
+function renderAssignments(projectId: ProjectId, assignments: readonly WorkAssignment[]): string {
+  if (assignments.length === 0) {
+    return `No work assignments in project ${projectId}.`
+  }
+  const lines = [
+    `Project ${projectId} — work assignments, ${assignments.length}:`,
+    ...assignments.map((assignment) => {
+      const role = assignment.roleName === undefined ? '' : ` as ${assignment.roleName}`
+      return `- ${assignment.actorKey} ${assignment.assignmentKind} on ${assignment.stableKey}${role} `
+        + `(${assignment.status}) since ${new Date(assignment.assignedAtMs).toISOString()}`
+    }),
+  ]
+  return lines.join('\n')
+}
+
+/**
  * Execute one parsed `/project` invocation against the mounted ledger.
  * @param ctx - context whose `projectLedger` service owns the opened database.
  * @param rawInput - exact text after the command name.
@@ -746,6 +780,10 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
       case 'actors': {
         const projectId = resolveProjectId(listPlans(db), command.projectId)
         return { kind: 'success', text: renderActors(projectId, readProjectActors(db, projectId)) }
+      }
+      case 'assignments': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        return { kind: 'success', text: renderAssignments(projectId, readProjectWorkAssignments(db, projectId)) }
       }
       /* v8 ignore next 2 -- the parse step returns a closed union */
       default: return assertNever(command, 'project command')

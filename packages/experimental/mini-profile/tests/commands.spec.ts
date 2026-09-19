@@ -13,6 +13,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { describe, expect, it } from 'vitest'
 import {
   assignRole,
+  assignWorkItem,
   claimWorkItem,
   decideApproval,
   defineRole,
@@ -76,7 +77,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project')).resolves.toMatchObject({
         kind: 'success',
         text: expect.stringMatching(
-          /todo \[--agent\][\s\S]*doctor[\s\S]*item[\s\S]*history[\s\S]*replay[\s\S]*digest[\s\S]*export[\s\S]*resources[\s\S]*actors/u,
+          /todo \[--agent\][\s\S]*doctor[\s\S]*history[\s\S]*export[\s\S]*actors[\s\S]*assignments/u,
         ) as string,
       })
     } finally {
@@ -103,6 +104,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project approvals a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project resources a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project actors a b')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project assignments a b')).resolves.toEqual(usage)
     } finally {
       await unmount(mounted)
     }
@@ -488,7 +490,7 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 6, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 7, 'plan/imported', 0, '{}', 1)",
       ).run()
       const result = await run(mounted, '/project replay')
       expect(result).toMatchObject({ kind: 'success' })
@@ -935,6 +937,53 @@ describe('/project', () => {
     }
   })
 
+  it('lists work assignments with their item, actor, and role labels', async () => {
+    const mounted = await mount()
+    try {
+      const db = mounted.ctx.projectLedger.db
+      seedActivePlan(db, SOLO_PLAN_TEXT)
+      await expect(run(mounted, '/project assignments')).resolves.toEqual({
+        kind: 'success',
+        text: 'No work assignments in project solo-proj.',
+      })
+
+      const lane = registerActor(db, brandString<ProjectId>('solo-proj'), {
+        actorKey: 'ci-lane', actorKind: 'AGENT', displayName: 'Lane',
+      }, { nowMs: 90_000, actorRef: 'spec-owner' })
+      const owner = registerActor(db, brandString<ProjectId>('solo-proj'), {
+        actorKey: 'owner', actorKind: 'HUMAN', displayName: 'Owner',
+      }, { nowMs: 90_500, actorRef: 'spec-owner' })
+      const executorRole = defineRole(db, brandString<ProjectId>('solo-proj'), {
+        roleName: 'executor', roleKind: 'EXECUTION',
+      }, { nowMs: 91_000, actorRef: 'spec-owner' })
+      assignWorkItem(db, {
+        workItemId: brandString<WorkItemId>('wi:solo-proj:AGENT-ONLY'),
+        actorId: lane.actorId,
+        assignmentKind: 'PRIMARY',
+        roleId: executorRole.roleId,
+      }, { nowMs: 92_000, actorRef: 'spec-owner' })
+      assignWorkItem(db, {
+        workItemId: brandString<WorkItemId>('wi:solo-proj:AGENT-ONLY'),
+        actorId: owner.actorId,
+        assignmentKind: 'ACCOUNTABLE',
+      }, { nowMs: 93_000, actorRef: 'spec-owner' })
+
+      const expected = [
+        'Project solo-proj — work assignments, 2:',
+        '- owner ACCOUNTABLE on AGENT-ONLY (ACTIVE) since 1970-01-01T00:01:33.000Z',
+        '- ci-lane PRIMARY on AGENT-ONLY as executor (ACTIVE) since 1970-01-01T00:01:32.000Z',
+      ].join('\n')
+      await expect(run(mounted, '/project assignments')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project assignments solo-proj')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project assignments no-such-project')).resolves.toEqual({
+        kind: 'error',
+        text: 'No plan in this ledger records project "no-such-project".',
+      })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
   it('digests a versionless plan, drift findings, and an undecodable timeline', async () => {
     const mounted = await mount((db) => {
       seedActivePlan(db, TINY_PLAN_TEXT)
@@ -999,13 +1048,13 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 6, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 7, 'plan/imported', 0, '{}', 1)",
       ).run()
       const broken = await run(mounted, '/project digest tiny-proj')
       expect(broken).toMatchObject({ kind: 'success' })
       if (broken.kind !== 'success' || broken.text === undefined) return
       expect(broken.text).toContain('Replay audit: the timeline cannot be decoded by this build — ')
-      expect(broken.text).toContain('carries event format 6; this build reads up to format 5')
+      expect(broken.text).toContain('carries event format 7; this build reads up to format 6')
       expect(broken.text).not.toContain('Replay audit: clean')
 
       // The export's replay section reports the decode failure, not parity.
@@ -1013,7 +1062,7 @@ describe('/project', () => {
       expect(brokenExport).toMatchObject({ kind: 'success' })
       if (brokenExport.kind !== 'success' || brokenExport.text === undefined) return
       expect(brokenExport.text).toContain('the timeline cannot be decoded by this build — ')
-      expect(brokenExport.text).toContain('carries event format 6; this build reads up to format 5')
+      expect(brokenExport.text).toContain('carries event format 7; this build reads up to format 6')
       expect(brokenExport.text).not.toContain('clean over')
     } finally {
       await unmount(mounted)

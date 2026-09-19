@@ -60,6 +60,7 @@ const LEDGER_TABLES = [
   'resource_verifications',
   'roles',
   'verification_specs',
+  'work_assignments',
   'work_external_blockers',
   'work_item_relations',
   'work_items',
@@ -81,6 +82,8 @@ const LEDGER_INDEXES = [
   'idx_resource_instances_requirement',
   'idx_resource_requirements_project',
   'idx_resource_verifications_instance',
+  'idx_work_assignments_actor',
+  'idx_work_assignments_item',
   'idx_work_items_parent',
   'idx_work_items_phase',
   'idx_work_items_ready',
@@ -88,6 +91,7 @@ const LEDGER_INDEXES = [
   'idx_work_rel_to',
   'uq_one_active_lease_per_work',
   'uq_one_live_assignment_per_pair',
+  'uq_one_live_primary_per_work',
 ]
 
 function tableNames(db: DatabaseSync): string[] {
@@ -368,6 +372,40 @@ describe('adjacent migration fixture', () => {
     reopened.close()
   })
 
+  it('upgrades a v5 database through the shipped 5→6 step without losing rows', async () => {
+    const path = tmpFile('v5-to-v6.sqlite')
+    // A real v5 database: the shipped steps' own layout, stamped as v5 and
+    // carrying one actor row.
+    const [coreStep, decisionStep, approvalStep, resourceStep, actorStep] = PROJECT_LEDGER_MIGRATIONS
+    if (coreStep === undefined || decisionStep === undefined || approvalStep === undefined
+      || resourceStep === undefined || actorStep === undefined) {
+      throw new Error('test setup: the registry ships a missing step')
+    }
+    const raw = new DatabaseSync(path)
+    coreStep.apply(raw)
+    decisionStep.apply(raw)
+    approvalStep.apply(raw)
+    resourceStep.apply(raw)
+    actorStep.apply(raw)
+    raw.exec(
+      'INSERT INTO actors '
+      + '(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) '
+      + "VALUES ('actor:p:1', 'p', 'k', 'AGENT', 'A', 'ACTIVE', 1)",
+    )
+    raw.exec('PRAGMA user_version = 5')
+    raw.close()
+
+    const reopened = await openProjectLedgerDatabase(path)
+    expect(userVersionOf(reopened)).toBe(PROJECT_LEDGER_SCHEMA_VERSION)
+    expect(tableNames(reopened)).toEqual(LEDGER_TABLES)
+    expect(indexNames(reopened)).toEqual(LEDGER_INDEXES)
+    const actors = reopened.prepare('SELECT COUNT(*) AS n FROM actors').get() as { n: number }
+    expect(actors.n).toBe(1)
+    const assignments = reopened.prepare('SELECT COUNT(*) AS n FROM work_assignments').get() as { n: number }
+    expect(assignments.n).toBe(0)
+    reopened.close()
+  })
+
   it('upgrades the committed v1 fixture databases through the same steps', async () => {
     const fixtureRoot = resolve(REPO_ROOT, 'fixtures/project-ledger')
     for (const name of ['v1.6a-empty.db', 'v1.6a-populated.db']) {
@@ -457,6 +495,9 @@ describe('Ledger Core schema contract', () => {
       ['plan_imports.plan_version_id', "INSERT INTO plan_imports(id, project_id, source_hash, schema_version, parser_version, compiler_version, status, plan_version_id) VALUES('imp_x','proj_1','h',1,'p','c','IMPORTED','missing')"],
       ['plan_compile_diagnostics.plan_import_id', "INSERT INTO plan_compile_diagnostics(id, plan_import_id, severity, code, message) VALUES('diag_x','missing','ERROR','C','m')"],
       ['work_leases.work_item_id', "INSERT INTO work_leases(id, work_item_id, worker_identity, lease_token_hash, status, acquired_at_ms, heartbeat_at_ms, expires_at_ms) VALUES('lease_x','missing','worker','token','ACTIVE',1,1,2)"],
+      ['work_assignments.work_item_id', "INSERT INTO work_assignments(id, work_item_id, actor_id, role_id, assignment_kind, status, assigned_at_ms) VALUES('wa_x','missing','actor_x',NULL,'PRIMARY','ACTIVE',1)"],
+      ['work_assignments.actor_id', "INSERT INTO work_assignments(id, work_item_id, actor_id, role_id, assignment_kind, status, assigned_at_ms) VALUES('wa_x','work_1','actor_x',NULL,'PRIMARY','ACTIVE',1)"],
+      ['work_assignments.role_id', "INSERT INTO actors(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) VALUES('actor_1','proj_1','a','AGENT','A','ACTIVE',1); INSERT INTO work_assignments(id, work_item_id, actor_id, role_id, assignment_kind, status, assigned_at_ms) VALUES('wa_x','work_1','actor_1','role_x','PRIMARY','ACTIVE',1)"],
     ]
     for (const [edge, sql] of orphanInserts) {
       try {
@@ -578,6 +619,31 @@ describe('Ledger Core schema contract', () => {
     insertLease(db, 'lease_4', 'work_1')
     const activeOnWork1 = db.prepare("SELECT COUNT(*) AS n FROM work_leases WHERE work_item_id = 'work_1' AND status = 'ACTIVE'").get() as { n: number }
     expect(activeOnWork1.n).toBe(1)
+    db.close()
+  })
+
+  it('keeps one live PRIMARY work assignment per work item and rejects bad kinds and statuses', async () => {
+    const db = await openProjectLedgerDatabase(':memory:')
+    insertFixtureChain(db)
+    db.exec(`${WORK_ITEM_INSERT_SQL} VALUES('work_2','proj_1',NULL,NULL,NULL,'K-3','TEST','AGENT','second item','PROPOSED',1,1)`)
+    db.exec("INSERT INTO actors(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) VALUES('actor_1','proj_1','a','AGENT','A','ACTIVE',1)")
+    db.exec("INSERT INTO actors(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) VALUES('actor_2','proj_1','b','AGENT','B','ACTIVE',1)")
+    const insert = (id: string, itemId: string, actorId: string, kind: string, status = 'ACTIVE'): void => {
+      db.exec(`INSERT INTO work_assignments(id, work_item_id, actor_id, role_id, assignment_kind, status, assigned_at_ms)
+        VALUES('${id}','${itemId}','${actorId}',NULL,'${kind}','${status}',1)`)
+    }
+    insert('wa_1', 'work_1', 'actor_1', 'PRIMARY')
+    expect(() => { insert('wa_2', 'work_1', 'actor_2', 'PRIMARY') }).toThrow()
+    insert('wa_3', 'work_1', 'actor_2', 'COLLABORATOR')
+    insert('wa_4', 'work_2', 'actor_2', 'PRIMARY')
+    db.exec("UPDATE work_assignments SET status = 'ENDED' WHERE id = 'wa_1'")
+    insert('wa_5', 'work_1', 'actor_1', 'PRIMARY')
+    expect(() => { insert('wa_6', 'work_1', 'actor_2', 'LEAD') }).toThrow()
+    expect(() => { insert('wa_6', 'work_1', 'actor_2', 'PRIMARY', 'DONE') }).toThrow()
+    const livePrimaryOnWork1 = db.prepare(
+      "SELECT COUNT(*) AS n FROM work_assignments WHERE work_item_id = 'work_1' AND status = 'ACTIVE' AND assignment_kind = 'PRIMARY'",
+    ).get() as { n: number }
+    expect(livePrimaryOnWork1.n).toBe(1)
     db.close()
   })
 })

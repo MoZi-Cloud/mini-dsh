@@ -55,6 +55,7 @@ import {
   type ReplayedPlanVersion,
   type ReplayedProjectProjection,
   type ReplayedRole,
+  type ReplayedWorkAssignment,
   type ReplayedWorkItem,
   type ResourceRequirementId,
   type ResourceInstanceId,
@@ -62,6 +63,7 @@ import {
   type ResourceVerificationResult,
   type RoleId,
   type SourceDocumentHash,
+  type WorkAssignmentId,
   type WorkItemId,
   type WorkLeaseId,
 } from '../src/index.js'
@@ -318,6 +320,22 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       validToMs: row.valid_to_ms ?? undefined,
     })
   }
+  const workAssignments = new Map<WorkAssignmentId, ReplayedWorkAssignment>()
+  for (const row of db.prepare('SELECT id, work_item_id, actor_id, role_id, assignment_kind FROM work_assignments').all() as {
+    id: string
+    work_item_id: string
+    actor_id: string
+    role_id: string | null
+    assignment_kind: string
+  }[]) {
+    workAssignments.set(brandString<WorkAssignmentId>(row.id), {
+      workItemId: brandString<WorkItemId>(row.work_item_id),
+      actorId: brandString<ActorId>(row.actor_id),
+      roleId: row.role_id === null ? undefined : brandString<RoleId>(row.role_id),
+      assignmentKind: row.assignment_kind as ReplayedWorkAssignment['assignmentKind'],
+      status: 'ACTIVE',
+    })
+  }
   // No test in this file prepares work packets; the rebuild seam owns packet parity.
   return {
     planVersions,
@@ -333,6 +351,7 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
     actors,
     roles,
     actorRoles,
+    workAssignments,
   }
 }
 
@@ -662,6 +681,7 @@ describe('replayProjectEvents', () => {
       actors: new Map(),
       roles: new Map(),
       actorRoles: new Map(),
+      workAssignments: new Map(),
     })
     db.close()
   })
@@ -1274,6 +1294,119 @@ describe('replayProjectEvents', () => {
       setPayload(assigned.sequenceNo, payload)
       expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
     }
+    setPayload(assigned.sequenceNo, baseAssigned)
+    db.close()
+  })
+
+  it('replays work/assigned events with the item, actor, and role resolved', async () => {
+    const db = await goldenLedger()
+    const actor = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const role = defineRole(db, PROJECT, { roleName: 'executor', roleKind: 'EXECUTION' }, { nowMs: 11, actorRef: 'tester' })
+    const item = brandString<WorkItemId>('wi:mini-dsh:IMPORT-001')
+    appendProjectEvent(db, PROJECT, 'work/assigned', {
+      assignmentId: 'wa:mini-dsh:19',
+      workItemId: item,
+      actorId: actor.actorId,
+      roleId: role.roleId,
+      assignmentKind: 'PRIMARY',
+    }, { entityType: 'work_assignment', entityId: 'wa:mini-dsh:19', nowMs: 4 })
+    const replayed = replayProjectEvents(db, PROJECT)
+    expect(replayed.workAssignments.get(brandString<WorkAssignmentId>('wa:mini-dsh:19'))).toEqual({
+      workItemId: item,
+      actorId: actor.actorId,
+      roleId: role.roleId,
+      assignmentKind: 'PRIMARY',
+      status: 'ACTIVE',
+    })
+    appendProjectEvent(db, PROJECT, 'work/assigned', {
+      assignmentId: 'wa:mini-dsh:20',
+      workItemId: item,
+      actorId: actor.actorId,
+      assignmentKind: 'REVIEWER',
+    }, { entityType: 'work_assignment', entityId: 'wa:mini-dsh:20', nowMs: 5 })
+    expect(replayProjectEvents(db, PROJECT).workAssignments.get(brandString<WorkAssignmentId>('wa:mini-dsh:20'))).toEqual({
+      workItemId: item,
+      actorId: actor.actorId,
+      roleId: undefined,
+      assignmentKind: 'REVIEWER',
+      status: 'ACTIVE',
+    })
+    db.close()
+  })
+
+  it('fails replay on work/assigned events naming unreplayed entities or a second live PRIMARY', async () => {
+    const db = await goldenLedger()
+    const append = (payload: Record<string, unknown>, sequence: string): void => {
+      appendProjectEvent(db, PROJECT, 'work/assigned', payload, {
+        entityType: 'work_assignment', entityId: sequence, nowMs: 2,
+      })
+    }
+    append({
+      assignmentId: 'wa:mini-dsh:ghost', workItemId: 'wi:mini-dsh:ghost',
+      actorId: 'actor:mini-dsh:ghost', assignmentKind: 'PRIMARY',
+    }, 'wa:mini-dsh:ghost')
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "workItemId" names no replayed work item (wi:mini-dsh:ghost)')
+    db.prepare('DELETE FROM project_events WHERE sequence_no = 17').run()
+
+    const actor = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'tester' })
+    append({
+      assignmentId: 'wa:mini-dsh:ghost', workItemId: 'wi:mini-dsh:IMPORT-001',
+      actorId: actor.actorId, roleId: 'role:mini-dsh:ghost', assignmentKind: 'PRIMARY',
+    }, 'wa:mini-dsh:ghost')
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "roleId" names no replayed role (role:mini-dsh:ghost)')
+    db.prepare('DELETE FROM project_events WHERE sequence_no = 18').run()
+
+    append({
+      assignmentId: 'wa:mini-dsh:18', workItemId: 'wi:mini-dsh:IMPORT-001',
+      actorId: actor.actorId, assignmentKind: 'PRIMARY',
+    }, 'wa:mini-dsh:18')
+    append({
+      assignmentId: 'wa:mini-dsh:19', workItemId: 'wi:mini-dsh:SCHEMA-001',
+      actorId: actor.actorId, assignmentKind: 'PRIMARY',
+    }, 'wa:mini-dsh:19')
+    append({
+      assignmentId: 'wa:mini-dsh:20', workItemId: 'wi:mini-dsh:IMPORT-001',
+      actorId: actor.actorId, assignmentKind: 'PRIMARY',
+    }, 'wa:mini-dsh:20')
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('assigns a second PRIMARY to work item "wi:mini-dsh:IMPORT-001" while live assignment "wa:mini-dsh:18"')
+    db.close()
+  })
+
+  it('fails replay on work/assigned payloads with missing, mistyped, or invalid fields', async () => {
+    const db = await goldenLedger()
+    const setPayload = (sequenceNo: number, payload: unknown): void => {
+      db.prepare('UPDATE project_events SET payload_json = ? WHERE project_id = ? AND sequence_no = ?')
+        .run(JSON.stringify(payload), PROJECT, sequenceNo)
+    }
+    const baseAssigned: Record<string, unknown> = {
+      assignmentId: 'wa:mini-dsh:17',
+      workItemId: 'wi:mini-dsh:IMPORT-001',
+      actorId: 'actor:mini-dsh:payload',
+      assignmentKind: 'PRIMARY',
+    }
+    const assigned = appendProjectEvent(db, PROJECT, 'work/assigned', baseAssigned, {
+      entityType: 'work_assignment',
+      entityId: 'wa:mini-dsh:17',
+      nowMs: 2,
+    })
+    for (const field of ['assignmentId', 'workItemId', 'actorId', 'assignmentKind']) {
+      const payload = Object.fromEntries(Object.entries(baseAssigned).filter(([key]) => key !== field))
+      setPayload(assigned.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(assigned.sequenceNo, { ...baseAssigned, roleId: 7 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "roleId" must be a string')
+    setPayload(assigned.sequenceNo, { ...baseAssigned, assignmentKind: 'LEAD' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "assignmentKind" is not a work-assignment kind: "LEAD"')
     setPayload(assigned.sequenceNo, baseAssigned)
     db.close()
   })
