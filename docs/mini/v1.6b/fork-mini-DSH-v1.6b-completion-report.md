@@ -1,0 +1,45 @@
+# mini-DSH v1.6b Completion Report
+
+English | [中文](fork-mini-DSH-v1.6b-completion-report.zh.md)
+
+Date 2026-09-19; the acceptance baseline is the commit batch that introduces this report (its first version is the first entry of `git log --follow` on this file; no hash is pinned here, so rebase history cannot rot the document). Basis: the graded route §1 family "v1.6b — Owner / Decision / Resource Domain" of `fork-mini-DSH改造方案-v1.6a.md`, entered through the §33 gate on 2026-09-19; table layouts adapted from the v1.6 blueprint attachment (`docs/mini/HISTORY/fork-mini-DSH-v1.6-SQLite数据库架构附件.md` §22/§23 decisions, §24 approvals, §25–27 resources, §3/§4 actors/roles); all four ledger plan items of `fork-mini-DSH-v1.6b.plan.yaml` are complete — decisions and approvals under plan version 1, resources and actors under the superseding version 2.
+
+## Versions and artifacts
+
+- Schema version: `PROJECT_LEDGER_SCHEMA_VERSION = 5` — five frozen adjacent steps (0→1→…→5, one `BEGIN IMMEDIATE` transaction each); the v1 fixtures `v1.6a-empty.db`/`v1.6a-populated.db` stayed stamped 1 and became the standing upgrade probes: every committed generation opens through all shipped steps on a copy, rows intact.
+- Event format version: `PROJECT_EVENT_FORMAT_VERSION = 5`; the vocabulary is 24 required event types — the 14 v1 types plus ten v1.6b additions (`decision/requested`, `decision/recorded`, `approval/requested`, `approval/decided`, `resource/required`, `resource/provided`, `resource/verified`, `actor/registered`, `role/defined`, `role/assigned`), each with payload validation and a replay applier. The decoder rejects only rows stamped newer than the build (`this build reads up to format 5`), so a timeline mixing stamps 1–5 decodes clean.
+- Tables (23): the 13 v1 tables plus `decision_requests`, `decision_options`, `decisions`, `approvals`, `resource_requirements`, `resource_instances`, `resource_verifications`, `actors`, `roles`, `actor_roles`.
+- Indexes added with the new tables: `idx_decision_requests_project`; `idx_approvals_project`, `idx_approvals_subject`; `idx_resource_requirements_project`, `idx_resource_instances_requirement`, `idx_resource_verifications_instance`; `idx_actors_project_kind` (the blueprint's own name, unchanged), `idx_actor_roles_actor`, and the partial unique index `uq_one_live_assignment_per_pair(actor_id, role_id) WHERE valid_to_ms IS NULL` — one live assignment per actor-role pair is a database fact, not only a seam check.
+- Adaptations, recorded per domain in the module docs and Agent Notes: project-scoped `UNIQUE` keys over the blueprint's plan-version-scoped or nullable-UNIQUE idioms, inline text over `content_id` indirection, actor strings over actor ids, kind/status values uppercased to the ledger convention, one added column `actors.actor_key` holding exactly the strings the other domains already record, and `roles.role_kind` closed to `GOVERNANCE`/`EXECUTION` where the blueprint marks it NOT NULL but unvalued.
+- WorkPacket format untouched (`WORK_PACKET_FORMAT_VERSION = 1`): the v1.6b domains add library seams and read-only views, no packet surface.
+
+## The four domains
+
+- **Decisions (schema v2, format 2)** — `dr:<projectId>:<decisionKey>` by identity, `do:`/`dc:` request-scoped derivations; `BLOCKING`/`ADVISORY` levels; `UNIQUE(decision_request_id)` makes one decision resolve one request. Write seams and the replay fold both reject duplicate project keys, foreign-plan references, repeated option keys, two recommended options, and a second resolve; parity runs in both directions in `readProjectReplay` and the doctor. First row: the §33 entry decision itself — `dr:mini-dsh:v1.6b-entry` resolved by `owner` selecting `enter-v1.6b` as event 109, the gate that opened the domain as the domain's first row. Read-only `/project decisions`.
+- **Approvals (schema v3, format 3)** — one `approvals` table over a typed subject (`plan-version`/`work-item`/`decision`, each validated to belong to the same project at write time and required to exist in the fold), `required_role`/`requested_by`/`decided_by` actor strings, inline decision text; three CHECKs couple the deciding columns to the non-PENDING status all-or-nothing, the read shape returns them as one group, and an approval decides exactly once. Kept separate from decisions per the blueprint's one-line ruling. Ids `ap:<projectId>:<eventSequence>`. First rows: `ap:mini-dsh:117` over the v1.6b plan version (requiring the `owner` role) decided APPROVED as events 117–118. Read-only `/project approvals`.
+- **Resources (schema v4, format 4)** — a project opens requirements, instances serve OPEN requirements only, and each verification records PASS/FAIL against a stored spec; `constraintsJson`/`metadataJson`/`observedJson` must parse as JSON objects at the parser seam; verifier specs are stored data, never executed; re-verification is legal and each verification gets its own timeline-derived row. The verifier-kind vocabulary is owned by the event codec as `ResourceVerifierKind` (the cordis-catalog name-collision lesson). First rows: requirement `rr:mini-dsh:persistent-ledger` with instance `ri:mini-dsh:131` — the ledger file itself — verified PASS against the replay audit that had just folded the whole timeline clean. Read-only `/project resources`.
+- **Actors/roles (schema v5, format 5)** — actors (`HUMAN`/`AGENT`/`SERVICE`/`SYSTEM`), roles (`GOVERNANCE`/`EXECUTION`), and assignments with `valid_from_ms`; ids `actor:`/`role:` by identity and `asg:` timeline-derived, because a future ending writer must permit re-assignment. The fold resolves every assignment through replayed actors and roles and rejects a second live assignment per pair, mirroring the index. First rows: the ledger's own cast — `actor:mini-dsh:owner` (HUMAN, the go-gate holder) and `actor:mini-dsh:agent:mini-real-use-lane` (AGENT, the lane that has claimed every item), roles `owner` (GOVERNANCE, the referent the approvals domain already names) and `executor` (EXECUTION), assigned as `asg:mini-dsh:144`/`asg:mini-dsh:145` (events 140–145). Read-only `/project actors`.
+
+## Mixed-stamp folding, in place
+
+The persistent ledger (`~/.dsh/project-ledger/ledger.sqlite`) migrated schema 1→2→3→4→5 in place on first open at each increment and now folds a five-stamp timeline clean: 97 format-1 + 19 format-2 + 2 format-3 + 14 format-4 + 13 format-5 stamps over 145 events, each stamp truthful about the surface that wrote it. Replay audit and doctor report 0 drift and 0 issues after every increment; the idempotent reruns on rebuilt surfaces pass with zero tool calls.
+
+## Plan supersede exercised for real
+
+The v1.6b plan (`mini-dsh-v16b-owner-decision`) superseded its own version 1 through the §22 path when the resource item landed: version 1 (its decisions and approvals items DONE) froze, version 2 activated with fresh stable keys that never re-list version 1's items, which stay recorded under version 1. All four items are DONE, each through its stored verifier (`pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile`, exit 0) with the claim by `agent:mini-real-use-lane`.
+
+## 4K benchmark
+
+`./benchmarks/context-light/run-4k.sh` exits 0 after every increment: 6 model requests, maximum estimated 2,444 of 4,096 tokens (including the 512-token reserved output), context overflow 0; no BOOT/4K regression — the 4K bar is itself a completed ledger item (`PW-4K-GATE-001`, stored verifier `run-4k.sh`), and the §33 status count stands at 30 items (the 15 golden-plan items of v1.6a plus fifteen through the real-use record).
+
+## Focused regressions and repository gates
+
+The three experimental packages total 318 passing tests (269 → 287 → 302 → 318 across the four domains); per-file 100% coverage through the CI gate invocation; oxlint 0/0; duplication at the standing two-clone baseline (no new clones); translation pairing re-recorded for every edited bilingual pair; doc gates and hygiene green. Upstream core packages are untouched — the domains are ledger/profile additions, and `bridges.spec` still pins the structural decoupling.
+
+## What v1.6b deliberately leaves unwritten
+
+Reserved states stay CHECK-legal with no writers: `FULFILLED`/`CANCELLED` requirements, `RETIRED` instances, `INACTIVE` actors, and assignment endings (`valid_to_ms`) wait for consumers, recorded in the README limitations (the `REVOKED`-lease precedent). The owner surface stays read-only: `/project` views render facts; decision, approval, resource, and actor/role writes are library seams the owner's scripts call directly. Actor columns remain free strings — a typo'd `decided_by` still writes, and `/project actors` names the parties the timeline actually knows.
+
+## Position toward v1.6c/d
+
+The v1.6b scope is complete: decisions, approvals, resources, and actors/roles all stand as ledger-recorded domains beside their subjects. v1.6c (Function Contract) stays research-gated per the proposal; v1.6d (multi-agent collaboration) would find its actors, roles, and assignments already first-class rows. Both remain the owner's call through the established go-gate.
