@@ -5,7 +5,9 @@
  * versions, phases, work items, work item relations, external blockers,
  * acceptance criteria, verification specs, acceptance evaluations, project
  * events, plan imports, compile diagnostics, and work leases — and the v1.6b
- * decision-domain layout (decision requests, options, decisions).
+ * decision-domain layout (decision requests, options, decisions) plus its
+ * approval layout (blueprint §24: approvals over a typed subject reference,
+ * kept separate from decisions).
  *
  * The database is a source of truth, not a rebuildable index: a stamped
  * `user_version` newer than this build rejects, upgrades advance one
@@ -78,6 +80,12 @@ export const PROJECT_LEDGER_MIGRATIONS: readonly ProjectLedgerMigration[] = [
     toVersion: 2,
     description: 'v1.6b decision domain (decision requests, options, decisions)',
     apply: createDecisionTables,
+  },
+  {
+    fromVersion: 2,
+    toVersion: 3,
+    description: 'v1.6b approval domain (approvals)',
+    apply: createApprovalTables,
   },
 ]
 
@@ -483,5 +491,39 @@ function createDecisionTables(db: DatabaseSync): void {
       rationale           TEXT,
       decided_at_ms       INTEGER NOT NULL
     ) STRICT;
+  `)
+}
+
+/**
+ * Materialize the v1.6b approval-domain table and indexes (blueprint §24,
+ * adapted like the decision domain: inline text, actor strings). Idempotent
+ * by design.
+ */
+function createApprovalTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approvals (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      subject_type    TEXT NOT NULL CHECK(subject_type IN (
+        'plan-version','work-item','decision'
+      )),
+      subject_id      TEXT NOT NULL,
+      required_role   TEXT,
+      requested_by    TEXT,
+      status          TEXT NOT NULL CHECK(status IN (
+        'PENDING','APPROVED','REJECTED'
+      )),
+      decision_text   TEXT,
+      decided_by      TEXT,
+      requested_at_ms INTEGER NOT NULL,
+      decided_at_ms   INTEGER,
+      CHECK((status = 'PENDING') = (decided_by IS NULL)),
+      CHECK((status = 'PENDING') = (decision_text IS NULL)),
+      CHECK((status = 'PENDING') = (decided_at_ms IS NULL))
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_approvals_project
+      ON approvals(project_id, status, requested_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_approvals_subject
+      ON approvals(subject_type, subject_id);
   `)
 }

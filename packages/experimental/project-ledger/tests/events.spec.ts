@@ -11,15 +11,19 @@ import {
   ProjectEventError,
   appendProjectEvent,
   compilePlan,
+  decideApproval,
   importPlanVersion,
   openDecisionRequest,
   parsePlanDocument,
   readProjectEvents,
   recordDecision,
   replayProjectEvents,
+  requestApproval,
   validatePlanSchema,
   type AcceptanceCriterionId,
   type AcceptanceCriterionStatus,
+  type ApprovalId,
+  type ApprovalSubjectType,
   type CompiledPlan,
   type DecisionId,
   type DecisionRequestId,
@@ -29,6 +33,7 @@ import {
   type PlanWorkItemStatus,
   type ProjectEventEnvelope,
   type ProjectId,
+  type ReplayedApproval,
   type ReplayedCriterion,
   type ReplayedDecision,
   type ReplayedDecisionRequest,
@@ -209,8 +214,23 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       decidedBy: row.decided_by,
     })
   }
+  const approvals = new Map<ApprovalId, ReplayedApproval>()
+  for (const row of db.prepare('SELECT id, subject_type, subject_id, status, decided_by FROM approvals').all() as {
+    id: string
+    subject_type: ApprovalSubjectType
+    subject_id: string
+    status: 'PENDING' | 'APPROVED' | 'REJECTED'
+    decided_by: string | null
+  }[]) {
+    approvals.set(brandString<ApprovalId>(row.id), {
+      subjectType: row.subject_type,
+      subjectId: row.subject_id,
+      status: row.status,
+      decidedBy: row.decided_by ?? undefined,
+    })
+  }
   // No test in this file prepares work packets; the rebuild seam owns packet parity.
-  return { planVersions, workItems, leases, workPackets: new Map(), decisionRequests, decisions }
+  return { planVersions, workItems, leases, workPackets: new Map(), decisionRequests, decisions, approvals }
 }
 
 describe('appendProjectEvent', () => {
@@ -532,6 +552,7 @@ describe('replayProjectEvents', () => {
       workPackets: new Map(),
       decisionRequests: new Map(),
       decisions: new Map(),
+      approvals: new Map(),
     })
     db.close()
   })
@@ -692,6 +713,138 @@ describe('replayProjectEvents', () => {
       expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
     }
     setPayload(recorded.sequenceNo, baseRecorded)
+    db.close()
+  })
+
+  it('replays the approval domain to the materialized projection', async () => {
+    const db = await goldenLedger()
+    const approval = requestApproval(db, PROJECT, {
+      subjectType: 'plan-version',
+      subjectId: 'plv:mini-dsh-v1.6a-ledger:v1',
+      requiredRole: 'owner',
+      requestedBy: 'owner',
+    }, { nowMs: 20, actorRef: 'tester' })
+    decideApproval(db, approval.approvalId, {
+      outcome: 'APPROVED',
+      decidedBy: 'owner',
+      decisionText: 'The v1.6b plan runs.',
+    }, { nowMs: 21, actorRef: 'tester' })
+
+    const replayed = replayProjectEvents(db, PROJECT)
+    expect(replayed).toEqual(materializedProjection(db))
+    expect(replayed.approvals.get(approval.approvalId)).toEqual({
+      subjectType: 'plan-version',
+      subjectId: 'plv:mini-dsh-v1.6a-ledger:v1',
+      status: 'APPROVED',
+      decidedBy: 'owner',
+    })
+    db.close()
+  })
+
+  it('fails replay on an approval requested for an unknown subject, of any subject kind', async () => {
+    const db = await goldenLedger()
+    for (const [subjectType, subjectId] of [
+      ['plan-version', 'plv:mini-dsh:GHOST'],
+      ['work-item', 'wi:mini-dsh:GHOST'],
+      ['decision', 'dc:dr:mini-dsh:GHOST:1'],
+    ] as const) {
+      appendProjectEvent(db, PROJECT, 'approval/requested', {
+        approvalId: 'ap:mini-dsh:ghost',
+        subjectType,
+        subjectId,
+      }, { entityType: 'approval', entityId: 'ap:mini-dsh:ghost', nowMs: 2 })
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+        .toContain(`payload field "subjectId" names no replayed ${subjectType} of this timeline (${subjectId})`)
+      db.prepare('DELETE FROM project_events WHERE sequence_no = 17').run()
+    }
+    db.close()
+  })
+
+  it('fails replay on an approval decided before any request', async () => {
+    const db = await goldenLedger()
+    const ghost = brandString<ApprovalId>('ap:mini-dsh:ghost')
+    appendProjectEvent(db, PROJECT, 'approval/decided', {
+      approvalId: ghost,
+      outcome: 'APPROVED',
+      decidedBy: 'owner',
+      decisionText: 'nothing requested',
+      decidedAtMs: 1,
+    }, { entityType: 'approval', entityId: ghost, nowMs: 2 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain(`payload field "approvalId" names no replayed approval (${ghost})`)
+    db.close()
+  })
+
+  it('fails replay on an approval decided twice', async () => {
+    const db = await goldenLedger()
+    const approval = requestApproval(db, PROJECT, {
+      subjectType: 'plan-version', subjectId: 'plv:mini-dsh-v1.6a-ledger:v1',
+    }, { nowMs: 20, actorRef: 'tester' })
+    for (const sequence of [1, 2]) {
+      appendProjectEvent(db, PROJECT, 'approval/decided', {
+        approvalId: approval.approvalId,
+        outcome: 'APPROVED',
+        decidedBy: 'owner',
+        decisionText: 'again',
+        decidedAtMs: sequence,
+      }, { entityType: 'approval', entityId: approval.approvalId, nowMs: 2 + sequence })
+    }
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain(`decides approval "${approval.approvalId}" twice in this timeline`)
+    db.close()
+  })
+
+  it('fails replay on approval payloads with missing, mistyped, or invalid fields', async () => {
+    const db = await goldenLedger()
+    const baseRequested: Record<string, unknown> = {
+      approvalId: 'ap:mini-dsh:payload',
+      subjectType: 'plan-version',
+      subjectId: 'plv:mini-dsh-v1.6a-ledger:v1',
+    }
+    const baseDecided: Record<string, unknown> = {
+      approvalId: 'ap:mini-dsh:payload',
+      outcome: 'APPROVED',
+      decidedBy: 'owner',
+      decisionText: 'recorded',
+      decidedAtMs: 5,
+    }
+    const requested = appendProjectEvent(db, PROJECT, 'approval/requested', baseRequested, {
+      entityType: 'approval',
+      entityId: 'ap:mini-dsh:payload',
+      nowMs: 2,
+    })
+    const decided = appendProjectEvent(db, PROJECT, 'approval/decided', baseDecided, {
+      entityType: 'approval',
+      entityId: 'ap:mini-dsh:payload',
+      nowMs: 3,
+    })
+    const setPayload = (sequenceNo: number, payload: unknown): void => {
+      db.prepare('UPDATE project_events SET payload_json = ? WHERE project_id = ? AND sequence_no = ?')
+        .run(JSON.stringify(payload), PROJECT, sequenceNo)
+    }
+
+    for (const field of ['approvalId', 'subjectType', 'subjectId']) {
+      const payload = Object.fromEntries(Object.entries(baseRequested).filter(([key]) => key !== field))
+      setPayload(requested.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(requested.sequenceNo, { ...baseRequested, subjectType: 'pull-request' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "subjectType" is not an approval subject type: "pull-request"')
+    setPayload(requested.sequenceNo, { ...baseRequested, requestedBy: 7 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "requestedBy" must be a string')
+    setPayload(requested.sequenceNo, baseRequested)
+
+    for (const field of ['approvalId', 'outcome', 'decidedBy', 'decisionText', 'decidedAtMs']) {
+      const payload = Object.fromEntries(Object.entries(baseDecided).filter(([key]) => key !== field))
+      setPayload(decided.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(decided.sequenceNo, { ...baseDecided, outcome: 'DEFERRED' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "outcome" is not an approval outcome: "DEFERRED"')
+    setPayload(decided.sequenceNo, baseDecided)
     db.close()
   })
 })

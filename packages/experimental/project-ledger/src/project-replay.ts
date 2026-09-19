@@ -14,6 +14,7 @@
 
 import type { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
+import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
@@ -35,6 +36,7 @@ export interface ProjectReplayEntityCounts {
   readonly leases: number
   readonly decisionRequests: number
   readonly decisions: number
+  readonly approvals: number
 }
 
 /** What the fold rebuilt, plus the packet recipes that have no materialized table. */
@@ -115,6 +117,15 @@ interface DecisionRow {
   readonly decided_by: string
 }
 
+/** One `approvals` row the audit reads, in select order. */
+interface ApprovalRow {
+  readonly id: string
+  readonly subject_type: string
+  readonly subject_id: string
+  readonly status: string
+  readonly decided_by: string | null
+}
+
 /**
  * Audit one project's ledger integrity read-only: fold the project's event
  * timeline and compare the rebuilt projection with the materialized tables,
@@ -149,6 +160,9 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     'SELECT d.id, d.decision_request_id AS request_id, d.decided_by FROM decisions d '
     + 'JOIN decision_requests r ON r.id = d.decision_request_id WHERE r.project_id = ? ORDER BY d.id',
   ).all(projectId) as unknown as DecisionRow[]
+  const approvalRows = db.prepare(
+    'SELECT id, subject_type, subject_id, status, decided_by FROM approvals WHERE project_id = ? ORDER BY id',
+  ).all(projectId) as unknown as ApprovalRow[]
   const materialized: ProjectReplayEntityCounts = {
     planVersions: versionRows.length,
     workItems: itemRows.length,
@@ -156,6 +170,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     leases: leaseRows.length,
     decisionRequests: decisionRequestRows.length,
     decisions: decisionRows.length,
+    approvals: approvalRows.length,
   }
   let projection: ReplayedProjectProjection
   try {
@@ -179,6 +194,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
   collectCriterionDrift(criterionRows, projection, replayedCriterionIds, drift)
   collectLeaseDrift(leaseRows, projection, drift)
   collectDecisionDrift(decisionRequestRows, decisionRows, projection, drift)
+  collectApprovalDrift(approvalRows, projection, drift)
   return {
     outcome: 'compared',
     projectId,
@@ -192,6 +208,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
       workPackets: projection.workPackets.size,
       decisionRequests: projection.decisionRequests.size,
       decisions: projection.decisions.size,
+      approvals: projection.approvals.size,
     },
     materialized,
     drift,
@@ -375,6 +392,51 @@ function collectDecisionDrift(
     }
   }
   pushReplayOnlyDrift(replayedDecisionIds, drift, refId => `decision "${refId}" replays from a decision/recorded event but no row is materialized`)
+}
+
+/**
+ * Compare the approval domain, both directions: existence, then subject
+ * reference, status, and deciding actor against what each side records.
+ */
+function collectApprovalDrift(
+  rows: readonly ApprovalRow[],
+  projection: ReplayedProjectProjection,
+  drift: ProjectReplayDrift[],
+): void {
+  const replayedIds = new Set(projection.approvals.keys())
+  for (const row of rows) {
+    const id = brandString<ApprovalId>(row.id)
+    const replayed = projection.approvals.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `approval "${row.id}" is materialized but no approval/requested event replays it`,
+      })
+      continue
+    }
+    replayedIds.delete(id)
+    if (replayed.subjectType !== row.subject_type || replayed.subjectId !== row.subject_id) {
+      drift.push({
+        refId: row.id,
+        message: `approval "${row.id}" materializes over ${row.subject_type} "${row.subject_id}" `
+          + `but replays over ${replayed.subjectType} "${replayed.subjectId}"`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      drift.push({
+        refId: row.id,
+        message: `approval "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+    if (replayed.decidedBy !== (row.decided_by ?? undefined)) {
+      drift.push({
+        refId: row.id,
+        message: `approval "${row.id}" materializes decided by ${row.decided_by ?? 'nobody'} `
+          + `but replays decided by ${replayed.decidedBy ?? 'nobody'}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedIds, drift, refId => `approval "${refId}" replays from an approval/requested event but no row is materialized`)
 }
 
 /** Record one drift per replayed entity no materialized row carries. */

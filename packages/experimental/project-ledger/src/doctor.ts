@@ -5,8 +5,8 @@
  * criterion carries its verifier, the work graph is acyclic, relations stay
  * inside one project, no lease row still records ACTIVE past its own expiry,
  * the event timeline is readable by this codec, and the replayed projection
- * agrees with the materialized tables (work items, criteria, leases, and
- * the decision domain). The doctor never
+ * agrees with the materialized tables (work items, criteria, leases, the
+ * decision domain, and the approval domain). The doctor never
  * mutates and never executes a verifier command; it reports every
  * independent issue it finds, so a caller sees the whole picture in one
  * pass. The database and event format versions ride along as report facts
@@ -18,6 +18,7 @@
 
 import type { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
+import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
@@ -392,6 +393,43 @@ function collectProjectionDrift(
         refId: row.id,
         message: `decision "${row.id}" materializes for "${row.request_id}" by ${row.decided_by} `
           + `but replays for "${replayed.requestId}" by ${replayed.decidedBy}`,
+      })
+    }
+  }
+  const approvalRows = db.prepare(
+    'SELECT id, subject_type, subject_id, status, decided_by FROM approvals WHERE project_id = ? ORDER BY id',
+  ).all(projectId) as unknown as { id: string; subject_type: string; subject_id: string; status: string; decided_by: string | null }[]
+  for (const row of approvalRows) {
+    const replayed = projection.approvals.get(brandString<ApprovalId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `approval "${row.id}" has materialized status ${row.status} but no replayed approval/requested event`,
+      })
+      continue
+    }
+    if (replayed.subjectType !== row.subject_type || replayed.subjectId !== row.subject_id) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `approval "${row.id}" materializes over ${row.subject_type} "${row.subject_id}" `
+          + `but replays over ${replayed.subjectType} "${replayed.subjectId}"`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `approval "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+    if (replayed.decidedBy !== (row.decided_by ?? undefined)) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `approval "${row.id}" materializes decided by ${row.decided_by ?? 'nobody'} `
+          + `but replays decided by ${replayed.decidedBy ?? 'nobody'}`,
       })
     }
   }

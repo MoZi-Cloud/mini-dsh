@@ -8,6 +8,7 @@ import {
   PlanDoctorError,
   claimWorkItem,
   compilePlan,
+  decideApproval,
   evaluateAcceptanceCriterion,
   changeWorkStatus,
   importPlanVersion,
@@ -16,6 +17,7 @@ import {
   planDoctor,
   recordDecision,
   releaseWorkLease,
+  requestApproval,
   validatePlanSchema,
   type AcceptanceCriterionId,
   type CompiledPlan,
@@ -97,8 +99,8 @@ describe('planDoctor', () => {
         versionNo: 1,
         status: 'DRAFT',
         projectId: 'mini-dsh',
-        databaseUserVersion: 2,
-        eventFormatVersion: 2,
+        databaseUserVersion: 3,
+        eventFormatVersion: 3,
         baselineRepoHead: null,
         baselineWorktreeHash: null,
         counts: { phases: 13, workItems: 15, relations: 14, criteria: 16, events: 16 },
@@ -259,7 +261,7 @@ describe('planDoctor', () => {
       const issues = planDoctor(unreadable, GOLDEN_VERSION).issues
       expect(issues).toHaveLength(1)
       expect(issues[0]?.code).toBe('event-timeline-unreadable')
-      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 2')
+      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 3')
     } finally {
       unreadable.close()
     }
@@ -316,6 +318,84 @@ describe('planDoctor', () => {
       ])
     } finally {
       decisionDrift.close()
+    }
+
+    const approvalDrift = await goldenLedger()
+    try {
+      const approved = requestApproval(approvalDrift, brandString<ProjectId>('mini-dsh'), {
+        subjectType: 'plan-version', subjectId: 'plv:mini-dsh-v1.6a-ledger:v1', requestedBy: 'doctor/agent',
+      }, { nowMs: 40, actorRef: 'doctor/agent' })
+      decideApproval(approvalDrift, approved.approvalId, {
+        outcome: 'APPROVED', decidedBy: 'owner', decisionText: 'approved',
+      }, { nowMs: 41, actorRef: 'doctor/agent' })
+      // The CHECKs couple the deciding columns to the non-PENDING status, so
+      // tampering moves each column set whole.
+      const wiped = requestApproval(approvalDrift, brandString<ProjectId>('mini-dsh'), {
+        subjectType: 'work-item', subjectId: 'wi:mini-dsh:SCHEMA-001',
+      }, { nowMs: 42, actorRef: 'doctor/agent' })
+      decideApproval(approvalDrift, wiped.approvalId, {
+        outcome: 'REJECTED', decidedBy: 'owner', decisionText: 'wiped after the fact',
+      }, { nowMs: 43, actorRef: 'doctor/agent' })
+      approvalDrift.prepare(
+        "UPDATE approvals SET status = 'PENDING', decision_text = NULL, decided_by = NULL, decided_at_ms = NULL WHERE id = ?",
+      ).run(wiped.approvalId)
+      const promoted = requestApproval(approvalDrift, brandString<ProjectId>('mini-dsh'), {
+        subjectType: 'work-item', subjectId: 'wi:mini-dsh:SCHEMA-001',
+      }, { nowMs: 44, actorRef: 'doctor/agent' })
+      approvalDrift.prepare(
+        "UPDATE approvals SET status = 'APPROVED', decision_text = 'decided out of band', decided_by = 'owner', decided_at_ms = 5 WHERE id = ?",
+      ).run(promoted.approvalId)
+      const retargeted = requestApproval(approvalDrift, brandString<ProjectId>('mini-dsh'), {
+        subjectType: 'plan-version', subjectId: 'plv:mini-dsh-v1.6a-ledger:v1',
+      }, { nowMs: 45, actorRef: 'doctor/agent' })
+      approvalDrift.prepare("UPDATE approvals SET subject_type = 'work-item' WHERE id = ?").run(retargeted.approvalId)
+      approvalDrift.prepare(
+        'INSERT INTO approvals '
+        + '(id, project_id, subject_type, subject_id, required_role, requested_by, status, requested_at_ms) '
+        + "VALUES ('ap:mini-dsh:hand', 'mini-dsh', 'plan-version', 'plv:mini-dsh-v1.6a-ledger:v1', NULL, 'owner', 'PENDING', 46)",
+      ).run()
+      approvalDrift.prepare("UPDATE approvals SET decided_by = 'impostor' WHERE id = ?").run(approved.approvalId)
+      const issues = planDoctor(approvalDrift, GOLDEN_VERSION, { nowMs: 47 }).issues
+      expect(issues).toEqual([
+        {
+          code: 'projection-drift',
+          refId: approved.approvalId,
+          message: `approval "${approved.approvalId}" materializes decided by impostor but replays decided by owner`,
+        },
+        {
+          code: 'projection-drift',
+          refId: wiped.approvalId,
+          message: `approval "${wiped.approvalId}" has materialized status PENDING but replays to REJECTED`,
+        },
+        {
+          code: 'projection-drift',
+          refId: wiped.approvalId,
+          message: `approval "${wiped.approvalId}" materializes decided by nobody but replays decided by owner`,
+        },
+        {
+          code: 'projection-drift',
+          refId: promoted.approvalId,
+          message: `approval "${promoted.approvalId}" has materialized status APPROVED but replays to PENDING`,
+        },
+        {
+          code: 'projection-drift',
+          refId: promoted.approvalId,
+          message: `approval "${promoted.approvalId}" materializes decided by owner but replays decided by nobody`,
+        },
+        {
+          code: 'projection-drift',
+          refId: retargeted.approvalId,
+          message: `approval "${retargeted.approvalId}" materializes over work-item "plv:mini-dsh-v1.6a-ledger:v1" `
+            + 'but replays over plan-version "plv:mini-dsh-v1.6a-ledger:v1"',
+        },
+        {
+          code: 'projection-drift',
+          refId: 'ap:mini-dsh:hand',
+          message: 'approval "ap:mini-dsh:hand" has materialized status PENDING but no replayed approval/requested event',
+        },
+      ])
+    } finally {
+      approvalDrift.close()
     }
 
     const rawCriterion = await goldenLedger()

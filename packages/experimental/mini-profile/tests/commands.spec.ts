@@ -13,10 +13,12 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { describe, expect, it } from 'vitest'
 import {
   claimWorkItem,
+  decideApproval,
   evaluateAcceptanceCriterion,
   importPlanVersion,
   openDecisionRequest,
   recordDecision,
+  requestApproval,
   type AcceptanceCriterionId,
   type DecisionRequestId,
   type ProjectId,
@@ -67,7 +69,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project')).resolves.toMatchObject({
         kind: 'success',
         text: expect.stringMatching(
-          /todo \[--agent\][\s\S]*doctor[\s\S]*item[\s\S]*history[\s\S]*replay[\s\S]*digest[\s\S]*export[\s\S]*decisions/,
+          /todo \[--agent\][\s\S]*doctor[\s\S]*item[\s\S]*history[\s\S]*replay[\s\S]*digest[\s\S]*export[\s\S]*decisions[\s\S]*approvals/,
         ) as string,
       })
     } finally {
@@ -91,6 +93,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project digest a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project export a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project decisions a b')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project approvals a b')).resolves.toEqual(usage)
     } finally {
       await unmount(mounted)
     }
@@ -108,6 +111,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project digest')).resolves.toEqual(empty)
       await expect(run(mounted, '/project export')).resolves.toEqual(empty)
       await expect(run(mounted, '/project decisions')).resolves.toEqual(empty)
+      await expect(run(mounted, '/project approvals')).resolves.toEqual(empty)
     } finally {
       await unmount(mounted)
     }
@@ -126,6 +130,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project todo')).resolves.toEqual(ambiguous)
       await expect(run(mounted, '/project digest')).resolves.toEqual(ambiguous)
       await expect(run(mounted, '/project decisions')).resolves.toEqual(ambiguous)
+      await expect(run(mounted, '/project approvals')).resolves.toEqual(ambiguous)
     } finally {
       await unmount(mounted)
     }
@@ -472,7 +477,7 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 3, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 4, 'plan/imported', 0, '{}', 1)",
       ).run()
       const result = await run(mounted, '/project replay')
       expect(result).toMatchObject({ kind: 'success' })
@@ -749,6 +754,49 @@ describe('/project', () => {
     }
   })
 
+  it('lists approvals over their typed subjects with the decisions that answered them', async () => {
+    const mounted = await mount()
+    try {
+      const db = mounted.ctx.projectLedger.db
+      seedActivePlan(db, SOLO_PLAN_TEXT)
+      await expect(run(mounted, '/project approvals')).resolves.toEqual({
+        kind: 'success',
+        text: 'No approvals in project solo-proj.',
+      })
+
+      const decided = requestApproval(db, brandString<ProjectId>('solo-proj'), {
+        subjectType: 'plan-version',
+        subjectId: 'plv:solo-plan:v1',
+        requiredRole: 'owner',
+        requestedBy: 'owner',
+      }, { nowMs: 70_000, actorRef: 'spec-owner' })
+      decideApproval(db, decided.approvalId, {
+        outcome: 'APPROVED',
+        decidedBy: 'owner',
+        decisionText: 'The solo plan runs.',
+      }, { nowMs: 71_000, actorRef: 'spec-owner' })
+      requestApproval(db, brandString<ProjectId>('solo-proj'), {
+        subjectType: 'work-item',
+        subjectId: 'wi:solo-proj:AGENT-ONLY',
+      }, { nowMs: 72_000, actorRef: 'spec-owner' })
+
+      const expected = [
+        'Project solo-proj — approvals, 2:',
+        '- work-item wi:solo-proj:AGENT-ONLY PENDING — requested by unknown at 1970-01-01T00:01:12.000Z',
+        '- plan-version plv:solo-plan:v1 APPROVED (requires owner) — requested by owner at 1970-01-01T00:01:10.000Z',
+        '  decided by owner at 1970-01-01T00:01:11.000Z: The solo plan runs.',
+      ].join('\n')
+      await expect(run(mounted, '/project approvals')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project approvals solo-proj')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project approvals no-such-project')).resolves.toEqual({
+        kind: 'error',
+        text: 'No plan in this ledger records project "no-such-project".',
+      })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
   it('digests a versionless plan, drift findings, and an undecodable timeline', async () => {
     const mounted = await mount((db) => {
       seedActivePlan(db, TINY_PLAN_TEXT)
@@ -813,13 +861,13 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 3, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 4, 'plan/imported', 0, '{}', 1)",
       ).run()
       const broken = await run(mounted, '/project digest tiny-proj')
       expect(broken).toMatchObject({ kind: 'success' })
       if (broken.kind !== 'success' || broken.text === undefined) return
       expect(broken.text).toContain('Replay audit: the timeline cannot be decoded by this build — ')
-      expect(broken.text).toContain('carries event format 3; this build reads up to format 2')
+      expect(broken.text).toContain('carries event format 4; this build reads up to format 3')
       expect(broken.text).not.toContain('Replay audit: clean')
 
       // The export's replay section reports the decode failure, not parity.
@@ -827,7 +875,7 @@ describe('/project', () => {
       expect(brokenExport).toMatchObject({ kind: 'success' })
       if (brokenExport.kind !== 'success' || brokenExport.text === undefined) return
       expect(brokenExport.text).toContain('the timeline cannot be decoded by this build — ')
-      expect(brokenExport.text).toContain('carries event format 3; this build reads up to format 2')
+      expect(brokenExport.text).toContain('carries event format 4; this build reads up to format 3')
       expect(brokenExport.text).not.toContain('clean over')
     } finally {
       await unmount(mounted)

@@ -43,6 +43,7 @@ function userVersionOf(db: DatabaseSync): number {
 const LEDGER_TABLES = [
   'acceptance_criteria',
   'acceptance_evaluations',
+  'approvals',
   'decision_options',
   'decision_requests',
   'decisions',
@@ -61,6 +62,8 @@ const LEDGER_TABLES = [
 
 const LEDGER_INDEXES = [
   'idx_accept_eval_criterion',
+  'idx_approvals_project',
+  'idx_approvals_subject',
   'idx_decision_requests_project',
   'idx_external_blockers_work',
   'idx_lease_expiry',
@@ -117,7 +120,7 @@ describe('open and configure', () => {
     expect(rawVersion(path)).toBe(PROJECT_LEDGER_SCHEMA_VERSION)
   })
 
-  it('materializes exactly the Ledger Core and decision-domain tables and indexes', async () => {
+  it('materializes exactly the Ledger Core, decision-, and approval-domain tables and indexes', async () => {
     const db = await openProjectLedgerDatabase(':memory:')
     expect(tableNames(db)).toEqual(LEDGER_TABLES)
     expect(indexNames(db)).toEqual(LEDGER_INDEXES)
@@ -259,7 +262,37 @@ describe('adjacent migration fixture', () => {
     reopened.close()
   })
 
-  it('upgrades the committed v1 fixture databases through the same step', async () => {
+  it('upgrades a v2 database through the shipped 2→3 step without losing rows', async () => {
+    const path = tmpFile('v2-to-v3.sqlite')
+    // A real v2 database: the shipped 0→1 and 1→2 steps' own layout, stamped
+    // as v2 and carrying one decision row.
+    const [coreStep, decisionStep] = PROJECT_LEDGER_MIGRATIONS
+    if (coreStep === undefined || decisionStep === undefined) {
+      throw new Error('test setup: the registry ships no core or decision step')
+    }
+    const raw = new DatabaseSync(path)
+    coreStep.apply(raw)
+    decisionStep.apply(raw)
+    raw.exec(
+      'INSERT INTO decision_requests '
+      + '(id, project_id, plan_version_id, decision_key, title, question, blocking_level, status, created_at_ms) '
+      + "VALUES ('dr:p:v1.6b-entry', 'p', NULL, 'v1.6b-entry', 'Entry', 'Q?', 'BLOCKING', 'RESOLVED', 1)",
+    )
+    raw.exec('PRAGMA user_version = 2')
+    raw.close()
+
+    const reopened = await openProjectLedgerDatabase(path)
+    expect(userVersionOf(reopened)).toBe(PROJECT_LEDGER_SCHEMA_VERSION)
+    expect(tableNames(reopened)).toEqual(LEDGER_TABLES)
+    expect(indexNames(reopened)).toEqual(LEDGER_INDEXES)
+    const decisions = reopened.prepare('SELECT COUNT(*) AS n FROM decision_requests').get() as { n: number }
+    expect(decisions.n).toBe(1)
+    const approvals = reopened.prepare('SELECT COUNT(*) AS n FROM approvals').get() as { n: number }
+    expect(approvals.n).toBe(0)
+    reopened.close()
+  })
+
+  it('upgrades the committed v1 fixture databases through the same steps', async () => {
     const fixtureRoot = resolve(REPO_ROOT, 'fixtures/project-ledger')
     for (const name of ['v1.6a-empty.db', 'v1.6a-populated.db']) {
       const path = tmpFile(`fixture-${name}`)

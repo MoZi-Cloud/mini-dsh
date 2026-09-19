@@ -16,6 +16,8 @@
  */
 
 import { DatabaseSync } from 'node:sqlite'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { WorkExternalBlockerId } from './versioning.js'
 import type { WorkLeaseId } from './lease.js'
@@ -104,6 +106,30 @@ export type DecisionBlockingLevel = (typeof DECISION_BLOCKING_LEVELS)[number]
 const DECISION_BLOCKING_LEVEL_SET: ReadonlySet<string> = new Set<string>(DECISION_BLOCKING_LEVELS)
 
 /**
+ * The closed set of subject kinds an `approval/requested` payload may name
+ * (blueprint §24: approvals hang beside a typed subject reference). Owned
+ * here (not in the approvals module) because the payload codec validates it
+ * on read.
+ */
+export const APPROVAL_SUBJECT_TYPES = ['plan-version', 'work-item', 'decision'] as const
+
+/** A subject kind of one approval. */
+export type ApprovalSubjectType = (typeof APPROVAL_SUBJECT_TYPES)[number]
+
+const APPROVAL_SUBJECT_TYPE_SET: ReadonlySet<string> = new Set<string>(APPROVAL_SUBJECT_TYPES)
+
+/**
+ * The outcomes an `approval/decided` payload may record. Owned here (not in
+ * the approvals module) because the payload codec validates it on read.
+ */
+export const APPROVAL_OUTCOMES = ['APPROVED', 'REJECTED'] as const
+
+/** The outcome one approval decision records. */
+export type ApprovalDecisionOutcome = (typeof APPROVAL_OUTCOMES)[number]
+
+const APPROVAL_OUTCOME_SET: ReadonlySet<string> = new Set<string>(APPROVAL_OUTCOMES)
+
+/**
  * The event envelope version recorded in the `event_format_version` column of
  * every `project_events` row — the single home of this constant. Adding a
  * required vocabulary entry bumps it together with the codec; purely
@@ -112,7 +138,7 @@ const DECISION_BLOCKING_LEVEL_SET: ReadonlySet<string> = new Set<string>(DECISIO
  * (the vocabulary is cumulative), and only a row stamped newer than this
  * build rejects.
  */
-export const PROJECT_EVENT_FORMAT_VERSION = 2
+export const PROJECT_EVENT_FORMAT_VERSION = 3
 
 /**
  * The event vocabulary. Every listed type is required: rows carry
@@ -120,8 +146,9 @@ export const PROJECT_EVENT_FORMAT_VERSION = 2
  * `plan/imported`, `work/created`, `work/status-changed`, `work/blocked`,
  * `work/unblocked`, `work/claimed`, `work/lease-heartbeat`,
  * `work/lease-expired`, `work/lease-released`, `acceptance/evaluated`,
- * `project/work-packet-prepared`, `decision/requested`, and
- * `decision/recorded`), and a reader that does not know the type
+ * `project/work-packet-prepared`, `decision/requested`,
+ * `decision/recorded`, `approval/requested`, and `approval/decided`), and a
+ * reader that does not know the type
  * fails closed. `plan/version-superseded` and `baseline/drift-detected` are
  * validated without state change: their writers own lifecycle columns and
  * external blocker rows, which the fold's projection facts do not carry.
@@ -143,6 +170,8 @@ export const PROJECT_EVENT_TYPES = [
   'baseline/drift-detected',
   'decision/requested',
   'decision/recorded',
+  'approval/requested',
+  'approval/decided',
 ] as const
 
 /** A vocabulary type of the v1 event format. */
@@ -458,6 +487,16 @@ export interface ReplayedDecision {
   readonly decidedBy: string
 }
 
+/** Approval facts the approval events replay; the requested stamp is the requesting event's `createdAtMs`. */
+export interface ReplayedApproval {
+  readonly subjectType: ApprovalSubjectType
+  readonly subjectId: string
+  /** `APPROVED` or `REJECTED` once an `approval/decided` event answered it. */
+  readonly status: 'PENDING' | 'APPROVED' | 'REJECTED'
+  /** The deciding actor once an `approval/decided` event answered it. */
+  readonly decidedBy: string | undefined
+}
+
 /** The projection replaying a project's events rebuilds. */
 export interface ReplayedProjectProjection {
   readonly planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>
@@ -469,6 +508,8 @@ export interface ReplayedProjectProjection {
   /** The decision domain, rebuilt from `decision/requested` and `decision/recorded`. */
   readonly decisionRequests: ReadonlyMap<DecisionRequestId, ReplayedDecisionRequest>
   readonly decisions: ReadonlyMap<DecisionId, ReplayedDecision>
+  /** The approval domain, rebuilt from `approval/requested` and `approval/decided`. */
+  readonly approvals: ReadonlyMap<ApprovalId, ReplayedApproval>
 }
 
 /**
@@ -489,6 +530,7 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
   const workPackets = new Map<WorkPacketId, ReplayedWorkPacket>()
   const decisionRequests = new Map<DecisionRequestId, ReplayedDecisionRequest>()
   const decisions = new Map<DecisionId, ReplayedDecision>()
+  const approvals = new Map<ApprovalId, ReplayedApproval>()
   // Validation state for the supersede applier: a version retires once.
   const supersededPlanVersionIds = new Set<PlanVersionId>()
   for (const event of readProjectEvents(db, projectId)) {
@@ -728,11 +770,35 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         decisions.set(payload.decisionId, { requestId: payload.requestId, decidedBy: payload.decidedBy })
         break
       }
+      case 'approval/requested': {
+        const payload = decodeApprovalRequestedPayload(event)
+        requireReplayedApprovalSubject(planVersions, workItems, decisions, payload, event)
+        approvals.set(payload.approvalId, {
+          subjectType: payload.subjectType,
+          subjectId: payload.subjectId,
+          status: 'PENDING',
+          decidedBy: undefined,
+        })
+        break
+      }
+      case 'approval/decided': {
+        const payload = decodeApprovalDecidedPayload(event)
+        const approval = requireReplayedApproval(approvals, payload.approvalId, event)
+        if (approval.status !== 'PENDING') {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" decides approval `
+              + `"${payload.approvalId}" twice in this timeline`,
+          )
+        }
+        approvals.set(payload.approvalId, { ...approval, status: payload.outcome, decidedBy: payload.decidedBy })
+        break
+      }
       default:
         break
     }
   }
-  return { planVersions, workItems, leases, workPackets, decisionRequests, decisions }
+  return { planVersions, workItems, leases, workPackets, decisionRequests, decisions, approvals }
 }
 
 /** Fail closed when a payload names a work item the fold has not replayed. */
@@ -784,6 +850,48 @@ function requireReplayedDecisionRequest(
     )
   }
   return replayed
+}
+
+/** Fail closed when a payload names an approval the fold has not replayed. */
+function requireReplayedApproval(
+  approvals: ReadonlyMap<ApprovalId, ReplayedApproval>,
+  approvalId: ApprovalId,
+  event: ProjectEventEnvelope,
+): ReplayedApproval {
+  const replayed = approvals.get(approvalId)
+  if (replayed === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "approvalId" `
+        + `names no replayed approval (${approvalId})`,
+    )
+  }
+  return replayed
+}
+
+/**
+ * Fail closed when an approval's typed subject names no entity this timeline
+ * replayed — each subject kind resolves against its own projection family.
+ */
+function requireReplayedApprovalSubject(
+  planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>,
+  workItems: ReadonlyMap<WorkItemId, ReplayedWorkItem>,
+  decisions: ReadonlyMap<DecisionId, ReplayedDecision>,
+  payload: ApprovalRequestedPayload,
+  event: ProjectEventEnvelope,
+): void {
+  const known = payload.subjectType === 'plan-version'
+    ? planVersions.has(brandString<PlanVersionId>(payload.subjectId))
+    : payload.subjectType === 'work-item'
+      ? workItems.has(brandString<WorkItemId>(payload.subjectId))
+      : decisions.has(brandString<DecisionId>(payload.subjectId))
+  if (!known) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "subjectId" `
+        + `names no replayed ${payload.subjectType} of this timeline (${payload.subjectId})`,
+    )
+  }
 }
 
 /** Fail closed when a payload names a lease the fold has not replayed. */
@@ -945,6 +1053,24 @@ interface DecisionRecordedPayload {
   readonly decisionText: string
   readonly rationale: string | undefined
   readonly resolvedAtMs: number
+}
+
+/** Payload facts of one `approval/requested` event; the requested stamp is the envelope's `createdAtMs`. */
+interface ApprovalRequestedPayload {
+  readonly approvalId: ApprovalId
+  readonly subjectType: ApprovalSubjectType
+  readonly subjectId: string
+  readonly requiredRole: string | undefined
+  readonly requestedBy: string | undefined
+}
+
+/** Payload facts of one `approval/decided` event. */
+interface ApprovalDecidedPayload {
+  readonly approvalId: ApprovalId
+  readonly outcome: ApprovalDecisionOutcome
+  readonly decidedBy: string
+  readonly decisionText: string
+  readonly decidedAtMs: number
 }
 
 /** The event payload must be a JSON object for appliers to read fields from. */
@@ -1510,5 +1636,63 @@ function decodeDecisionRecordedPayload(event: ProjectEventEnvelope): DecisionRec
     decisionText: requiredString(fields, event, 'decisionText'),
     rationale: optionalString(fields, event, 'rationale'),
     resolvedAtMs: requiredNumber(fields, event, 'resolvedAtMs'),
+  }
+}
+
+/** Read one required approval subject type payload field. */
+function requiredApprovalSubjectType(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+): ApprovalSubjectType {
+  const value = requiredString(fields, event, field)
+  if (!APPROVAL_SUBJECT_TYPE_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not an approval subject type: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as ApprovalSubjectType
+}
+
+/** Read one required approval outcome payload field. */
+function requiredApprovalOutcome(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+): ApprovalDecisionOutcome {
+  const value = requiredString(fields, event, field)
+  if (!APPROVAL_OUTCOME_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not an approval outcome: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as ApprovalDecisionOutcome
+}
+
+/** Decode one `approval/requested` payload, failing closed on missing or mistyped fields. */
+function decodeApprovalRequestedPayload(event: ProjectEventEnvelope): ApprovalRequestedPayload {
+  const fields = payloadFields(event)
+  return {
+    approvalId: requiredString(fields, event, 'approvalId') as ApprovalId,
+    subjectType: requiredApprovalSubjectType(fields, event, 'subjectType'),
+    subjectId: requiredString(fields, event, 'subjectId'),
+    requiredRole: optionalString(fields, event, 'requiredRole'),
+    requestedBy: optionalString(fields, event, 'requestedBy'),
+  }
+}
+
+/** Decode one `approval/decided` payload, failing closed on missing or mistyped fields. */
+function decodeApprovalDecidedPayload(event: ProjectEventEnvelope): ApprovalDecidedPayload {
+  const fields = payloadFields(event)
+  return {
+    approvalId: requiredString(fields, event, 'approvalId') as ApprovalId,
+    outcome: requiredApprovalOutcome(fields, event, 'outcome'),
+    decidedBy: requiredString(fields, event, 'decidedBy'),
+    decisionText: requiredString(fields, event, 'decisionText'),
+    decidedAtMs: requiredNumber(fields, event, 'decidedAtMs'),
   }
 }

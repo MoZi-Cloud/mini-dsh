@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core 的 plan 文档接缝。`parsePlanDocument` 解析 YAML，拒绝重复键、锚点、别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用与关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝 fail-closed 重放；readiness 与租约接缝仲裁可领取性与每项唯一租约；`buildWorkPacket` 准备有界 WorkPacket；todo 视图按 executor 划分工作；supersede 与 drift 退役版本、封堵漂移 baseline；评审、历史、重放、摘要读取返回逐条目事实、奇偶与证据；v1.6b 接缝记录 owner 的决策请求与唯一解除它的那条决策。本包绝不执行 verifier。
+`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core 的 plan 文档接缝。`parsePlanDocument` 解析 YAML，拒绝重复键、锚点、别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用与关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝 fail-closed 重放；readiness 与租约接缝仲裁可领取性与每项唯一租约；`buildWorkPacket` 准备有界 WorkPacket；todo 视图按 executor 划分工作；supersede 与 drift 退役版本、封堵漂移 baseline；评审、历史、重放、摘要读取返回逐条目事实、奇偶与证据；v1.6b 接缝记录 owner 的决策与审批，各自挂在主题旁。本包绝不执行 verifier。
 
 ## 目录
 
@@ -86,7 +86,8 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **item review 一次联读作答**——`readWorkItemReview` 按完整 id 或 stable key 解析单个工作项，返回每条验收标准及其投影状态与最新评估（判定、评估者、时间戳、解析后的 observed 载荷）；每条标准的最新行按评估时间选取，同毫秒并列以 append-only 的写入顺序决出。review 只读：评估与状态归各自的写入者所有。
 - **历史按时间线作答**——`readWorkItemHistory` 按最新在前列出单个条目的全部已记录评估（与最新选取共享同一 rowid 决胜），latest-only 评审折叠掉的尝试依然可读；history 只读。
 - **digest 只聚合，不裁决**——`readProjectDigest` 读回每个 plan 的全部版本及其生命周期状态与 baseline、每个条目逐条标准的投影状态与最新评估（评估者、时间、observed 载荷），并内嵌重放对账结论；owner 无需 SQL 或逐条目命令即可读全量记录。
-- **重放对账双向比对**——`readProjectReplay` 折叠项目的全量事件时间线，把重建投影与物化表逐族比对——plan 版本按身份事实、工作项、标准与租约按状态——物化侧多出的行与重放侧多出的实体同样算 drift。WorkPacket 只计入重放侧（recipe 即持久记录）；本构建无法解码的时间线只报告原因，不做半程比对。对账只读：parity 是事实，不是修复。
+- **决策与审批是 owner 事实，各自只被回答一次**——`openDecisionRequest` 在 `decision/requested` 之下记录请求及其枚举选项，`recordDecision` 恰好一次解除它、至多点名它自己的一个选项；`requestApproval` 把一条 PENDING 行挂在类型化 subject 引用旁——同项目的 plan 版本、工作项或决策——`decideApproval` 恰好一次给出 APPROVED 或 REJECTED。approvals 独立成表（蓝图 §24），重放与 doctor 对等覆盖两族。
+- **重放对账双向比对**——`readProjectReplay` 折叠项目的全量事件时间线，把重建投影与物化表逐族比对——plan 版本按身份事实、工作项、标准与租约按状态、决策与审批按解除事实——物化侧多出的行与重放侧多出的实体同样算 drift。WorkPacket 只计入重放侧（recipe 即持久记录）；本构建无法解码的时间线只报告原因，不做半程比对。对账只读：parity 是事实，不是修复。
 
 <a id="dev-note"></a>
 ## 开发备注
@@ -118,7 +119,7 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **尚无激活与 supersede**——导入绝不激活版本，且拒绝已属于其他版本或 backlog 的工作项；这些迁移由 supersede 流程负责，指向本项的 `SUPERSEDES` 边在其落地前不进入 readiness。
 - **packet 尚无项目记忆引用**——§17 允许在存在持久记忆能力后加入显式关联的 memory 引用；v1 packet 不记录任何记忆引用，重建因此只读账本行。
 - **todo 视图只是查询**——`/project todo --owner`/`--agent` 斜杠面与 `project_work_*` 工具属于命令接缝；v1.6b 把 executor identity 扩展为 actor/role/assignment（§11）。
-- **decision 写入是库接缝**——`openDecisionRequest` 与 `recordDecision` 暂无斜杠命令或面向模型的工具（`/project decisions` 视图只读）；approvals 与 actor/role 记录是后续 v1.6b 工作，交互式 owner 表面随 approvals 条目到来。
+- **decision/approval 写入是库接缝**——`openDecisionRequest`、`recordDecision`、`requestApproval` 与 `decideApproval` 暂无斜杠命令或面向模型的工具（`/project decisions` 与 `/project approvals` 视图只读）；actor/role 记录是后续 v1.6b 工作，交互式 owner 表面随后到来。
 - **尚无 carry-forward 绑定**——supersede 命名的继任版本只被记录、未被应用：重复声明继承的工作项属于 adoption 流程（§9.3），漂移阻塞的解决与豁免也尚无写入者。
 - **`REVOKED` 是保留行状态**——租约生命周期只写 `ACTIVE`、`RELEASED` 与 `EXPIRED`；Owner 侧吊销尚无写入者，reaper 循环节奏（`reaperIntervalMs`）属于有界 `reapExpiredLeases` 批次的调用方。
 - **英文诊断**——问题消息仅英文；它们是编译器输入，不是 UI 文案。

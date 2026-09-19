@@ -7,6 +7,7 @@ import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project
 import {
   appendProjectEvent,
   claimWorkItem,
+  decideApproval,
   compilePlan,
   evaluateAcceptanceCriterion,
   importPlanVersion,
@@ -15,6 +16,7 @@ import {
   readProjectReplay,
   recordDecision,
   releaseWorkLease,
+  requestApproval,
   validatePlanSchema,
   type AcceptanceCriterionId,
   type ProjectId,
@@ -90,8 +92,8 @@ describe('readProjectReplay', () => {
       projectId: PROJECT,
       eventCount: 5,
       lastSequenceNo: 5,
-      replayed: { planVersions: 1, workItems: 1, criteria: 1, leases: 1, workPackets: 0, decisionRequests: 0, decisions: 0 },
-      materialized: { planVersions: 1, workItems: 1, criteria: 1, leases: 1, decisionRequests: 0, decisions: 0 },
+      replayed: { planVersions: 1, workItems: 1, criteria: 1, leases: 1, workPackets: 0, decisionRequests: 0, decisions: 0, approvals: 0 },
+      materialized: { planVersions: 1, workItems: 1, criteria: 1, leases: 1, decisionRequests: 0, decisions: 0, approvals: 0 },
       drift: [],
     })
   })
@@ -166,9 +168,11 @@ describe('readProjectReplay', () => {
     if (report.outcome !== 'compared') return
     expect(report.replayed).toEqual({
       planVersions: 2, workItems: 2, criteria: 2, leases: 1,
-      workPackets: 0, decisionRequests: 0, decisions: 0,
+      workPackets: 0, decisionRequests: 0, decisions: 0, approvals: 0,
     })
-    expect(report.materialized).toEqual({ planVersions: 1, workItems: 1, criteria: 1, leases: 0, decisionRequests: 0, decisions: 0 })
+    expect(report.materialized).toEqual({
+      planVersions: 1, workItems: 1, criteria: 1, leases: 0, decisionRequests: 0, decisions: 0, approvals: 0,
+    })
     expect(report.drift.map(finding => finding.message)).toEqual([
       'plan version "plv:replay-plan:v9" replays from a plan/imported event but no row is materialized',
       'work item "wi:replay-proj:GHOST-ITEM" replays from a work/created event but no row is materialized',
@@ -260,12 +264,81 @@ describe('readProjectReplay', () => {
     ])
   })
 
+  it('flags materialized approval rows no event replays', async () => {
+    const db = await ledgerOf(REPLAY_PLAN_TEXT)
+    db.prepare(
+      'INSERT INTO approvals '
+      + '(id, project_id, subject_type, subject_id, required_role, requested_by, status, requested_at_ms) '
+      + "VALUES ('ap:replay-proj:hand', 'replay-proj', 'plan-version', 'plv:replay-plan:v1', NULL, 'owner', 'PENDING', 1)",
+    ).run()
+    const report = readProjectReplay(db, PROJECT)
+    expect(report.outcome).toBe('compared')
+    if (report.outcome !== 'compared') return
+    expect(report.drift.map(finding => finding.message)).toEqual([
+      'approval "ap:replay-proj:hand" is materialized but no approval/requested event replays it',
+    ])
+  })
+
+  it('flags replayed approval events no row materializes, and disagreeing approval facts', async () => {
+    const db = await ledgerOf(REPLAY_PLAN_TEXT)
+    const decided = requestApproval(db, PROJECT, {
+      subjectType: 'plan-version', subjectId: 'plv:replay-plan:v1', requestedBy: 'spec-owner',
+    }, { nowMs: 10, actorRef: 'spec-owner' })
+    decideApproval(db, decided.approvalId, {
+      outcome: 'APPROVED', decidedBy: 'owner', decisionText: 'approved',
+    }, { nowMs: 11, actorRef: 'spec-owner' })
+    // The CHECKs couple the deciding columns to the non-PENDING status, so
+    // tampering moves each column set whole.
+    const wiped = requestApproval(db, PROJECT, {
+      subjectType: 'work-item', subjectId: WORK_ITEM,
+    }, { nowMs: 12, actorRef: 'spec-owner' })
+    decideApproval(db, wiped.approvalId, {
+      outcome: 'APPROVED', decidedBy: 'owner', decisionText: 'wiped after the fact',
+    }, { nowMs: 13, actorRef: 'spec-owner' })
+    db.prepare("UPDATE approvals SET status = 'PENDING', decision_text = NULL, decided_by = NULL, decided_at_ms = NULL WHERE id = ?")
+      .run(wiped.approvalId)
+    const promoted = requestApproval(db, PROJECT, {
+      subjectType: 'work-item', subjectId: WORK_ITEM,
+    }, { nowMs: 14, actorRef: 'spec-owner' })
+    db.prepare("UPDATE approvals SET status = 'APPROVED', decision_text = 'decided out of band', decided_by = 'owner', decided_at_ms = 5 WHERE id = ?")
+      .run(promoted.approvalId)
+    const retargeted = requestApproval(db, PROJECT, {
+      subjectType: 'plan-version', subjectId: 'plv:replay-plan:v1',
+    }, { nowMs: 15, actorRef: 'spec-owner' })
+    db.prepare("UPDATE approvals SET subject_type = 'work-item' WHERE id = ?").run(retargeted.approvalId)
+    const vanished = requestApproval(db, PROJECT, {
+      subjectType: 'work-item', subjectId: WORK_ITEM, requestedBy: 'spec-owner',
+    }, { nowMs: 16, actorRef: 'spec-owner' })
+    db.prepare('DELETE FROM approvals WHERE id = ?').run(vanished.approvalId)
+    appendProjectEvent(db, PROJECT, 'approval/requested', {
+      approvalId: 'ap:replay-proj:event-only',
+      subjectType: 'plan-version',
+      subjectId: 'plv:replay-plan:v1',
+    }, { entityType: 'approval', entityId: 'ap:replay-proj:event-only', nowMs: 17, actorRef: 'spec-owner' })
+    db.prepare("UPDATE approvals SET decided_by = 'impostor' WHERE id = ?").run(decided.approvalId)
+
+    const report = readProjectReplay(db, PROJECT)
+    expect(report.outcome).toBe('compared')
+    if (report.outcome !== 'compared') return
+    expect(report.drift.map(finding => finding.message)).toEqual([
+      `approval "${decided.approvalId}" materializes decided by impostor but replays decided by owner`,
+      `approval "${wiped.approvalId}" has materialized status PENDING but replays to APPROVED`,
+      `approval "${wiped.approvalId}" materializes decided by nobody but replays decided by owner`,
+      `approval "${promoted.approvalId}" has materialized status APPROVED but replays to PENDING`,
+      `approval "${promoted.approvalId}" materializes decided by owner but replays decided by nobody`,
+      `approval "${retargeted.approvalId}" materializes over work-item "plv:replay-plan:v1" `
+        + 'but replays over plan-version "plv:replay-plan:v1"',
+      `approval "${vanished.approvalId}" replays from an approval/requested event but no row is materialized`,
+      'approval "ap:replay-proj:event-only" replays from an approval/requested event but no row is materialized',
+    ])
+  })
+
   it('reports an undecodable timeline without comparing parity', async () => {
     const db = await ledgerOf(REPLAY_PLAN_TEXT)
     db.prepare(
       'INSERT INTO project_events '
         + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-        + "VALUES (?, 99, 3, 'plan/imported', 0, '{}', 1)",
+        + "VALUES (?, 99, 4, 'plan/imported', 0, '{}', 1)",
     ).run(PROJECT)
     const report = readProjectReplay(db, PROJECT)
     expect(report).toMatchObject({
@@ -273,10 +346,10 @@ describe('readProjectReplay', () => {
       projectId: PROJECT,
       eventCount: 3,
       lastSequenceNo: 99,
-      materialized: { planVersions: 1, workItems: 1, criteria: 1, leases: 0, decisionRequests: 0, decisions: 0 },
+      materialized: { planVersions: 1, workItems: 1, criteria: 1, leases: 0, decisionRequests: 0, decisions: 0, approvals: 0 },
     })
     expect(report.outcome).toBe('undecodable')
     if (report.outcome !== 'undecodable') return
-    expect(report.timelineError).toMatch(/carries event format 3; this build reads up to format 2/u)
+    expect(report.timelineError).toMatch(/carries event format 4; this build reads up to format 3/u)
   })
 })

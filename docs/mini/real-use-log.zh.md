@@ -130,7 +130,17 @@ post-v1.6a 真实使用 lane（`./benchmarks/real-use/run-real-use.sh`）经 SHI
 
 运行之后，owner 的 §33 进入确认本身成为该域第一条记录的决策：请求 `dr:mini-dsh:v1.6b-entry`（选项 `enter-v1.6b`（推荐）/ `keep-accumulating` / `more-evidence`，挂在 v1.6b plan 版本上）由 `owner` 选中 `enter-v1.6b` 解除，即事件 109——打开这个域的那道门，就是这个域的第一行。项目时间线现有 109 事件：97 条 format-1 在 format-2 编解码器下正常解码，旁边是 12 条 format-2；持久账本在首次打开时就地迁移 schema 1→2，已提交的 v1 夹具保持冻结并成为该迁移的升级探针。紧接着的重跑幂等通过（`alreadyComplete: true`、零写入），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`PB-APPROVAL-RECORD-001`——按类型化 subject 引用的 approvals，按蓝图裁定与 decisions 分表——在 v1.6b 计划中保持 READY。
 
+### 2026-09-19 —— PB-APPROVAL-RECORD-001：approvals 落在各自主题旁
+
+approvals 闭环（蓝图 §24）作为 v1.6b 计划第二项完成：一张 `approvals` 表挂在类型化 subject 引用上——`plan-version`、`work-item` 或 `decision`，逐项校验同属一个项目——携带 `required_role`/`requested_by`/`decided_by` actor 字符串与内联 decision 文本，按蓝图的一行裁定与 decisions 分表，经一次追加的 2→3 迁移落为 schema 版本 3。两个必需词汇事件（`approval/requested`、`approval/decided`）在相邻读取契约下把事件格式升到 3；事务性写入接缝（`requestApproval`、`decideApproval`——每条 approval 恰好决定一次，APPROVED 或 REJECTED，schema 的 CHECK 保证决定性各列随非 PENDING 状态同进退）、把决定性事实收拢成组的最新在前 `readProjectApprovals`、覆盖新族的重放对账与 doctor 奇偶校验（subject 引用、状态、决定者，双向），以及只读的 `/project approvals` 视图。`agent:mini-real-use-lane` 领取，存储 verifier `pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile`（退出码 0；287 项测试、三包 per-file 100% 覆盖），工作项 DONE、doctor 0 问题、重放对账 0 drift、事件重放 DONE。首次运行报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-v16b-owner-decision:v1","workItemId":"wi:mini-dsh:PB-APPROVAL-RECORD-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PB-APPROVAL-RECORD-001:AC-PB-APPROVAL-RECORD-001","command":"pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+运行之后，owner 的 §33 进入批准经 shipped 接缝成为该域第一批行：挂在 v1.6b plan 版本（`plv:mini-dsh-v16b-owner-decision:v1`，要求 `owner` 角色）上的 approval `ap:mini-dsh:117` 被决定为 APPROVED，即事件 117–118——时间线第一批 format-3 行。持久账本现在把 1/2/3 混合时间线折叠干净（118 事件中 97 条 format-1、19 条 format-2、2 条 format-3；本次运行新增的七条 format-2 行由重建前上一版已构建表面写入，戳记如实反映其写入者），并在首次打开时就地迁移 schema 2→3。当前构建上的紧接着重跑幂等通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。v1.6b 计划前两项全部完成；actors/roles 与 resource 域留给后续增量。
+
 ## 相对门槛的状态
 
 
-经账本完成的工作项：27（15 个黄金计划项由 v1.6a 构建本身完成，加上面十二条）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入；v1.6a 门槛就此关闭。
+经账本完成的工作项：28（15 个黄金计划项由 v1.6a 构建本身完成，加上面十三条）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入；v1.6a 门槛就此关闭。

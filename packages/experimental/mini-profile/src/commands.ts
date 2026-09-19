@@ -10,9 +10,10 @@
  * the replay read seam, folding the project's events and comparing the
  * projection with the materialized rows, `digest` reads the whole-project
  * evidence summary through the ledger's digest read seam, which `export`
- * renders again as one archival markdown block, and `decisions` lists the
+ * renders again as one archival markdown block, `decisions` lists the
  * project's owner decision requests with their options and the decisions
- * that resolved them. The project and plan version
+ * that resolved them, and `approvals` lists the project's approvals over
+ * their typed subjects with the decisions that answered them. The project and plan version
  * resolve through the ledger's plan directory when the command names none. The handler never mutates ledger state, never sends anything to
  * the model, and never executes a verifier command — mutating surfaces stay
  * with their owning writers and later work.
@@ -32,11 +33,13 @@ import {
   listOwnerTodo,
   listPlans,
   planDoctor,
+  readProjectApprovals,
   readProjectDecisions,
   readProjectDigest,
   readProjectReplay,
   readWorkItemHistory,
   readWorkItemReview,
+  type Approval,
   type DecisionRequest,
   type PlanDoctorReport,
   type PlanVersionId,
@@ -67,6 +70,7 @@ type ProjectCommand =
   | { readonly kind: 'digest'; readonly projectId: string | undefined }
   | { readonly kind: 'export'; readonly projectId: string | undefined }
   | { readonly kind: 'decisions'; readonly projectId: string | undefined }
+  | { readonly kind: 'approvals'; readonly projectId: string | undefined }
 
 /* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
@@ -83,6 +87,7 @@ const HELP_TEXT = [
   '/project digest [<project-id>] — read the whole-project evidence digest: plan versions, item completion, replay verdict',
   '/project export [<project-id>] — render the whole evidence record as one archival markdown block',
   '/project decisions [<project-id>] — list owner decision requests with options and the decisions that resolved them',
+  '/project approvals [<project-id>] — list approvals over their typed subjects with the decisions that answered them',
 ].join('\n')
 
 /** The usage hint the command registry shows for /project. */
@@ -95,6 +100,7 @@ const PROJECT_INPUT_HINT = [
   'digest [<project-id>]',
   'export [<project-id>]',
   'decisions [<project-id>]',
+  'approvals [<project-id>]',
 ].join(' | ')
 
 /**
@@ -150,6 +156,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
   if (tokens[0] === 'decisions') {
     return tokens.length <= 2
       ? { kind: 'decisions', projectId: tokens[1] }
+      : undefined
+  }
+  if (tokens[0] === 'approvals') {
+    return tokens.length <= 2
+      ? { kind: 'approvals', projectId: tokens[1] }
       : undefined
   }
   return undefined
@@ -544,6 +555,36 @@ function renderDecisions(projectId: ProjectId, requests: readonly DecisionReques
 }
 
 /**
+ * Render the project's approvals as command output: a header line, then one
+ * entry per approval — newest first — with its typed subject, status, and
+ * the decision that answered it, when one did.
+ * @param projectId - the project whose approvals are listed.
+ * @param approvals - the listed approvals, newest first.
+ * @returns the multi-line command text.
+ */
+function renderApprovals(projectId: ProjectId, approvals: readonly Approval[]): string {
+  if (approvals.length === 0) {
+    return `No approvals in project ${projectId}.`
+  }
+  const lines = [`Project ${projectId} — approvals, ${approvals.length}:`]
+  for (const approval of approvals) {
+    const requestedBy = approval.requestedBy === undefined ? 'unknown' : approval.requestedBy
+    const role = approval.requiredRole === undefined ? '' : ` (requires ${approval.requiredRole})`
+    lines.push(
+      `- ${approval.subjectType} ${approval.subjectId} ${approval.status}${role} `
+        + `— requested by ${requestedBy} at ${new Date(approval.requestedAtMs).toISOString()}`,
+    )
+    const decision = approval.decision
+    if (decision !== undefined) {
+      lines.push(
+        `  decided by ${decision.decidedBy} at ${new Date(decision.decidedAtMs).toISOString()}: ${decision.decisionText}`,
+      )
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
  * Execute one parsed `/project` invocation against the mounted ledger.
  * @param ctx - context whose `projectLedger` service owns the opened database.
  * @param rawInput - exact text after the command name.
@@ -601,6 +642,10 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
       case 'decisions': {
         const projectId = resolveProjectId(listPlans(db), command.projectId)
         return { kind: 'success', text: renderDecisions(projectId, readProjectDecisions(db, projectId)) }
+      }
+      case 'approvals': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        return { kind: 'success', text: renderApprovals(projectId, readProjectApprovals(db, projectId)) }
       }
       /* v8 ignore next 2 -- the parse step returns a closed union */
       default: return assertNever(command, 'project command')
