@@ -14,6 +14,7 @@
 
 import type { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
+import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
 import { replayProjectEvents, type ReplayedProjectProjection } from './project-events.js'
@@ -32,6 +33,8 @@ export interface ProjectReplayEntityCounts {
   readonly workItems: number
   readonly criteria: number
   readonly leases: number
+  readonly decisionRequests: number
+  readonly decisions: number
 }
 
 /** What the fold rebuilt, plus the packet recipes that have no materialized table. */
@@ -99,6 +102,19 @@ interface LeaseStatusRow {
   readonly status: string
 }
 
+/** One `decision_requests` row the audit reads, in select order. */
+interface DecisionRequestStatusRow {
+  readonly id: string
+  readonly status: string
+}
+
+/** One `decisions` row the audit reads, in select order. */
+interface DecisionRow {
+  readonly id: string
+  readonly request_id: string
+  readonly decided_by: string
+}
+
 /**
  * Audit one project's ledger integrity read-only: fold the project's event
  * timeline and compare the rebuilt projection with the materialized tables,
@@ -124,13 +140,22 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
   ).all(projectId) as unknown as CriterionStatusRow[]
   const leaseRows = db.prepare(
     'SELECT l.id, l.status FROM work_leases l JOIN work_items w ON w.id = l.work_item_id '
-      + 'WHERE w.project_id = ? ORDER BY l.id',
+    + 'WHERE w.project_id = ? ORDER BY l.id',
   ).all(projectId) as unknown as LeaseStatusRow[]
+  const decisionRequestRows = db.prepare(
+    'SELECT id, status FROM decision_requests WHERE project_id = ? ORDER BY id',
+  ).all(projectId) as unknown as DecisionRequestStatusRow[]
+  const decisionRows = db.prepare(
+    'SELECT d.id, d.decision_request_id AS request_id, d.decided_by FROM decisions d '
+    + 'JOIN decision_requests r ON r.id = d.decision_request_id WHERE r.project_id = ? ORDER BY d.id',
+  ).all(projectId) as unknown as DecisionRow[]
   const materialized: ProjectReplayEntityCounts = {
     planVersions: versionRows.length,
     workItems: itemRows.length,
     criteria: criterionRows.length,
     leases: leaseRows.length,
+    decisionRequests: decisionRequestRows.length,
+    decisions: decisionRows.length,
   }
   let projection: ReplayedProjectProjection
   try {
@@ -153,6 +178,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
   collectItemDrift(itemRows, projection, drift)
   collectCriterionDrift(criterionRows, projection, replayedCriterionIds, drift)
   collectLeaseDrift(leaseRows, projection, drift)
+  collectDecisionDrift(decisionRequestRows, decisionRows, projection, drift)
   return {
     outcome: 'compared',
     projectId,
@@ -164,6 +190,8 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
       criteria: replayedCriterionIds.size,
       leases: projection.leases.size,
       workPackets: projection.workPackets.size,
+      decisionRequests: projection.decisionRequests.size,
+      decisions: projection.decisions.size,
     },
     materialized,
     drift,
@@ -293,6 +321,60 @@ function collectLeaseDrift(
     }
   }
   pushReplayOnlyDrift(replayedIds, drift, refId => `work lease "${refId}" replays from a work/claimed event but no row is materialized`)
+}
+
+/**
+ * Compare the decision domain, both directions: request existence and
+ * status, then decision existence and author against the request each side
+ * names.
+ */
+function collectDecisionDrift(
+  requestRows: readonly DecisionRequestStatusRow[],
+  decisionRows: readonly DecisionRow[],
+  projection: ReplayedProjectProjection,
+  drift: ProjectReplayDrift[],
+): void {
+  const replayedRequestIds = new Set(projection.decisionRequests.keys())
+  for (const row of requestRows) {
+    const id = brandString<DecisionRequestId>(row.id)
+    const replayed = projection.decisionRequests.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `decision request "${row.id}" is materialized but no decision/requested event replays it`,
+      })
+      continue
+    }
+    replayedRequestIds.delete(id)
+    if (replayed.status !== row.status) {
+      drift.push({
+        refId: row.id,
+        message: `decision request "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedRequestIds, drift, refId => `decision request "${refId}" replays from a decision/requested event but no row is materialized`)
+  const replayedDecisionIds = new Set(projection.decisions.keys())
+  for (const row of decisionRows) {
+    const id = brandString<DecisionId>(row.id)
+    const replayed = projection.decisions.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `decision "${row.id}" is materialized but no decision/recorded event replays it`,
+      })
+      continue
+    }
+    replayedDecisionIds.delete(id)
+    if (replayed.requestId !== row.request_id || replayed.decidedBy !== row.decided_by) {
+      drift.push({
+        refId: row.id,
+        message: `decision "${row.id}" materializes for "${row.request_id}" by ${row.decided_by} `
+          + `but replays for "${replayed.requestId}" by ${replayed.decidedBy}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedDecisionIds, drift, refId => `decision "${refId}" replays from a decision/recorded event but no row is materialized`)
 }
 
 /** Record one drift per replayed entity no materialized row carries. */

@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
@@ -11,6 +12,8 @@ import {
   applyProjectLedgerMigrations,
   openProjectLedgerDatabase,
 } from '../src/index.ts'
+
+const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url))
 
 const roots: string[] = []
 
@@ -40,6 +43,9 @@ function userVersionOf(db: DatabaseSync): number {
 const LEDGER_TABLES = [
   'acceptance_criteria',
   'acceptance_evaluations',
+  'decision_options',
+  'decision_requests',
+  'decisions',
   'phases',
   'plan_compile_diagnostics',
   'plan_imports',
@@ -55,6 +61,7 @@ const LEDGER_TABLES = [
 
 const LEDGER_INDEXES = [
   'idx_accept_eval_criterion',
+  'idx_decision_requests_project',
   'idx_external_blockers_work',
   'idx_lease_expiry',
   'idx_plan_diag_import',
@@ -110,7 +117,7 @@ describe('open and configure', () => {
     expect(rawVersion(path)).toBe(PROJECT_LEDGER_SCHEMA_VERSION)
   })
 
-  it('materializes exactly the v1 Ledger Core tables and indexes', async () => {
+  it('materializes exactly the Ledger Core and decision-domain tables and indexes', async () => {
     const db = await openProjectLedgerDatabase(':memory:')
     expect(tableNames(db)).toEqual(LEDGER_TABLES)
     expect(indexNames(db)).toEqual(LEDGER_INDEXES)
@@ -233,6 +240,41 @@ describe('adjacent migration fixture', () => {
     const integrity = reopened.prepare('PRAGMA integrity_check').get() as { integrity_check: string }
     expect(integrity.integrity_check).toBe('ok')
     reopened.close()
+  })
+
+  it('upgrades a v1 database through the shipped 1→2 step without losing rows', async () => {
+    const path = tmpFile('v1-to-v2.sqlite')
+    // A real v1 database: the shipped 0→1 step's own layout, stamped as v1.
+    const coreStep = PROJECT_LEDGER_MIGRATIONS[0]
+    if (coreStep === undefined) throw new Error('test setup: the registry ships no core step')
+    const raw = new DatabaseSync(path)
+    coreStep.apply(raw)
+    raw.exec('PRAGMA user_version = 1')
+    raw.close()
+
+    const reopened = await openProjectLedgerDatabase(path)
+    expect(userVersionOf(reopened)).toBe(PROJECT_LEDGER_SCHEMA_VERSION)
+    expect(tableNames(reopened)).toEqual(LEDGER_TABLES)
+    expect(indexNames(reopened)).toEqual(LEDGER_INDEXES)
+    reopened.close()
+  })
+
+  it('upgrades the committed v1 fixture databases through the same step', async () => {
+    const fixtureRoot = resolve(REPO_ROOT, 'fixtures/project-ledger')
+    for (const name of ['v1.6a-empty.db', 'v1.6a-populated.db']) {
+      const path = tmpFile(`fixture-${name}`)
+      copyFileSync(join(fixtureRoot, name), path)
+      const db = await openProjectLedgerDatabase(path)
+      try {
+        expect(userVersionOf(db)).toBe(PROJECT_LEDGER_SCHEMA_VERSION)
+        const decisions = db.prepare('SELECT COUNT(*) AS n FROM decision_requests').get() as { n: number }
+        expect(decisions.n).toBe(0)
+        const events = db.prepare('SELECT COUNT(*) AS n FROM project_events').get() as { n: number }
+        expect(events.n).toBe(name === 'v1.6a-populated.db' ? 28 : 0)
+      } finally {
+        db.close()
+      }
+    }
   })
 
   it('rejects a migration registry with a version gap', () => {

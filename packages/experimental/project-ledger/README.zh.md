@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core 的 plan 文档接缝。plan 文档是惰性的：`parsePlanDocument` 解析 YAML，拒绝重复键、锚点、别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用与关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝 fail-closed 重放；`computeWorkReadiness` 重算可领取性；租约接缝为每个工作项仲裁唯一租约；`buildWorkPacket` 准备有界 WorkPacket；todo 视图按 executor kind 划分工作；supersede 与 drift 退役版本、封堵漂移 baseline；`listPlans`、`readWorkItemReview`、`readWorkItemHistory`、`readProjectReplay` 与 `readProjectDigest` 读回 plan、评审、历史、重放对账与全项目证据摘要。本包绝不执行 verifier。
+`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core 的 plan 文档接缝。`parsePlanDocument` 解析 YAML，拒绝重复键、锚点、别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用与关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝 fail-closed 重放；readiness 与租约接缝仲裁可领取性与每项唯一租约；`buildWorkPacket` 准备有界 WorkPacket；todo 视图按 executor 划分工作；supersede 与 drift 退役版本、封堵漂移 baseline；评审、历史、重放、摘要读取返回逐条目事实、奇偶与证据；v1.6b 接缝记录 owner 的决策请求与唯一解除它的那条决策。本包绝不执行 verifier。
 
 ## 目录
 
@@ -118,6 +118,7 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **尚无激活与 supersede**——导入绝不激活版本，且拒绝已属于其他版本或 backlog 的工作项；这些迁移由 supersede 流程负责，指向本项的 `SUPERSEDES` 边在其落地前不进入 readiness。
 - **packet 尚无项目记忆引用**——§17 允许在存在持久记忆能力后加入显式关联的 memory 引用；v1 packet 不记录任何记忆引用，重建因此只读账本行。
 - **todo 视图只是查询**——`/project todo --owner`/`--agent` 斜杠面与 `project_work_*` 工具属于命令接缝；v1.6b 把 executor identity 扩展为 actor/role/assignment（§11）。
+- **decision 写入是库接缝**——`openDecisionRequest` 与 `recordDecision` 暂无斜杠命令或面向模型的工具（`/project decisions` 视图只读）；approvals 与 actor/role 记录是后续 v1.6b 工作，交互式 owner 表面随 approvals 条目到来。
 - **尚无 carry-forward 绑定**——supersede 命名的继任版本只被记录、未被应用：重复声明继承的工作项属于 adoption 流程（§9.3），漂移阻塞的解决与豁免也尚无写入者。
 - **`REVOKED` 是保留行状态**——租约生命周期只写 `ACTIVE`、`RELEASED` 与 `EXPIRED`；Owner 侧吊销尚无写入者，reaper 循环节奏（`reaperIntervalMs`）属于有界 `reapExpiredLeases` 批次的调用方。
 - **英文诊断**——问题消息仅英文；它们是编译器输入，不是 UI 文案。

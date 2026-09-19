@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write docs/mini/real-use-log.md
-real-use-log.md: 17ba5d355263aee79ba840e4e20db823302c7966
-real-use-log.zh.md: 761fc74e963872e106cda4a087788a54f7c650e0
+real-use-log.md: 07bcc2e8e50ba0a4e700ac36f4c2dbfc8e527da9
+real-use-log.zh.md: 4ef6496b86e385cefde1da73ff3d9a923434b0f6

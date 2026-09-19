@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 ## 概述
 
-当 `mini` profile 需要以唯一受支持的启动形态挂载 v1.6a Project Ledger 能力时，使用本 bundle。它在 `dsh-base` 之上叠加三个插入：`mini-project-ledger` 插件经 SQLite store 的 fail-closed 打开账本数据库、以 `ctx.projectLedger` 暴露；`mini-project-commands` 插件注册只读的 `/project` 命令（todo 视图 §11、plan doctor F05、item 审阅与历史、重放对账、证据摘要与导出）；`mini-project-work` 插件注册认领工作、交付有界 WorkPacket（§16/§17）的 `project_work_*` 工具。账本路径来自 `DSH_MINI_LEDGER_PATH`（带回退到 dsh home）。本包不新增 bin，也不运行 verifier。
+当 `mini` profile 需要以唯一受支持的启动形态挂载 v1.6a Project Ledger 能力时，使用本 bundle。它在 `dsh-base` 之上叠加三个插入：`mini-project-ledger` 插件经 SQLite store 的 fail-closed 打开账本数据库、以 `ctx.projectLedger` 暴露；`mini-project-commands` 插件注册只读的 `/project` 命令（todo §11、doctor F05、item 审阅/历史、重放对账、摘要/导出、owner 决策）；`mini-project-work` 插件注册认领工作、交付有界 WorkPacket（§16/§17）的 `project_work_*` 工具。账本路径来自 `DSH_MINI_LEDGER_PATH`（带回退到 dsh home）。本包不新增 bin，也不运行 verifier。
 
 ## 目录
 

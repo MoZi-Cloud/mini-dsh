@@ -14,7 +14,9 @@ import type { PlanDirectoryEntry, ProjectId } from '@deepseek-ai/dsh-experimenta
 export class ProjectResolutionError extends Error {}
 
 /**
- * Resolve which project a request addresses.
+ * Resolve which project a request addresses. Implicit resolution needs one
+ * project, not one plan: several plans of the same project name the same
+ * target.
  * @param plans - the ledger's plan directory.
  * @param explicit - the project id the caller named, if any.
  * @returns the project id to act on.
@@ -28,14 +30,15 @@ export function resolveProjectId(plans: readonly PlanDirectoryEntry[], explicit:
     }
     return named.projectId
   }
-  const [only, ...rest] = plans
+  const projectIds = [...new Set(plans.map(plan => plan.projectId))]
+  const [only, ...rest] = projectIds
   if (only === undefined) {
     throw new ProjectResolutionError('This ledger records no plan yet. Import a plan version first.')
   }
   if (rest.length > 0) {
     throw new ProjectResolutionError(
-      'This ledger records more than one project. Name one: ' + plans.map(plan => plan.projectId).join(', ') + '.',
+      'This ledger records more than one project. Name one: ' + projectIds.join(', ') + '.',
     )
   }
-  return only.projectId
+  return only
 }

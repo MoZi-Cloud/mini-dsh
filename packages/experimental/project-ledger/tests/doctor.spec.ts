@@ -11,13 +11,16 @@ import {
   evaluateAcceptanceCriterion,
   changeWorkStatus,
   importPlanVersion,
+  openDecisionRequest,
   parsePlanDocument,
   planDoctor,
+  recordDecision,
   releaseWorkLease,
   validatePlanSchema,
   type AcceptanceCriterionId,
   type CompiledPlan,
   type PlanVersionId,
+  type ProjectId,
   type WorkItemId,
   type WorkLeaseClaim,
 } from '../src/index.js'
@@ -94,8 +97,8 @@ describe('planDoctor', () => {
         versionNo: 1,
         status: 'DRAFT',
         projectId: 'mini-dsh',
-        databaseUserVersion: 1,
-        eventFormatVersion: 1,
+        databaseUserVersion: 2,
+        eventFormatVersion: 2,
         baselineRepoHead: null,
         baselineWorktreeHash: null,
         counts: { phases: 13, workItems: 15, relations: 14, criteria: 16, events: 16 },
@@ -256,9 +259,63 @@ describe('planDoctor', () => {
       const issues = planDoctor(unreadable, GOLDEN_VERSION).issues
       expect(issues).toHaveLength(1)
       expect(issues[0]?.code).toBe('event-timeline-unreadable')
-      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 1')
+      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 2')
     } finally {
       unreadable.close()
+    }
+
+    const decisionDrift = await goldenLedger()
+    try {
+      const resolved = openDecisionRequest(decisionDrift, brandString<ProjectId>('mini-dsh'), {
+        decisionKey: 'resolved', title: 'Resolved', question: 'Q?', blockingLevel: 'BLOCKING',
+        options: [{ optionKey: 'go', label: 'Go' }],
+      }, { nowMs: 40, actorRef: 'doctor/agent' })
+      recordDecision(decisionDrift, resolved.requestId, {
+        decidedBy: 'owner', selectedOptionKey: 'go', decisionText: 'go',
+      }, { nowMs: 41, actorRef: 'doctor/agent' })
+      const open = openDecisionRequest(decisionDrift, brandString<ProjectId>('mini-dsh'), {
+        decisionKey: 'open', title: 'Open', question: 'Q?', blockingLevel: 'ADVISORY',
+      }, { nowMs: 42, actorRef: 'doctor/agent' })
+      decisionDrift.prepare("UPDATE decision_requests SET status = 'OPEN' WHERE id = ?").run(resolved.requestId)
+      decisionDrift.prepare(
+        'INSERT INTO decision_requests '
+        + '(id, project_id, plan_version_id, decision_key, title, question, blocking_level, status, created_at_ms) '
+        + "VALUES ('dr:mini-dsh:hand', 'mini-dsh', NULL, 'hand', 'Hand row', 'Q?', 'ADVISORY', 'OPEN', 43)",
+      ).run()
+      decisionDrift.prepare(
+        'INSERT INTO decisions '
+        + '(id, decision_request_id, decided_by, selected_option_id, decision_text, decided_at_ms) '
+        + "VALUES ('dc:dr:mini-dsh:open:hand', ?, 'owner', NULL, 'decided out of band', 44)",
+      ).run(open.requestId)
+      decisionDrift.prepare("UPDATE decisions SET decided_by = 'impostor' WHERE decision_request_id = ?").run(resolved.requestId)
+      const resolvedDecisionId = (decisionDrift.prepare('SELECT id FROM decisions WHERE decision_request_id = ?')
+        .get(resolved.requestId) as { id: string }).id
+      const issues = planDoctor(decisionDrift, GOLDEN_VERSION, { nowMs: 45 }).issues
+      expect(issues).toEqual([
+        {
+          code: 'projection-drift',
+          refId: 'dr:mini-dsh:hand',
+          message: 'decision request "dr:mini-dsh:hand" has materialized status OPEN but no replayed decision/requested event',
+        },
+        {
+          code: 'projection-drift',
+          refId: resolved.requestId,
+          message: `decision request "${resolved.requestId}" has materialized status OPEN but replays to RESOLVED`,
+        },
+        {
+          code: 'projection-drift',
+          refId: 'dc:dr:mini-dsh:open:hand',
+          message: `decision "dc:dr:mini-dsh:open:hand" is materialized for "${open.requestId}" but no replayed decision/recorded event`,
+        },
+        {
+          code: 'projection-drift',
+          refId: resolvedDecisionId,
+          message: `decision "${resolvedDecisionId}" materializes for "dr:mini-dsh:resolved" by impostor `
+            + 'but replays for "dr:mini-dsh:resolved" by owner',
+        },
+      ])
+    } finally {
+      decisionDrift.close()
     }
 
     const rawCriterion = await goldenLedger()

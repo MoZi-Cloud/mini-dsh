@@ -120,7 +120,17 @@ post-v1.6a 真实使用 lane（`./benchmarks/real-use/run-real-use.sh`）经 SHI
 
 紧接着的重跑幂等通过（`alreadyComplete: true`、零写入）。版本 5 两项条目全部完成；后续真实使用条目需要版本 6 批次。
 
+### 2026-09-19 —— v1.6b 进入：decision 域带着它自己的进入决策落地
+
+§33(c) 经既定 go 门确认（证据简报已从本账本实时渲染 digest、doctor 与 history），本增量随之完成 `PB-DECISION-RECORD-001`、开启提案的 v1.6b 范围——新计划（`mini-dsh-v16b-owner-decision`，自有版本链，与仍 ACTIVE 的 post-v1.6a v5 并存）的第一个条目。decision 记录闭环：schema 版本 2（`decision_requests` / `decision_options` / `decisions`，经一次追加的 1→2 迁移）、两个必需词汇事件（`decision/requested`、`decision/recorded`）把事件格式升到 2 并采用相邻读取——更旧戳记的行可解码、只有更新戳记才拒绝，本账本 97 条 format-1 事件因此跨升版保持可读——事务性写入接缝（`openDecisionRequest`、`recordDecision`）、最新在前的 `readProjectDecisions`、覆盖新族的重放对账与 doctor 奇偶校验、只读的 `/project decisions` 视图。lane 还在持久账本上抓到一个真实解析缺陷：同项目出现第二个 plan 后隐式 `/project` 解析失败（"more than one project: mini-dsh, mini-dsh"）；解析器现在把 plan id 去重为 project id，只在跨不同项目时才保持歧义。`agent:mini-real-use-lane` 领取，存储 verifier `pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile`（退出码 0；269 项测试、三包 per-file 100% 覆盖），工作项 DONE、doctor 0 问题、重放对账 0 drift、事件重放 DONE。首次运行报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-v16b-owner-decision:v1","workItemId":"wi:mini-dsh:PB-DECISION-RECORD-001","stableKey":"PB-DECISION-RECORD-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PB-DECISION-RECORD-001:AC-PB-DECISION-RECORD-001","command":"pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+运行之后，owner 的 §33 进入确认本身成为该域第一条记录的决策：请求 `dr:mini-dsh:v1.6b-entry`（选项 `enter-v1.6b`（推荐）/ `keep-accumulating` / `more-evidence`，挂在 v1.6b plan 版本上）由 `owner` 选中 `enter-v1.6b` 解除，即事件 109——打开这个域的那道门，就是这个域的第一行。项目时间线现有 109 事件：97 条 format-1 在 format-2 编解码器下正常解码，旁边是 12 条 format-2；持久账本在首次打开时就地迁移 schema 1→2，已提交的 v1 夹具保持冻结并成为该迁移的升级探针。紧接着的重跑幂等通过（`alreadyComplete: true`、零写入），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`PB-APPROVAL-RECORD-001`——按类型化 subject 引用的 approvals，按蓝图裁定与 decisions 分表——在 v1.6b 计划中保持 READY。
+
 ## 相对门槛的状态
 
 
-经账本完成的工作项：26（15 个黄金计划项由 v1.6a 构建本身完成，加上面十一条）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0），BOOT 验收套件保持绿色。用户价值确认：待定——进入决策按 §33 归 owner。
+经账本完成的工作项：27（15 个黄金计划项由 v1.6a 构建本身完成，加上面十二条）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入；v1.6a 门槛就此关闭。

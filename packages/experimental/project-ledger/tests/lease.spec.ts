@@ -190,7 +190,7 @@ function materializedProjection(db: DatabaseSync): Record<string, unknown> {
     })
   }
   // No test in this file prepares work packets; the rebuild seam owns packet parity.
-  return { planVersions, workItems, leases, workPackets: new Map() }
+  return { planVersions, workItems, leases, workPackets: new Map(), decisionRequests: new Map(), decisions: new Map() }
 }
 
 describe('resolveLeaseConfig', () => {

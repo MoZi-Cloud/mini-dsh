@@ -10,12 +10,13 @@
  * the executor-separated Owner/Agent todo views, the immutable plan-version
  * the immutable plan-version supersede and baseline-drift writers, the
  * read-only plan doctor, the plan directory listing, the work-item review
- * read, the work-item evaluation history, the project replay audit, and the
- * owner evidence digest. Compiling,
+ * read, the work-item evaluation history, the project replay audit, the
+ * owner evidence digest, and the v1.6b decision domain. Compiling,
  * importing, replaying, reading readiness, recording evaluations, claiming,
  * reaping, building packets, listing todos, superseding, recording drift,
  * doctoring, listing plans, reading item reviews and histories, auditing
- * replay parity, and digesting owner evidence never execute verifier commands.
+ * replay parity, digesting owner evidence, and recording decisions never
+ * execute verifier commands.
  */
 export { PLAN_SCHEMA_VERSION, type PlanAcceptanceCriterion, type PlanAcceptanceKind, type PlanBaseline, type PlanDocumentV1, type PlanExecutorKind, type PlanPhase, type PlanPhaseStatus, type PlanPlan, type PlanProject, type PlanRelation, type PlanRelationKind, type PlanVerifier, type PlanVerifierAssertion, type PlanVerifierCommand, type PlanVerifierOwnerConfirmation, type PlanWorkItem, type PlanWorkItemStatus, type PlanWorkItemType } from './plan-document.js'
 export { PlanDocumentError, type PlanIssue, type PlanIssueCode, positionAtOffset, type PlanSourcePosition } from './plan-issues.js'
@@ -25,7 +26,7 @@ export { validatePlanSemantics } from './plan-semantics.js'
 export { ORDERING_RELATION_KINDS, findChainCycles, findOrderingCycles } from './relation-graph.js'
 export { PLAN_COMPILER_VERSION, planVersionRowId, compilePlan, type AcceptanceCriterionId, type CompiledCriterion, type CompiledIrHash, type CompiledPlan, type CompiledRelation, type CompiledWorkItem, type CompilePlanOptions, type PhaseId, type PlanId, type PlanVersionId, type ProjectId, type SourceDocumentHash, type VerifierSpecId, type WorkItemId, type WorkItemRelationId } from './plan-compile.js'
 export { PLAN_PARSER_VERSION, DEFAULT_IMPORT_ACTOR_REF, PlanImportError, importPlanVersion, type ImportPlanVersionOptions, type PlanImportErrorCode, type PlanImportResult } from './plan-import.js'
-export { ACCEPTANCE_CRITERION_STATUSES, ACCEPTANCE_EVALUATION_RESULTS, PROJECT_EVENT_FORMAT_VERSION, PROJECT_EVENT_TYPES, SUPERSEDE_POLICY, WORK_PACKET_REFERENCE_KINDS, ProjectEventError, appendProjectEvent, decodeWorkPacketPreparedPayload, nextProjectEventSequence, readProjectEvents, readWorkPacketEvent, replayProjectEvents, type AcceptanceCriterionStatus, type AcceptanceEvaluationResult, type AppendProjectEventOptions, type ProjectEventEnvelope, type ProjectEventErrorCode, type ProjectEventType, type ReplayedCriterion, type ReplayedLease, type ReplayedLeaseStatus, type ReplayedPlanVersion, type ReplayedProjectProjection, type ReplayedWorkItem, type ReplayedWorkPacket, type ReplayedWorkPacketReference, type WorkPacketReferenceKind } from './project-events.js'
+export { ACCEPTANCE_CRITERION_STATUSES, ACCEPTANCE_EVALUATION_RESULTS, DECISION_BLOCKING_LEVELS, PROJECT_EVENT_FORMAT_VERSION, PROJECT_EVENT_TYPES, SUPERSEDE_POLICY, WORK_PACKET_REFERENCE_KINDS, ProjectEventError, appendProjectEvent, decodeWorkPacketPreparedPayload, nextProjectEventSequence, readProjectEvents, readWorkPacketEvent, replayProjectEvents, type AcceptanceCriterionStatus, type AcceptanceEvaluationResult, type AppendProjectEventOptions, type DecisionBlockingLevel, type ProjectEventEnvelope, type ProjectEventErrorCode, type ProjectEventType, type ReplayedCriterion, type ReplayedDecision, type ReplayedDecisionRequest, type ReplayedLease, type ReplayedLeaseStatus, type ReplayedPlanVersion, type ReplayedProjectProjection, type ReplayedWorkItem, type ReplayedWorkPacket, type ReplayedWorkPacketReference, type WorkPacketReferenceKind } from './project-events.js'
 export { WORK_READINESS_BLOCKER_KINDS, WorkReadinessError, computeWorkReadiness, detectWorkGraphCycles, type ComputeWorkReadinessOptions, type WorkGraphCycles, type WorkReadiness, type WorkReadinessBlockerKind, type WorkReadinessErrorCode, type WorkReadinessReason } from './work-readiness.js'
 export { DEFAULT_STATUS_ACTOR_REF, WORK_STATUS_TRANSITIONS, WorkStatusError, changeWorkStatus, type ChangeWorkStatusOptions, type WorkStatusChange, type WorkStatusErrorCode } from './work-status.js'
 export { DEFAULT_EVALUATION_ACTOR_REF, AcceptanceEvaluationError, evaluateAcceptanceCriterion, type AcceptanceEvaluation, type AcceptanceEvaluationErrorCode, type AcceptanceEvaluationId, type EvaluateAcceptanceCriterionOptions } from './acceptance.js'
@@ -48,3 +49,21 @@ export { readWorkItemReview, type LatestEvaluation, type ReviewedCriterion, type
 export { readProjectReplay, type ProjectReplayCompared, type ProjectReplayDrift, type ProjectReplayEntityCounts, type ProjectReplayReport, type ProjectReplayUndecodable, type ReplayedEntityCounts } from './project-replay.js'
 export { readProjectDigest, type DigestItem, type DigestPlan, type DigestPlanVersion, type ProjectDigest } from './project-digest.js'
 export { readWorkItemHistory, type HistoryEvaluation, type WorkItemHistory } from './work-item-history.js'
+export {
+  DEFAULT_DECISION_ACTOR_REF,
+  DecisionError,
+  openDecisionRequest,
+  readProjectDecisions,
+  recordDecision,
+  type DecisionErrorCode,
+  type DecisionId,
+  type DecisionOption,
+  type DecisionOptionInput,
+  type DecisionRequest,
+  type DecisionRequestId,
+  type DecisionRequestStatus,
+  type DecisionWriteOptions,
+  type OpenDecisionRequestInput,
+  type RecordDecisionInput,
+  type RecordedDecision,
+} from './decisions.js'

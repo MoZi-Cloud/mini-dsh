@@ -5,7 +5,8 @@
  * criterion carries its verifier, the work graph is acyclic, relations stay
  * inside one project, no lease row still records ACTIVE past its own expiry,
  * the event timeline is readable by this codec, and the replayed projection
- * agrees with the materialized tables. The doctor never
+ * agrees with the materialized tables (work items, criteria, leases, and
+ * the decision domain). The doctor never
  * mutates and never executes a verifier command; it reports every
  * independent issue it finds, so a caller sees the whole picture in one
  * pass. The database and event format versions ride along as report facts
@@ -17,6 +18,7 @@
 
 import type { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
+import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
 import { PROJECT_EVENT_FORMAT_VERSION, replayProjectEvents, type ReplayedProjectProjection } from './project-events.js'
@@ -346,6 +348,50 @@ function collectProjectionDrift(
         code: 'projection-drift',
         refId: row.id,
         message: `work lease "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  const requestRows = db.prepare(
+    'SELECT id, status FROM decision_requests WHERE project_id = ? ORDER BY id',
+  ).all(projectId) as unknown as { id: string; status: string }[]
+  for (const row of requestRows) {
+    const replayed = projection.decisionRequests.get(brandString<DecisionRequestId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `decision request "${row.id}" has materialized status ${row.status} but no replayed decision/requested event`,
+      })
+      continue
+    }
+    if (replayed.status !== row.status) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `decision request "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  const decisionRows = db.prepare(
+    'SELECT d.id, d.decision_request_id AS request_id, d.decided_by FROM decisions d '
+    + 'JOIN decision_requests r ON r.id = d.decision_request_id WHERE r.project_id = ? ORDER BY d.id',
+  ).all(projectId) as unknown as { id: string; request_id: string; decided_by: string }[]
+  for (const row of decisionRows) {
+    const replayed = projection.decisions.get(brandString<DecisionId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `decision "${row.id}" is materialized for "${row.request_id}" but no replayed decision/recorded event`,
+      })
+      continue
+    }
+    if (replayed.requestId !== row.request_id || replayed.decidedBy !== row.decided_by) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `decision "${row.id}" materializes for "${row.request_id}" by ${row.decided_by} `
+          + `but replays for "${replayed.requestId}" by ${replayed.decidedBy}`,
       })
     }
   }

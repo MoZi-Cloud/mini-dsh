@@ -8,9 +8,11 @@
  * each evaluation's observed exit code and output-tail excerpt — through the
  * ledger's review read seam, `replay` audits ledger integrity through
  * the replay read seam, folding the project's events and comparing the
- * projection with the materialized rows, and `digest` reads the whole-project
+ * projection with the materialized rows, `digest` reads the whole-project
  * evidence summary through the ledger's digest read seam, which `export`
- * renders again as one archival markdown block. The project and plan version
+ * renders again as one archival markdown block, and `decisions` lists the
+ * project's owner decision requests with their options and the decisions
+ * that resolved them. The project and plan version
  * resolve through the ledger's plan directory when the command names none. The handler never mutates ledger state, never sends anything to
  * the model, and never executes a verifier command — mutating surfaces stay
  * with their owning writers and later work.
@@ -30,13 +32,16 @@ import {
   listOwnerTodo,
   listPlans,
   planDoctor,
+  readProjectDecisions,
   readProjectDigest,
   readProjectReplay,
   readWorkItemHistory,
   readWorkItemReview,
+  type DecisionRequest,
   type PlanDoctorReport,
   type PlanVersionId,
   type ProjectDigest,
+  type ProjectId,
   type ProjectReplayReport,
   type ReviewedCriterion,
   type WorkItemHistory,
@@ -61,6 +66,7 @@ type ProjectCommand =
   | { readonly kind: 'replay'; readonly projectId: string | undefined }
   | { readonly kind: 'digest'; readonly projectId: string | undefined }
   | { readonly kind: 'export'; readonly projectId: string | undefined }
+  | { readonly kind: 'decisions'; readonly projectId: string | undefined }
 
 /* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
@@ -76,6 +82,7 @@ const HELP_TEXT = [
   '/project replay [<project-id>] — replay the project\'s events and compare the projection with materialized rows',
   '/project digest [<project-id>] — read the whole-project evidence digest: plan versions, item completion, replay verdict',
   '/project export [<project-id>] — render the whole evidence record as one archival markdown block',
+  '/project decisions [<project-id>] — list owner decision requests with options and the decisions that resolved them',
 ].join('\n')
 
 /** The usage hint the command registry shows for /project. */
@@ -87,6 +94,7 @@ const PROJECT_INPUT_HINT = [
   'replay [<project-id>]',
   'digest [<project-id>]',
   'export [<project-id>]',
+  'decisions [<project-id>]',
 ].join(' | ')
 
 /**
@@ -137,6 +145,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
   if (tokens[0] === 'export') {
     return tokens.length <= 2
       ? { kind: 'export', projectId: tokens[1] }
+      : undefined
+  }
+  if (tokens[0] === 'decisions') {
+    return tokens.length <= 2
+      ? { kind: 'decisions', projectId: tokens[1] }
       : undefined
   }
   return undefined
@@ -498,6 +511,39 @@ function stripReplayAuditLabel(line: string): string {
 }
 
 /**
+ * Render the project's decision requests as command output: a header line,
+ * then one entry per request — newest first — with its blocking level,
+ * status, options, and the decision that resolved it, when one did.
+ * @param projectId - the project whose requests are listed.
+ * @param requests - the listed requests, newest first.
+ * @returns the multi-line command text.
+ */
+function renderDecisions(projectId: ProjectId, requests: readonly DecisionRequest[]): string {
+  if (requests.length === 0) {
+    return `No decision requests in project ${projectId}.`
+  }
+  const lines = [`Project ${projectId} — decision requests, ${requests.length}:`]
+  for (const request of requests) {
+    lines.push(`- ${request.decisionKey} (${request.blockingLevel}) ${request.status} — ${request.title}`)
+    if (request.options.length > 0) {
+      const options = request.options
+        .map(option => `${option.optionKey} (${option.label}${option.recommended ? ', recommended' : ''})`)
+        .join(', ')
+      lines.push(`  options: ${options}`)
+    }
+    const decision = request.decision
+    if (decision !== undefined) {
+      const selected = decision.selectedOptionKey === undefined ? '' : ` ${decision.selectedOptionKey} —`
+      lines.push(
+        `  decided by ${decision.decidedBy} at ${new Date(decision.decidedAtMs).toISOString()}:${selected} `
+          + `${decision.decisionText}${decision.rationale === undefined ? '' : ` (rationale: ${decision.rationale})`}`,
+      )
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
  * Execute one parsed `/project` invocation against the mounted ledger.
  * @param ctx - context whose `projectLedger` service owns the opened database.
  * @param rawInput - exact text after the command name.
@@ -551,6 +597,10 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
       case 'export': {
         const projectId = resolveProjectId(listPlans(db), command.projectId)
         return { kind: 'success', text: renderEvidenceExport(readProjectDigest(db, projectId)) }
+      }
+      case 'decisions': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        return { kind: 'success', text: renderDecisions(projectId, readProjectDecisions(db, projectId)) }
       }
       /* v8 ignore next 2 -- the parse step returns a closed union */
       default: return assertNever(command, 'project command')

@@ -10,8 +10,10 @@ import {
   compilePlan,
   evaluateAcceptanceCriterion,
   importPlanVersion,
+  openDecisionRequest,
   parsePlanDocument,
   readProjectReplay,
+  recordDecision,
   releaseWorkLease,
   validatePlanSchema,
   type AcceptanceCriterionId,
@@ -88,8 +90,8 @@ describe('readProjectReplay', () => {
       projectId: PROJECT,
       eventCount: 5,
       lastSequenceNo: 5,
-      replayed: { planVersions: 1, workItems: 1, criteria: 1, leases: 1, workPackets: 0 },
-      materialized: { planVersions: 1, workItems: 1, criteria: 1, leases: 1 },
+      replayed: { planVersions: 1, workItems: 1, criteria: 1, leases: 1, workPackets: 0, decisionRequests: 0, decisions: 0 },
+      materialized: { planVersions: 1, workItems: 1, criteria: 1, leases: 1, decisionRequests: 0, decisions: 0 },
       drift: [],
     })
   })
@@ -162,8 +164,11 @@ describe('readProjectReplay', () => {
     const report = readProjectReplay(db, PROJECT)
     expect(report.outcome).toBe('compared')
     if (report.outcome !== 'compared') return
-    expect(report.replayed).toEqual({ planVersions: 2, workItems: 2, criteria: 2, leases: 1, workPackets: 0 })
-    expect(report.materialized).toEqual({ planVersions: 1, workItems: 1, criteria: 1, leases: 0 })
+    expect(report.replayed).toEqual({
+      planVersions: 2, workItems: 2, criteria: 2, leases: 1,
+      workPackets: 0, decisionRequests: 0, decisions: 0,
+    })
+    expect(report.materialized).toEqual({ planVersions: 1, workItems: 1, criteria: 1, leases: 0, decisionRequests: 0, decisions: 0 })
     expect(report.drift.map(finding => finding.message)).toEqual([
       'plan version "plv:replay-plan:v9" replays from a plan/imported event but no row is materialized',
       'work item "wi:replay-proj:GHOST-ITEM" replays from a work/created event but no row is materialized',
@@ -192,12 +197,75 @@ describe('readProjectReplay', () => {
     ])
   })
 
+  it('flags materialized decision rows no event replays', async () => {
+    const db = await ledgerOf(REPLAY_PLAN_TEXT)
+    db.prepare(
+      'INSERT INTO decision_requests '
+      + '(id, project_id, plan_version_id, decision_key, title, question, blocking_level, status, created_at_ms) '
+      + "VALUES ('dr:replay-proj:hand', 'replay-proj', NULL, 'hand', 'Hand row', 'Q?', 'ADVISORY', 'OPEN', 1)",
+    ).run()
+    db.prepare(
+      'INSERT INTO decision_requests '
+      + '(id, project_id, plan_version_id, decision_key, title, question, blocking_level, status, created_at_ms) '
+      + "VALUES ('dr:replay-proj:with-decision', 'replay-proj', NULL, 'with-decision', 'Carries one', 'Q?', 'ADVISORY', 'OPEN', 2)",
+    ).run()
+    db.prepare(
+      'INSERT INTO decisions '
+      + '(id, decision_request_id, decided_by, selected_option_id, decision_text, decided_at_ms) '
+      + "VALUES ('dc:replay-proj:with-decision:1', 'dr:replay-proj:with-decision', 'owner', NULL, 'decided out of band', 3)",
+    ).run()
+    const report = readProjectReplay(db, PROJECT)
+    expect(report.outcome).toBe('compared')
+    if (report.outcome !== 'compared') return
+    expect(report.drift.map(finding => finding.message)).toEqual([
+      'decision request "dr:replay-proj:hand" is materialized but no decision/requested event replays it',
+      'decision request "dr:replay-proj:with-decision" is materialized but no decision/requested event replays it',
+      'decision "dc:replay-proj:with-decision:1" is materialized but no decision/recorded event replays it',
+    ])
+  })
+
+  it('flags replayed decision events no row materializes, and disagreeing decision facts', async () => {
+    const db = await ledgerOf(REPLAY_PLAN_TEXT)
+    const resolved = openDecisionRequest(db, PROJECT, {
+      decisionKey: 'a', title: 'A', question: 'Q?', blockingLevel: 'BLOCKING',
+      options: [{ optionKey: 'go', label: 'Go' }],
+    }, { nowMs: 10, actorRef: 'spec-owner' })
+    recordDecision(db, resolved.requestId, { decidedBy: 'owner', selectedOptionKey: 'go', decisionText: 'go' }, { nowMs: 11, actorRef: 'spec-owner' })
+    const vanished = openDecisionRequest(db, PROJECT, {
+      decisionKey: 'b', title: 'B', question: 'Q?', blockingLevel: 'ADVISORY',
+    }, { nowMs: 12, actorRef: 'spec-owner' })
+    const eventful = openDecisionRequest(db, PROJECT, {
+      decisionKey: 'c', title: 'C', question: 'Q?', blockingLevel: 'ADVISORY',
+    }, { nowMs: 13, actorRef: 'spec-owner' })
+    db.prepare('DELETE FROM decision_requests WHERE id = ?').run(vanished.requestId)
+    appendProjectEvent(db, PROJECT, 'decision/recorded', {
+      requestId: eventful.requestId,
+      decisionId: 'dc:replay-proj:c-only-event',
+      decidedBy: 'owner',
+      decisionText: 'recorded in the timeline only',
+      resolvedAtMs: 14,
+    }, { entityType: 'decision_request', entityId: eventful.requestId, nowMs: 14, actorRef: 'spec-owner' })
+    db.prepare("UPDATE decisions SET decided_by = 'impostor' WHERE decision_request_id = ?").run(resolved.requestId)
+    const resolvedDecisionId = (db.prepare('SELECT id FROM decisions WHERE decision_request_id = ?')
+      .get(resolved.requestId) as { id: string }).id
+
+    const report = readProjectReplay(db, PROJECT)
+    expect(report.outcome).toBe('compared')
+    if (report.outcome !== 'compared') return
+    expect(report.drift.map(finding => finding.message)).toEqual([
+      'decision request "dr:replay-proj:c" has materialized status OPEN but replays to RESOLVED',
+      `decision request "${vanished.requestId}" replays from a decision/requested event but no row is materialized`,
+      `decision "${resolvedDecisionId}" materializes for "dr:replay-proj:a" by impostor but replays for "dr:replay-proj:a" by owner`,
+      'decision "dc:replay-proj:c-only-event" replays from a decision/recorded event but no row is materialized',
+    ])
+  })
+
   it('reports an undecodable timeline without comparing parity', async () => {
     const db = await ledgerOf(REPLAY_PLAN_TEXT)
     db.prepare(
       'INSERT INTO project_events '
         + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-        + "VALUES (?, 99, 2, 'plan/imported', 0, '{}', 1)",
+        + "VALUES (?, 99, 3, 'plan/imported', 0, '{}', 1)",
     ).run(PROJECT)
     const report = readProjectReplay(db, PROJECT)
     expect(report).toMatchObject({
@@ -205,10 +273,10 @@ describe('readProjectReplay', () => {
       projectId: PROJECT,
       eventCount: 3,
       lastSequenceNo: 99,
-      materialized: { planVersions: 1, workItems: 1, criteria: 1, leases: 0 },
+      materialized: { planVersions: 1, workItems: 1, criteria: 1, leases: 0, decisionRequests: 0, decisions: 0 },
     })
     expect(report.outcome).toBe('undecodable')
     if (report.outcome !== 'undecodable') return
-    expect(report.timelineError).toMatch(/carries event format 2; this build reads format 1/u)
+    expect(report.timelineError).toMatch(/carries event format 3; this build reads up to format 2/u)
   })
 })

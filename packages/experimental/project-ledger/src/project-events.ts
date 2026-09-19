@@ -1,19 +1,22 @@
 /**
  * Versioned append-only project events (v1.6a F13, attachment §11/§15/§16):
- * the envelope every ledger writer stamps, the v1 vocabulary, and the
+ * the envelope every ledger writer stamps, the vocabulary, and the
  * fail-closed read/replay codec. {@link appendProjectEvent} allocates the
  * `project_events` sequence and is called inside the writer's own
  * `BEGIN IMMEDIATE` transaction, per the §15 concept order. Reading fails
  * closed on rows this codec cannot interpret: an unknown event type recorded
- * as required, or any foreign `event_format_version`. Unknown ignorable rows
- * are observational extensions from a newer writer — the reader preserves
- * them, and replay changes no state for them; they must never carry
- * projection semantics (§16).
+ * as required, or an `event_format_version` newer than this build. A row
+ * stamped with an older format decodes, because the vocabulary is cumulative
+ * and this build knows every type an older writer could record. Unknown
+ * ignorable rows are observational extensions from a newer writer — the
+ * reader preserves them, and replay changes no state for them; they must
+ * never carry projection semantics (§16).
  *
  * @module @deepseek-ai/dsh-experimental-project-ledger/project-events
  */
 
 import { DatabaseSync } from 'node:sqlite'
+import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { WorkExternalBlockerId } from './versioning.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanId, PlanVersionId, ProjectId, SourceDocumentHash, WorkItemId } from './plan-compile.js'
@@ -89,20 +92,36 @@ const PACKET_REFERENCE_KIND_SET: ReadonlySet<string> = new Set<string>(WORK_PACK
 export const SUPERSEDE_POLICY = 'freeze-new-claims-and-review-active'
 
 /**
+ * The blocking levels a `decision/requested` payload may carry. Owned here
+ * (not in the decisions module) because the payload codec validates it on
+ * read.
+ */
+export const DECISION_BLOCKING_LEVELS = ['BLOCKING', 'ADVISORY'] as const
+
+/** A blocking level of one decision request. */
+export type DecisionBlockingLevel = (typeof DECISION_BLOCKING_LEVELS)[number]
+
+const DECISION_BLOCKING_LEVEL_SET: ReadonlySet<string> = new Set<string>(DECISION_BLOCKING_LEVELS)
+
+/**
  * The event envelope version recorded in the `event_format_version` column of
  * every `project_events` row — the single home of this constant. Adding a
  * required vocabulary entry bumps it together with the codec; purely
- * observational events must not.
+ * observational events must not. Reads stay adjacent: a row stamped with an
+ * older format decodes when this build knows every type the row can carry
+ * (the vocabulary is cumulative), and only a row stamped newer than this
+ * build rejects.
  */
-export const PROJECT_EVENT_FORMAT_VERSION = 1
+export const PROJECT_EVENT_FORMAT_VERSION = 2
 
 /**
- * The §16 v1 vocabulary. Every listed type is required: rows carry
+ * The event vocabulary. Every listed type is required: rows carry
  * `ignorable = 0`, replay knows their projection effect (this build applies
  * `plan/imported`, `work/created`, `work/status-changed`, `work/blocked`,
  * `work/unblocked`, `work/claimed`, `work/lease-heartbeat`,
- * `work/lease-expired`, `work/lease-released`, `acceptance/evaluated`, and
- * `project/work-packet-prepared`), and a reader that does not know the type
+ * `work/lease-expired`, `work/lease-released`, `acceptance/evaluated`,
+ * `project/work-packet-prepared`, `decision/requested`, and
+ * `decision/recorded`), and a reader that does not know the type
  * fails closed. `plan/version-superseded` and `baseline/drift-detected` are
  * validated without state change: their writers own lifecycle columns and
  * external blocker rows, which the fold's projection facts do not carry.
@@ -122,6 +141,8 @@ export const PROJECT_EVENT_TYPES = [
   'acceptance/evaluated',
   'project/work-packet-prepared',
   'baseline/drift-detected',
+  'decision/requested',
+  'decision/recorded',
 ] as const
 
 /** A vocabulary type of the v1 event format. */
@@ -313,11 +334,11 @@ export function readProjectEvents(db: DatabaseSync, projectId: ProjectId): Proje
 
 /** Decode one raw row into the envelope, failing closed on unreadable facts. */
 function decodeEventRow(projectId: ProjectId, row: ProjectEventRow): ProjectEventEnvelope {
-  if (row.event_format_version !== PROJECT_EVENT_FORMAT_VERSION) {
+  if (row.event_format_version > PROJECT_EVENT_FORMAT_VERSION) {
     throw new ProjectEventError(
       'event-format-unsupported',
       `project event ${row.sequence_no} of "${projectId}" carries event format ${row.event_format_version}; `
-        + `this build reads format ${PROJECT_EVENT_FORMAT_VERSION}`,
+        + `this build reads up to format ${PROJECT_EVENT_FORMAT_VERSION}`,
     )
   }
   let payload: unknown
@@ -422,6 +443,21 @@ export interface ReplayedWorkPacket {
   readonly serializedBytes: number
 }
 
+/** Decision-request facts the decision events replay. */
+export interface ReplayedDecisionRequest {
+  readonly decisionKey: string
+  /** The option keys the request was opened with; a recorded decision may select one of them. */
+  readonly optionKeys: ReadonlySet<string>
+  /** `RESOLVED` once a `decision/recorded` event answered the request. */
+  readonly status: 'OPEN' | 'RESOLVED'
+}
+
+/** Decision facts the `decision/recorded` event replays. */
+export interface ReplayedDecision {
+  readonly requestId: DecisionRequestId
+  readonly decidedBy: string
+}
+
 /** The projection replaying a project's events rebuilds. */
 export interface ReplayedProjectProjection {
   readonly planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>
@@ -430,6 +466,9 @@ export interface ReplayedProjectProjection {
   readonly leases: ReadonlyMap<WorkLeaseId, ReplayedLease>
   /** Every prepared packet recipe, keyed by packet id. */
   readonly workPackets: ReadonlyMap<WorkPacketId, ReplayedWorkPacket>
+  /** The decision domain, rebuilt from `decision/requested` and `decision/recorded`. */
+  readonly decisionRequests: ReadonlyMap<DecisionRequestId, ReplayedDecisionRequest>
+  readonly decisions: ReadonlyMap<DecisionId, ReplayedDecision>
 }
 
 /**
@@ -448,6 +487,8 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
   const workItems = new Map<WorkItemId, ReplayedWorkItem>()
   const leases = new Map<WorkLeaseId, ReplayedLease>()
   const workPackets = new Map<WorkPacketId, ReplayedWorkPacket>()
+  const decisionRequests = new Map<DecisionRequestId, ReplayedDecisionRequest>()
+  const decisions = new Map<DecisionId, ReplayedDecision>()
   // Validation state for the supersede applier: a version retires once.
   const supersededPlanVersionIds = new Set<PlanVersionId>()
   for (const event of readProjectEvents(db, projectId)) {
@@ -654,11 +695,44 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         requireReplayedWorkItem(workItems, payload.workItemId, event)
         break
       }
+      case 'decision/requested': {
+        const payload = decodeDecisionRequestedPayload(event)
+        if (payload.planVersionId !== undefined) {
+          requireReplayedPlanVersion(planVersions, payload.planVersionId, event)
+        }
+        decisionRequests.set(payload.requestId, {
+          decisionKey: payload.decisionKey,
+          optionKeys: new Set(payload.options.map(option => option.optionKey)),
+          status: 'OPEN',
+        })
+        break
+      }
+      case 'decision/recorded': {
+        const payload = decodeDecisionRecordedPayload(event)
+        const request = requireReplayedDecisionRequest(decisionRequests, payload.requestId, event)
+        if (request.status === 'RESOLVED') {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" resolves decision request `
+              + `"${payload.requestId}" twice in this timeline`,
+          )
+        }
+        if (payload.selectedOptionKey !== undefined && !request.optionKeys.has(payload.selectedOptionKey)) {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "selectedOptionKey" `
+              + `names no option of decision request "${payload.requestId}" (${payload.selectedOptionKey})`,
+          )
+        }
+        decisionRequests.set(payload.requestId, { ...request, status: 'RESOLVED' })
+        decisions.set(payload.decisionId, { requestId: payload.requestId, decidedBy: payload.decidedBy })
+        break
+      }
       default:
         break
     }
   }
-  return { planVersions, workItems, leases, workPackets }
+  return { planVersions, workItems, leases, workPackets, decisionRequests, decisions }
 }
 
 /** Fail closed when a payload names a work item the fold has not replayed. */
@@ -673,6 +747,40 @@ function requireReplayedWorkItem(
       'malformed-event-payload',
       `project event ${event.sequenceNo} of "${event.projectId}" payload field "workItemId" `
         + `names no replayed work item (${workItemId})`,
+    )
+  }
+  return replayed
+}
+
+/** Fail closed when a payload names a plan version the fold has not replayed. */
+function requireReplayedPlanVersion(
+  planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>,
+  planVersionId: PlanVersionId,
+  event: ProjectEventEnvelope,
+): ReplayedPlanVersion {
+  const replayed = planVersions.get(planVersionId)
+  if (replayed === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "planVersionId" `
+        + `names no replayed plan version (${planVersionId})`,
+    )
+  }
+  return replayed
+}
+
+/** Fail closed when a payload names a decision request the fold has not replayed. */
+function requireReplayedDecisionRequest(
+  decisionRequests: ReadonlyMap<DecisionRequestId, ReplayedDecisionRequest>,
+  requestId: DecisionRequestId,
+  event: ProjectEventEnvelope,
+): ReplayedDecisionRequest {
+  const replayed = decisionRequests.get(requestId)
+  if (replayed === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "requestId" `
+        + `names no replayed decision request (${requestId})`,
     )
   }
   return replayed
@@ -804,6 +912,39 @@ interface BaselineDriftDetectedPayload {
   readonly baselineWorktreeHash: string | null
   readonly observedRepoHead: string | null
   readonly observedWorktreeHash: string | null
+}
+
+/** One option entry of a `decision/requested` payload. */
+interface DecisionRequestedOption {
+  readonly optionKey: string
+  readonly label: string
+  readonly description: string | undefined
+  readonly recommended: boolean
+  readonly ordinal: number
+}
+
+/** Payload facts of one `decision/requested` event; the raised stamp is the envelope's `createdAtMs`. */
+interface DecisionRequestedPayload {
+  readonly requestId: DecisionRequestId
+  readonly decisionKey: string
+  readonly title: string
+  readonly question: string
+  readonly context: string | undefined
+  readonly blockingLevel: DecisionBlockingLevel
+  readonly raisedBy: string | undefined
+  readonly planVersionId: PlanVersionId | undefined
+  readonly options: readonly DecisionRequestedOption[]
+}
+
+/** Payload facts of one `decision/recorded` event. */
+interface DecisionRecordedPayload {
+  readonly requestId: DecisionRequestId
+  readonly decisionId: DecisionId
+  readonly decidedBy: string
+  readonly selectedOptionKey: string | undefined
+  readonly decisionText: string
+  readonly rationale: string | undefined
+  readonly resolvedAtMs: number
 }
 
 /** The event payload must be a JSON object for appliers to read fields from. */
@@ -1292,5 +1433,82 @@ function decodeBaselineDriftDetectedPayload(event: ProjectEventEnvelope): Baseli
     baselineWorktreeHash: requiredStringOrNull(fields, event, 'baselineWorktreeHash'),
     observedRepoHead: requiredStringOrNull(fields, event, 'observedRepoHead'),
     observedWorktreeHash: requiredStringOrNull(fields, event, 'observedWorktreeHash'),
+  }
+}
+
+/** Read one required blocking level payload field. */
+function requiredBlockingLevel(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+): DecisionBlockingLevel {
+  const value = requiredString(fields, event, field)
+  if (!DECISION_BLOCKING_LEVEL_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not a decision blocking level: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as DecisionBlockingLevel
+}
+
+/**
+ * Decode the `options` array of one `decision/requested` payload, failing
+ * closed on a non-array value and on entries this codec cannot read.
+ */
+function requiredDecisionOptions(event: ProjectEventEnvelope, fields: Record<string, unknown>): DecisionRequestedOption[] {
+  const value = fields.options
+  if (!Array.isArray(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "options" must be an array`,
+    )
+  }
+  return value.map((entry, index): DecisionRequestedOption => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new ProjectEventError(
+        'malformed-event-payload',
+        `project event ${event.sequenceNo} of "${event.projectId}" payload field "options[${index}]" must be an object`,
+      )
+    }
+    const entryFields = entry as Record<string, unknown>
+    return {
+      optionKey: requiredString(entryFields, event, 'optionKey', `options[${index}].optionKey`),
+      label: requiredString(entryFields, event, 'label', `options[${index}].label`),
+      description: optionalString(entryFields, event, 'description', `options[${index}].description`),
+      recommended: requiredBoolean(entryFields, event, 'recommended', `options[${index}].recommended`),
+      ordinal: requiredNumber(entryFields, event, 'ordinal', `options[${index}].ordinal`),
+    }
+  })
+}
+
+/** Decode one `decision/requested` payload, failing closed on missing or mistyped fields. */
+function decodeDecisionRequestedPayload(event: ProjectEventEnvelope): DecisionRequestedPayload {
+  const fields = payloadFields(event)
+  return {
+    requestId: requiredString(fields, event, 'requestId') as DecisionRequestId,
+    decisionKey: requiredString(fields, event, 'decisionKey'),
+    title: requiredString(fields, event, 'title'),
+    question: requiredString(fields, event, 'question'),
+    context: optionalString(fields, event, 'context'),
+    blockingLevel: requiredBlockingLevel(fields, event, 'blockingLevel'),
+    raisedBy: optionalString(fields, event, 'raisedBy'),
+    planVersionId: optionalString(fields, event, 'planVersionId') as PlanVersionId | undefined,
+    options: requiredDecisionOptions(event, fields),
+  }
+}
+
+/** Decode one `decision/recorded` payload, failing closed on missing or mistyped fields. */
+function decodeDecisionRecordedPayload(event: ProjectEventEnvelope): DecisionRecordedPayload {
+  const fields = payloadFields(event)
+  return {
+    requestId: requiredString(fields, event, 'requestId') as DecisionRequestId,
+    decisionId: requiredString(fields, event, 'decisionId') as DecisionId,
+    decidedBy: requiredString(fields, event, 'decidedBy'),
+    selectedOptionKey: optionalString(fields, event, 'selectedOptionKey'),
+    decisionText: requiredString(fields, event, 'decisionText'),
+    rationale: optionalString(fields, event, 'rationale'),
+    resolvedAtMs: requiredNumber(fields, event, 'resolvedAtMs'),
   }
 }

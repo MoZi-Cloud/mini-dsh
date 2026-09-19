@@ -15,7 +15,11 @@ import {
   claimWorkItem,
   evaluateAcceptanceCriterion,
   importPlanVersion,
+  openDecisionRequest,
+  recordDecision,
   type AcceptanceCriterionId,
+  type DecisionRequestId,
+  type ProjectId,
   type WorkItemId,
 } from '@deepseek-ai/dsh-experimental-project-ledger'
 import { DUAL_PLAN_TEXT, GOLDEN_PLAN_TEXT, SOLO_PLAN_TEXT, TINY_PLAN_TEXT, compilePlanText, seedActivePlan } from './plans.ts'
@@ -63,7 +67,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project')).resolves.toMatchObject({
         kind: 'success',
         text: expect.stringMatching(
-          /todo \[--agent\][\s\S]*doctor[\s\S]*item[\s\S]*history[\s\S]*replay[\s\S]*digest[\s\S]*export/,
+          /todo \[--agent\][\s\S]*doctor[\s\S]*item[\s\S]*history[\s\S]*replay[\s\S]*digest[\s\S]*export[\s\S]*decisions/,
         ) as string,
       })
     } finally {
@@ -86,6 +90,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project replay a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project digest a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project export a b')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project decisions a b')).resolves.toEqual(usage)
     } finally {
       await unmount(mounted)
     }
@@ -102,6 +107,25 @@ describe('/project', () => {
       await expect(run(mounted, '/project replay')).resolves.toEqual(empty)
       await expect(run(mounted, '/project digest')).resolves.toEqual(empty)
       await expect(run(mounted, '/project export')).resolves.toEqual(empty)
+      await expect(run(mounted, '/project decisions')).resolves.toEqual(empty)
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('keeps implicit resolution ambiguous only across distinct projects', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, SOLO_PLAN_TEXT)
+      importPlanVersion(db, compilePlanText(GOLDEN_PLAN_TEXT))
+    })
+    try {
+      const ambiguous = {
+        kind: 'error',
+        text: 'This ledger records more than one project. Name one: mini-dsh, solo-proj.',
+      }
+      await expect(run(mounted, '/project todo')).resolves.toEqual(ambiguous)
+      await expect(run(mounted, '/project digest')).resolves.toEqual(ambiguous)
+      await expect(run(mounted, '/project decisions')).resolves.toEqual(ambiguous)
     } finally {
       await unmount(mounted)
     }
@@ -448,7 +472,7 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 2, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 3, 'plan/imported', 0, '{}', 1)",
       ).run()
       const result = await run(mounted, '/project replay')
       expect(result).toMatchObject({ kind: 'success' })
@@ -657,6 +681,74 @@ describe('/project', () => {
     }
   })
 
+  it('lists decision requests with options and resolving decisions', async () => {
+    const mounted = await mount()
+    try {
+      const db = mounted.ctx.projectLedger.db
+      seedActivePlan(db, SOLO_PLAN_TEXT)
+      await expect(run(mounted, '/project decisions')).resolves.toEqual({
+        kind: 'success',
+        text: 'No decision requests in project solo-proj.',
+      })
+
+      const request = openDecisionRequest(db, brandString<ProjectId>('solo-proj'), {
+        decisionKey: 'entry',
+        title: 'Enter the next stage',
+        question: 'Is the evidence sufficient?',
+        blockingLevel: 'BLOCKING',
+        raisedBy: 'owner',
+        options: [
+          { optionKey: 'enter', label: 'Enter v1.6b', recommended: true },
+          { optionKey: 'wait', label: 'Keep accumulating' },
+        ],
+      }, { nowMs: 62_000, actorRef: 'spec-owner' })
+      openDecisionRequest(db, brandString<ProjectId>('solo-proj'), {
+        decisionKey: 'open-question',
+        title: 'Free-form question',
+        question: 'Anything else?',
+        blockingLevel: 'ADVISORY',
+      }, { nowMs: 63_000, actorRef: 'spec-owner' })
+      recordDecision(db, request.requestId, {
+        decidedBy: 'owner',
+        selectedOptionKey: 'enter',
+        decisionText: 'Go.',
+        rationale: 'evidence',
+      }, { nowMs: 64_000, actorRef: 'spec-owner' })
+
+      const expected = [
+        'Project solo-proj — decision requests, 2:',
+        '- open-question (ADVISORY) OPEN — Free-form question',
+        '- entry (BLOCKING) RESOLVED — Enter the next stage',
+        '  options: enter (Enter v1.6b, recommended), wait (Keep accumulating)',
+        '  decided by owner at 1970-01-01T00:01:04.000Z: enter — Go. (rationale: evidence)',
+      ].join('\n')
+      await expect(run(mounted, '/project decisions')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project decisions solo-proj')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project decisions no-such-project')).resolves.toEqual({
+        kind: 'error',
+        text: 'No plan in this ledger records project "no-such-project".',
+      })
+
+      // A free-text decision names no option and carries no rationale, so its
+      // line renders the decision text alone.
+      recordDecision(db, brandString<DecisionRequestId>('dr:solo-proj:open-question'), {
+        decidedBy: 'owner',
+        decisionText: 'Noted; nothing to choose.',
+      }, { nowMs: 65_000, actorRef: 'spec-owner' })
+      const freeText = [
+        'Project solo-proj — decision requests, 2:',
+        '- open-question (ADVISORY) RESOLVED — Free-form question',
+        '  decided by owner at 1970-01-01T00:01:05.000Z: Noted; nothing to choose.',
+        '- entry (BLOCKING) RESOLVED — Enter the next stage',
+        '  options: enter (Enter v1.6b, recommended), wait (Keep accumulating)',
+        '  decided by owner at 1970-01-01T00:01:04.000Z: enter — Go. (rationale: evidence)',
+      ].join('\n')
+      await expect(run(mounted, '/project decisions')).resolves.toEqual({ kind: 'success', text: freeText })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
   it('digests a versionless plan, drift findings, and an undecodable timeline', async () => {
     const mounted = await mount((db) => {
       seedActivePlan(db, TINY_PLAN_TEXT)
@@ -668,8 +760,12 @@ describe('/project', () => {
         'INSERT INTO plans (id, project_id, name, current_version_id, created_at_ms) '
           + "VALUES ('side-plan', 'tiny-proj', 'Side Plan', NULL, 1)",
       ).run()
-      // The second plans row makes implicit resolution ambiguous; the digest
-      // names the project, the way the resolution seam requires.
+      // Two plans of one project leave the implicit resolution unambiguous:
+      // the resolver deduplicates plan ids into project ids and picks the one.
+      const bare = await run(mounted, '/project digest')
+      expect(bare).toMatchObject({ kind: 'success' })
+      // The digest names the project the way the resolution seam requires when
+      // a second project joins the ledger.
       const first = await run(mounted, '/project digest tiny-proj')
       expect(first).toMatchObject({ kind: 'success' })
       if (first.kind !== 'success' || first.text === undefined) return
@@ -717,13 +813,13 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 2, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 3, 'plan/imported', 0, '{}', 1)",
       ).run()
       const broken = await run(mounted, '/project digest tiny-proj')
       expect(broken).toMatchObject({ kind: 'success' })
       if (broken.kind !== 'success' || broken.text === undefined) return
       expect(broken.text).toContain('Replay audit: the timeline cannot be decoded by this build — ')
-      expect(broken.text).toContain('carries event format 2; this build reads format 1')
+      expect(broken.text).toContain('carries event format 3; this build reads up to format 2')
       expect(broken.text).not.toContain('Replay audit: clean')
 
       // The export's replay section reports the decode failure, not parity.
@@ -731,7 +827,7 @@ describe('/project', () => {
       expect(brokenExport).toMatchObject({ kind: 'success' })
       if (brokenExport.kind !== 'success' || brokenExport.text === undefined) return
       expect(brokenExport.text).toContain('the timeline cannot be decoded by this build — ')
-      expect(brokenExport.text).toContain('carries event format 2; this build reads format 1')
+      expect(brokenExport.text).toContain('carries event format 3; this build reads up to format 2')
       expect(brokenExport.text).not.toContain('clean over')
     } finally {
       await unmount(mounted)

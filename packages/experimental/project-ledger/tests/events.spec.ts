@@ -12,13 +12,17 @@ import {
   appendProjectEvent,
   compilePlan,
   importPlanVersion,
+  openDecisionRequest,
   parsePlanDocument,
   readProjectEvents,
+  recordDecision,
   replayProjectEvents,
   validatePlanSchema,
   type AcceptanceCriterionId,
   type AcceptanceCriterionStatus,
   type CompiledPlan,
+  type DecisionId,
+  type DecisionRequestId,
   type PlanAcceptanceKind,
   type PlanId,
   type PlanVersionId,
@@ -26,6 +30,8 @@ import {
   type ProjectEventEnvelope,
   type ProjectId,
   type ReplayedCriterion,
+  type ReplayedDecision,
+  type ReplayedDecisionRequest,
   type ReplayedLease,
   type ReplayedLeaseStatus,
   type ReplayedPlanVersion,
@@ -173,8 +179,38 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       releasedAtMs: row.released_at_ms ?? undefined,
     })
   }
+  const decisionRequests = new Map<DecisionRequestId, ReplayedDecisionRequest>()
+  const decisions = new Map<DecisionId, ReplayedDecision>()
+  for (const row of db.prepare(
+    'SELECT r.id, r.decision_key, r.status, o.option_key FROM decision_requests r '
+    + 'LEFT JOIN decision_options o ON o.decision_request_id = r.id',
+  ).all() as { id: string; decision_key: string; status: string; option_key: string | null }[]) {
+    const existing = decisionRequests.get(brandString<DecisionRequestId>(row.id))
+    if (existing === undefined) {
+      decisionRequests.set(brandString<DecisionRequestId>(row.id), {
+        decisionKey: row.decision_key,
+        optionKeys: new Set(row.option_key === null ? [] : [row.option_key]),
+        status: row.status as 'OPEN' | 'RESOLVED',
+      })
+    } else if (row.option_key !== null) {
+      decisionRequests.set(brandString<DecisionRequestId>(row.id), {
+        ...existing,
+        optionKeys: new Set([...existing.optionKeys, row.option_key]),
+      })
+    }
+  }
+  for (const row of db.prepare('SELECT id, decision_request_id, decided_by FROM decisions').all() as {
+    id: string
+    decision_request_id: string
+    decided_by: string
+  }[]) {
+    decisions.set(brandString<DecisionId>(row.id), {
+      requestId: brandString<DecisionRequestId>(row.decision_request_id),
+      decidedBy: row.decided_by,
+    })
+  }
   // No test in this file prepares work packets; the rebuild seam owns packet parity.
-  return { planVersions, workItems, leases, workPackets: new Map() }
+  return { planVersions, workItems, leases, workPackets: new Map(), decisionRequests, decisions }
 }
 
 describe('appendProjectEvent', () => {
@@ -281,12 +317,24 @@ describe('readProjectEvents', () => {
     db.close()
   })
 
-  it('fails closed on a foreign event format version', async () => {
+  it('fails closed on an event format version newer than this build', async () => {
     const db = await goldenLedger()
-    insertRawEvent(db, { eventType: 'work/status-changed', ignorable: 0, eventFormatVersion: 2 })
+    insertRawEvent(db, { eventType: 'work/status-changed', ignorable: 0, eventFormatVersion: PROJECT_EVENT_FORMAT_VERSION + 1 })
     const thrown = thrownEventError(() => readProjectEvents(db, PROJECT))
     expect(thrown.code).toBe('event-format-unsupported')
-    expect(thrown.message).toBe('project event 17 of "mini-dsh" carries event format 2; this build reads format 1')
+    expect(thrown.message).toBe(
+      `project event 17 of "mini-dsh" carries event format ${String(PROJECT_EVENT_FORMAT_VERSION + 1)}; `
+      + `this build reads up to format ${String(PROJECT_EVENT_FORMAT_VERSION)}`,
+    )
+    db.close()
+  })
+
+  it('decodes rows stamped with an older adjacent event format', async () => {
+    const db = await goldenLedger()
+    insertRawEvent(db, { eventType: 'work/status-changed', ignorable: 0, eventFormatVersion: 1 })
+    const events = readProjectEvents(db, PROJECT)
+    expect(events).toHaveLength(17)
+    expect(events[16]).toMatchObject({ eventFormatVersion: 1, eventType: 'work/status-changed' })
     db.close()
   })
 
@@ -482,7 +530,168 @@ describe('replayProjectEvents', () => {
       workItems: new Map(),
       leases: new Map(),
       workPackets: new Map(),
+      decisionRequests: new Map(),
+      decisions: new Map(),
     })
+    db.close()
+  })
+
+  it('replays the decision domain to the materialized projection', async () => {
+    const db = await goldenLedger()
+    const request = openDecisionRequest(db, PROJECT, {
+      decisionKey: 'v1.6b-entry',
+      title: 'Enter v1.6b',
+      question: 'Does the ledger carry real value?',
+      context: '§33 evidence briefing',
+      blockingLevel: 'BLOCKING',
+      planVersionId: brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v1'),
+      raisedBy: 'owner',
+      options: [
+        { optionKey: 'enter', label: 'Enter v1.6b', recommended: true },
+        { optionKey: 'wait', label: 'Keep accumulating' },
+      ],
+    }, { nowMs: 20, actorRef: 'tester' })
+    recordDecision(db, request.requestId, {
+      decidedBy: 'owner',
+      selectedOptionKey: 'enter',
+      decisionText: 'Enter v1.6b now.',
+      rationale: '26 items, five versions, zero drift',
+    }, { nowMs: 21, actorRef: 'tester' })
+
+    const replayed = replayProjectEvents(db, PROJECT)
+    expect(replayed).toEqual(materializedProjection(db))
+    expect(replayed.decisionRequests.get(request.requestId)).toEqual({
+      decisionKey: 'v1.6b-entry',
+      optionKeys: new Set(['enter', 'wait']),
+      status: 'RESOLVED',
+    })
+    expect([...replayed.decisions.values()]).toEqual([
+      { requestId: request.requestId, decidedBy: 'owner' },
+    ])
+    db.close()
+  })
+
+  it('fails replay on a decision recorded for an unknown request', async () => {
+    const db = await goldenLedger()
+    const ghost = brandString<DecisionRequestId>('dr:mini-dsh:ghost')
+    appendProjectEvent(db, PROJECT, 'decision/recorded', {
+      requestId: ghost,
+      decisionId: brandString<DecisionId>(`dc:${ghost}:1`),
+      decidedBy: 'owner',
+      decisionText: 'nothing to resolve',
+      resolvedAtMs: 1,
+    }, { entityType: 'decision_request', entityId: ghost, nowMs: 2 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain(`payload field "requestId" names no replayed decision request (${ghost})`)
+    db.close()
+  })
+
+  it('fails replay on a decision selecting an option the request does not carry', async () => {
+    const db = await goldenLedger()
+    const request = openDecisionRequest(db, PROJECT, {
+      decisionKey: 'no-options',
+      title: 'Open-ended',
+      question: 'Free text?',
+      blockingLevel: 'ADVISORY',
+      options: [{ optionKey: 'a', label: 'A' }],
+    }, { nowMs: 20, actorRef: 'tester' })
+    appendProjectEvent(db, PROJECT, 'decision/recorded', {
+      requestId: request.requestId,
+      decisionId: brandString<DecisionId>(`dc:${request.requestId}:1`),
+      decidedBy: 'owner',
+      selectedOptionKey: 'alien',
+      decisionText: 'picked nothing',
+      resolvedAtMs: 1,
+    }, { entityType: 'decision_request', entityId: request.requestId, nowMs: 2 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "selectedOptionKey" names no option of decision request')
+    db.close()
+  })
+
+  it('fails replay on a decision request resolved twice', async () => {
+    const db = await goldenLedger()
+    const request = openDecisionRequest(db, PROJECT, {
+      decisionKey: 'once-only',
+      title: 'Once',
+      question: 'Resolved once?',
+      blockingLevel: 'BLOCKING',
+    }, { nowMs: 20, actorRef: 'tester' })
+    for (const sequence of [1, 2]) {
+      appendProjectEvent(db, PROJECT, 'decision/recorded', {
+        requestId: request.requestId,
+        decisionId: brandString<DecisionId>(`dc:${request.requestId}:${sequence}`),
+        decidedBy: 'owner',
+        decisionText: 'again',
+        resolvedAtMs: sequence,
+      }, { entityType: 'decision_request', entityId: request.requestId, nowMs: 2 + sequence })
+    }
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain(`resolves decision request "${request.requestId}" twice in this timeline`)
+    db.close()
+  })
+
+  it('fails replay on decision payloads with missing, mistyped, or invalid fields', async () => {
+    const db = await goldenLedger()
+    const baseRequested: Record<string, unknown> = {
+      requestId: 'dr:mini-dsh:payload',
+      decisionKey: 'payload',
+      title: 'Payload probe',
+      question: 'Which fields decode?',
+      blockingLevel: 'BLOCKING',
+      options: [{ optionKey: 'a', label: 'A', recommended: false, ordinal: 0 }],
+    }
+    const baseRecorded: Record<string, unknown> = {
+      requestId: 'dr:mini-dsh:payload',
+      decisionId: 'dc:dr:mini-dsh:payload:1',
+      decidedBy: 'owner',
+      decisionText: 'recorded',
+      resolvedAtMs: 5,
+    }
+    const requested = appendProjectEvent(db, PROJECT, 'decision/requested', baseRequested, {
+      entityType: 'decision_request',
+      entityId: 'dr:mini-dsh:payload',
+      nowMs: 2,
+    })
+    const recorded = appendProjectEvent(db, PROJECT, 'decision/recorded', baseRecorded, {
+      entityType: 'decision_request',
+      entityId: 'dr:mini-dsh:payload',
+      nowMs: 3,
+    })
+    const setPayload = (sequenceNo: number, payload: unknown): void => {
+      db.prepare('UPDATE project_events SET payload_json = ? WHERE project_id = ? AND sequence_no = ?')
+        .run(JSON.stringify(payload), PROJECT, sequenceNo)
+    }
+
+    for (const field of ['requestId', 'decisionKey', 'title', 'question', 'blockingLevel', 'options']) {
+      const payload = Object.fromEntries(Object.entries(baseRequested).filter(([key]) => key !== field))
+      setPayload(requested.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(requested.sequenceNo, { ...baseRequested, blockingLevel: 'SUGGESTIVE' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "blockingLevel" is not a decision blocking level: "SUGGESTIVE"')
+    setPayload(requested.sequenceNo, { ...baseRequested, options: 'spice' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "options" must be an array')
+    setPayload(requested.sequenceNo, { ...baseRequested, options: [42] })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "options[0]" must be an object')
+    const firstOption = (baseRequested.options as Record<string, unknown>[])[0] as Record<string, unknown>
+    if (firstOption === undefined) throw new Error('test setup: the base payload carries no option')
+    setPayload(requested.sequenceNo, { ...baseRequested, options: [{ ...firstOption, recommended: 1 }] })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "options[0].recommended" must be a boolean')
+    setPayload(requested.sequenceNo, { ...baseRequested, planVersionId: 'plv:mini-dsh:ghost' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "planVersionId" names no replayed plan version (plv:mini-dsh:ghost)')
+    setPayload(requested.sequenceNo, baseRequested)
+
+    for (const field of ['requestId', 'decisionId', 'decidedBy', 'decisionText', 'resolvedAtMs']) {
+      const payload = Object.fromEntries(Object.entries(baseRecorded).filter(([key]) => key !== field))
+      setPayload(recorded.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(recorded.sequenceNo, baseRecorded)
     db.close()
   })
 })

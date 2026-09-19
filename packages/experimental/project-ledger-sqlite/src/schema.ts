@@ -1,10 +1,11 @@
 /**
  * Physical schema of the project ledger database: the open/configure
  * sequence (owner-only files, pragmas, version stamp/reject), the shipped
- * adjacent migration steps, and the v1 Ledger Core layout — plans, plan
+ * adjacent migration steps, the v1 Ledger Core layout — plans, plan
  * versions, phases, work items, work item relations, external blockers,
  * acceptance criteria, verification specs, acceptance evaluations, project
- * events, plan imports, compile diagnostics, and work leases.
+ * events, plan imports, compile diagnostics, and work leases — and the v1.6b
+ * decision-domain layout (decision requests, options, decisions).
  *
  * The database is a source of truth, not a rebuildable index: a stamped
  * `user_version` newer than this build rejects, upgrades advance one
@@ -71,6 +72,12 @@ export const PROJECT_LEDGER_MIGRATIONS: readonly ProjectLedgerMigration[] = [
     toVersion: 1,
     description: 'initial Ledger Core layout (thirteen tables)',
     apply: createLedgerCoreTables,
+  },
+  {
+    fromVersion: 1,
+    toVersion: 2,
+    description: 'v1.6b decision domain (decision requests, options, decisions)',
+    apply: createDecisionTables,
   },
 ]
 
@@ -428,5 +435,53 @@ function createLedgerCoreTables(db: DatabaseSync): void {
       WHERE status = 'ACTIVE';
     CREATE INDEX IF NOT EXISTS idx_lease_expiry
       ON work_leases(status, expires_at_ms);
+  `)
+}
+
+/** Materialize the v1.6b decision-domain tables and indexes. Idempotent by design. */
+function createDecisionTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS decision_requests (
+      id                TEXT PRIMARY KEY,
+      project_id        TEXT NOT NULL,
+      plan_version_id   TEXT REFERENCES plan_versions(id),
+      decision_key      TEXT NOT NULL,
+      title             TEXT NOT NULL,
+      question          TEXT NOT NULL,
+      context           TEXT,
+      blocking_level    TEXT NOT NULL CHECK(blocking_level IN (
+        'BLOCKING','ADVISORY'
+      )),
+      status            TEXT NOT NULL CHECK(status IN (
+        'OPEN','RESOLVED'
+      )),
+      raised_by         TEXT,
+      created_at_ms     INTEGER NOT NULL,
+      resolved_at_ms    INTEGER,
+      UNIQUE(project_id, decision_key)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_decision_requests_project
+      ON decision_requests(project_id, status, created_at_ms);
+
+    CREATE TABLE IF NOT EXISTS decision_options (
+      id                  TEXT PRIMARY KEY,
+      decision_request_id TEXT NOT NULL REFERENCES decision_requests(id),
+      option_key          TEXT NOT NULL,
+      label               TEXT NOT NULL,
+      description         TEXT,
+      recommended         INTEGER NOT NULL DEFAULT 0 CHECK(recommended IN (0,1)),
+      ordinal             INTEGER NOT NULL,
+      UNIQUE(decision_request_id, option_key)
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS decisions (
+      id                  TEXT PRIMARY KEY,
+      decision_request_id TEXT NOT NULL UNIQUE REFERENCES decision_requests(id),
+      decided_by          TEXT NOT NULL,
+      selected_option_id  TEXT REFERENCES decision_options(id),
+      decision_text       TEXT NOT NULL,
+      rationale           TEXT,
+      decided_at_ms       INTEGER NOT NULL
+    ) STRICT;
   `)
 }

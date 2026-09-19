@@ -1,0 +1,72 @@
+schemaVersion: 1
+project:
+  id: mini-dsh
+  name: mini-DSH
+plan:
+  id: mini-dsh-v16b-owner-decision
+  name: v1.6b Owner Decision Domain
+  version: 1
+phases:
+  - id: DEC1
+    title: Owner decision and approval records
+    ordinal: 0
+    status: ACTIVE
+    description: >
+      The v1.6b owner/decision/resource domain (proposal "v1.6b — Owner /
+      Decision / Resource Domain"), entered through the §33 gate on
+      2026-09-19: decision_requests / decisions first, approvals next. Items
+      land in the order priority names; each carries a stored verifier
+      command the real-use lane executes.
+workItems:
+  - id: PB-DECISION-RECORD-001
+    phaseId: DEC1
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Decision requests and decisions recorded through the ledger
+    description: >
+      The decision recording loop (v1.6 blueprint attachment §22/§23,
+      adapted to the v1.6a ledger): decision_requests with enumerated
+      options and the one decision that resolves each, as ledger schema v2
+      tables, two required vocabulary events (decision/requested,
+      decision/recorded, event format 2 with adjacent reads of format-1
+      timelines), transactional write seams, a newest-first project read,
+      replay-audit and doctor parity over the new family, and the read-only
+      /project decisions view. The owner's own §33 entry confirmation is the
+      first decision the seams record.
+    priority: 10
+    status: READY
+    acceptance:
+      - id: AC-PB-DECISION-RECORD-001
+        kind: TEST
+        description: The project-ledger, project-ledger-sqlite, and mini-profile package suites pass with the decision domain covered.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+  - id: PB-APPROVAL-RECORD-001
+    phaseId: DEC1
+    type: IMPLEMENTATION
+    executorKind: AGENT
+    title: Approvals recorded beside their subjects
+    description: >
+      The approvals loop (v1.6 blueprint attachment §24): approval rows over
+      a typed subject reference, requested and decided by actors, kept
+      separate from decisions per the blueprint's one-line ruling, with the
+      same event/replay/command treatment the decision domain established.
+    priority: 20
+    status: READY
+    acceptance:
+      - id: AC-PB-APPROVAL-RECORD-001
+        kind: TEST
+        description: The project-ledger, project-ledger-sqlite, and mini-profile package suites pass with the approval domain covered.
+        required: true
+        verifier:
+          kind: TEST
+          command: pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile
+          expectedExitCode: 0
+          sandboxRequired: true
+          approvalRequired: false
+relations: []
