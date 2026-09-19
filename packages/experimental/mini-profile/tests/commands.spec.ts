@@ -63,7 +63,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project')).resolves.toMatchObject({
         kind: 'success',
         text: expect.stringMatching(
-          /todo \[--agent\][\s\S]*doctor[\s\S]*item[\s\S]*replay[\s\S]*digest[\s\S]*export/,
+          /todo \[--agent\][\s\S]*doctor[\s\S]*item[\s\S]*history[\s\S]*replay[\s\S]*digest[\s\S]*export/,
         ) as string,
       })
     } finally {
@@ -81,6 +81,8 @@ describe('/project', () => {
       await expect(run(mounted, '/project doctor a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project item')).resolves.toEqual(usage)
       await expect(run(mounted, '/project item a b c')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project history')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project history a b c')).resolves.toEqual(usage)
       await expect(run(mounted, '/project replay a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project digest a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project export a b')).resolves.toEqual(usage)
@@ -96,6 +98,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project todo')).resolves.toEqual(empty)
       await expect(run(mounted, '/project doctor')).resolves.toEqual(empty)
       await expect(run(mounted, '/project item AGENT-FREE')).resolves.toEqual(empty)
+      await expect(run(mounted, '/project history AGENT-FREE')).resolves.toEqual(empty)
       await expect(run(mounted, '/project replay')).resolves.toEqual(empty)
       await expect(run(mounted, '/project digest')).resolves.toEqual(empty)
       await expect(run(mounted, '/project export')).resolves.toEqual(empty)
@@ -492,6 +495,79 @@ describe('/project', () => {
       await expect(run(mounted, '/project digest no-such-project')).resolves.toEqual({
         kind: 'error',
         text: 'No plan in this ledger records project "no-such-project".',
+      })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
+  it('lists one item\'s full evaluation timeline newest-first', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, TINY_PLAN_TEXT)
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:tiny-proj:AGENT-FREE:AC-AGENT-FREE'),
+        'FAIL',
+        { evaluatedBy: 'spec-worker', nowMs: 60_000, observed: { exitCode: 1, outputTail: 'first attempt failed' } },
+      )
+      // A blocked attempt records no observed payload: no exit fact, no excerpt.
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:tiny-proj:AGENT-FREE:AC-AGENT-FREE'),
+        'BLOCKED',
+        { evaluatedBy: 'owner', nowMs: 61_000 },
+      )
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:tiny-proj:AGENT-FREE:AC-AGENT-FREE'),
+        'PASS',
+        { evaluatedBy: 'spec-worker', nowMs: 62_000, observed: { exitCode: 0 } },
+      )
+    })
+    try {
+      const expected = [
+        'Work item wi:tiny-proj:AGENT-FREE "Do the free work" — READY '
+          + '(agent, priority 30, version plv:tiny-plan:v1)',
+        'Evaluation history (3), newest first:',
+        '- ac:wi:tiny-proj:AGENT-FREE:AC-AGENT-FREE (TEST) PASS by spec-worker at 1970-01-01T00:01:02.000Z; exit 0',
+        '- ac:wi:tiny-proj:AGENT-FREE:AC-AGENT-FREE (TEST) BLOCKED by owner at 1970-01-01T00:01:01.000Z',
+        '- ac:wi:tiny-proj:AGENT-FREE:AC-AGENT-FREE (TEST) FAIL by spec-worker at 1970-01-01T00:01:00.000Z; exit 1',
+        '  first attempt failed',
+      ].join('\n')
+      await expect(run(mounted, '/project history AGENT-FREE')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project history wi:tiny-proj:AGENT-FREE')).resolves.toEqual({
+        kind: 'success',
+        text: expected,
+      })
+      // An item nothing evaluated yet reads as an empty timeline.
+      await expect(run(mounted, '/project history OWNER-A')).resolves.toEqual({
+        kind: 'success',
+        text: [
+          'Work item wi:tiny-proj:OWNER-A "Review the first thing" — READY '
+            + '(owner, priority 50, version plv:tiny-plan:v1)',
+          'No evaluations recorded yet.',
+        ].join('\n'),
+      })
+      await expect(run(mounted, '/project history NO-SUCH')).resolves.toEqual({
+        kind: 'error',
+        text: 'No work item "NO-SUCH" in project tiny-proj. Name a stable key or full id.',
+      })
+      // A backlog row has no plan version and nothing evaluated; the history
+      // reads it the same way. The out-of-band insert mirrors the ledger
+      // specs' fixtures.
+      mounted.ctx.projectLedger.db.prepare(
+        'INSERT INTO work_items '
+          + '(id, project_id, plan_version_id, phase_id, parent_work_item_id, stable_key, work_type, executor_kind, '
+          + 'title, description, priority, status, lock_version, created_at_ms, updated_at_ms) '
+          + "VALUES ('wi:tiny-proj:BACKLOG-1', 'tiny-proj', NULL, NULL, NULL, 'BACKLOG-1', 'RESEARCH', 'AGENT', "
+          + "'Discovered work', NULL, 0, 'READY', 0, 1, 1)",
+      ).run()
+      await expect(run(mounted, '/project history BACKLOG-1')).resolves.toEqual({
+        kind: 'success',
+        text: [
+          'Work item wi:tiny-proj:BACKLOG-1 "Discovered work" — READY (agent, priority 0, version none)',
+          'No evaluations recorded yet.',
+        ].join('\n'),
       })
     } finally {
       await unmount(mounted)

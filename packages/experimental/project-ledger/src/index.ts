@@ -10,11 +10,12 @@
  * the executor-separated Owner/Agent todo views, the immutable plan-version
  * the immutable plan-version supersede and baseline-drift writers, the
  * read-only plan doctor, the plan directory listing, the work-item review
- * read, the project replay audit, and the owner evidence digest. Compiling,
+ * read, the work-item evaluation history, the project replay audit, and the
+ * owner evidence digest. Compiling,
  * importing, replaying, reading readiness, recording evaluations, claiming,
  * reaping, building packets, listing todos, superseding, recording drift,
- * doctoring, listing plans, reading item reviews, auditing replay parity, and
- * digesting owner evidence never execute verifier commands.
+ * doctoring, listing plans, reading item reviews and histories, auditing
+ * replay parity, and digesting owner evidence never execute verifier commands.
  */
 export { PLAN_SCHEMA_VERSION, type PlanAcceptanceCriterion, type PlanAcceptanceKind, type PlanBaseline, type PlanDocumentV1, type PlanExecutorKind, type PlanPhase, type PlanPhaseStatus, type PlanPlan, type PlanProject, type PlanRelation, type PlanRelationKind, type PlanVerifier, type PlanVerifierAssertion, type PlanVerifierCommand, type PlanVerifierOwnerConfirmation, type PlanWorkItem, type PlanWorkItemStatus, type PlanWorkItemType } from './plan-document.js'
 export { PlanDocumentError, type PlanIssue, type PlanIssueCode, positionAtOffset, type PlanSourcePosition } from './plan-issues.js'
@@ -37,3 +38,4 @@ export { listPlans, type PlanDirectoryEntry } from './plan-directory.js'
 export { readWorkItemReview, type LatestEvaluation, type ReviewedCriterion, type WorkItemReview } from './work-item-review.js'
 export { readProjectReplay, type ProjectReplayCompared, type ProjectReplayDrift, type ProjectReplayEntityCounts, type ProjectReplayReport, type ProjectReplayUndecodable, type ReplayedEntityCounts } from './project-replay.js'
 export { readProjectDigest, type DigestItem, type DigestPlan, type DigestPlanVersion, type ProjectDigest } from './project-digest.js'
+export { readWorkItemHistory, type HistoryEvaluation, type WorkItemHistory } from './work-item-history.js'

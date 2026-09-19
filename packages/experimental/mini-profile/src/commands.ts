@@ -3,7 +3,8 @@
  * the mounted Project Ledger for the human operating a `dsh --profile mini`
  * session. `todo` projects the executor-separated Owner/Agent views (v1.6a
  * §11), `doctor` runs the read-only plan doctor pass (F05), `item`
- * reviews one work item over its criteria and latest evaluations — including
+ * reviews one work item over its criteria and latest evaluations, `history`
+ * lists that item's every recorded attempt newest-first — including
  * each evaluation's observed exit code and output-tail excerpt — through the
  * ledger's review read seam, `replay` audits ledger integrity through
  * the replay read seam, folding the project's events and comparing the
@@ -31,12 +32,14 @@ import {
   planDoctor,
   readProjectDigest,
   readProjectReplay,
+  readWorkItemHistory,
   readWorkItemReview,
   type PlanDoctorReport,
   type PlanVersionId,
   type ProjectDigest,
   type ProjectReplayReport,
   type ReviewedCriterion,
+  type WorkItemHistory,
   type WorkItemReview,
   type WorkTodoView,
 } from '@deepseek-ai/dsh-experimental-project-ledger'
@@ -54,6 +57,7 @@ type ProjectCommand =
   | { readonly kind: 'todo'; readonly agentView: boolean; readonly projectId: string | undefined }
   | { readonly kind: 'doctor'; readonly planVersionId: string | undefined }
   | { readonly kind: 'item'; readonly itemRef: string; readonly projectId: string | undefined }
+  | { readonly kind: 'history'; readonly itemRef: string; readonly projectId: string | undefined }
   | { readonly kind: 'replay'; readonly projectId: string | undefined }
   | { readonly kind: 'digest'; readonly projectId: string | undefined }
   | { readonly kind: 'export'; readonly projectId: string | undefined }
@@ -68,6 +72,7 @@ const HELP_TEXT = [
   '/project todo [--agent] [<project-id>] — list outstanding owner (or agent) work with readiness and leases',
   '/project doctor [<plan-version-id>] — run the read-only plan doctor on the current (or named) plan version',
   '/project item <stable-key-or-id> [<project-id>] — review one work item: criteria statuses, latest evaluations, observed evidence',
+  '/project history <stable-key-or-id> [<project-id>] — list one work item\'s full evaluation timeline, newest first',
   '/project replay [<project-id>] — replay the project\'s events and compare the projection with materialized rows',
   '/project digest [<project-id>] — read the whole-project evidence digest: plan versions, item completion, replay verdict',
   '/project export [<project-id>] — render the whole evidence record as one archival markdown block',
@@ -78,6 +83,7 @@ const PROJECT_INPUT_HINT = [
   'todo [--agent] [<project-id>]',
   'doctor [<plan-version-id>]',
   'item <stable-key-or-id> [<project-id>]',
+  'history <stable-key-or-id> [<project-id>]',
   'replay [<project-id>]',
   'digest [<project-id>]',
   'export [<project-id>]',
@@ -112,6 +118,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
     const [itemRef, projectId] = tokens.slice(1)
     if (itemRef === undefined || tokens.length > 3) return undefined
     return { kind: 'item', itemRef, projectId }
+  }
+  if (tokens[0] === 'history') {
+    const [itemRef, projectId] = tokens.slice(1)
+    if (itemRef === undefined || tokens.length > 3) return undefined
+    return { kind: 'history', itemRef, projectId }
   }
   if (tokens[0] === 'replay') {
     return tokens.length <= 2
@@ -271,6 +282,36 @@ function renderItemReview(review: WorkItemReview): string {
     lines.push(
       `- ${criterion.criterionId} (${criterion.kind}, ${role}) ${criterion.status} — ${latest.result} `
         + `by ${latest.evaluatedBy} at ${new Date(latest.evaluatedAtMs).toISOString()}`
+        + (facts.exitCode === undefined ? '' : `; exit ${String(facts.exitCode)}`),
+    )
+    if (facts.tailExcerpt !== undefined) lines.push(`  ${facts.tailExcerpt}`)
+  }
+  return lines.join('\n')
+}
+
+/**
+ * Render one work-item evaluation history as command output: the item's
+ * identity and status, then every recorded attempt newest-first with its
+ * verdict, evaluator, time, and observed exit code and output-tail excerpt.
+ * @param history - the history read seam's outcome.
+ * @returns the multi-line command text.
+ */
+function renderItemHistory(history: WorkItemHistory): string {
+  const lines = [
+    `Work item ${history.workItemId} "${history.title}" — ${history.status} `
+      + `(${history.executorKind.toLowerCase()}, priority ${String(history.priority)}, `
+      + `version ${history.planVersionId ?? 'none'})`,
+  ]
+  if (history.evaluations.length === 0) {
+    lines.push('No evaluations recorded yet.')
+    return lines.join('\n')
+  }
+  lines.push(`Evaluation history (${String(history.evaluations.length)}), newest first:`)
+  for (const evaluation of history.evaluations) {
+    const facts = observedReviewFacts(evaluation.observed)
+    lines.push(
+      `- ${evaluation.criterionId} (${evaluation.kind}) ${evaluation.result} `
+        + `by ${evaluation.evaluatedBy} at ${new Date(evaluation.evaluatedAtMs).toISOString()}`
         + (facts.exitCode === undefined ? '' : `; exit ${String(facts.exitCode)}`),
     )
     if (facts.tailExcerpt !== undefined) lines.push(`  ${facts.tailExcerpt}`)
@@ -488,6 +529,16 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
           )
         }
         return { kind: 'success', text: renderItemReview(review) }
+      }
+      case 'history': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        const history = readWorkItemHistory(db, projectId, command.itemRef)
+        if (history === undefined) {
+          throw new ProjectResolutionError(
+            `No work item "${command.itemRef}" in project ${projectId}. Name a stable key or full id.`,
+          )
+        }
+        return { kind: 'success', text: renderItemHistory(history) }
       }
       case 'replay': {
         const projectId = resolveProjectId(listPlans(db), command.projectId)

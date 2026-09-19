@@ -42,8 +42,8 @@ export interface ReviewedCriterion {
   readonly latest: LatestEvaluation | null
 }
 
-/** One work item as the review reads it: identity and state over its criteria. */
-export interface WorkItemReview {
+/** The identity fields every work-item read exposes over one resolved row. */
+export interface WorkItemIdentity {
   /** Ledger id of the work item. */
   readonly workItemId: WorkItemId
   /** Plan version the item belongs to, or `null` for a backlog item. */
@@ -58,6 +58,29 @@ export interface WorkItemReview {
   readonly executorKind: string
   /** Priority ordering value. */
   readonly priority: number
+}
+
+/**
+ * Brand one resolved item row's identity fields.
+ * @param item - the resolved `work_items` row.
+ * @returns the identity fields review- and history-shaped reads share.
+ */
+export function workItemIdentityOf(item: ItemRefRecord): WorkItemIdentity {
+  return {
+    workItemId: brandString<WorkItemId>(item.id),
+    planVersionId: item.plan_version_id === null
+      ? null
+      : brandString<PlanVersionId>(item.plan_version_id),
+    stableKey: item.stable_key,
+    title: item.title,
+    status: item.status,
+    executorKind: item.executor_kind,
+    priority: item.priority,
+  }
+}
+
+/** One work item as the review reads it: identity and state over its criteria. */
+export interface WorkItemReview extends WorkItemIdentity {
   /** The item's acceptance criteria in ordinal order. */
   readonly criteria: readonly ReviewedCriterion[]
 }
@@ -127,6 +150,45 @@ export function reviewedCriterionOf(
   }
 }
 
+/** Field names of one `work_items` row the item-ref resolver reads. */
+export interface ItemRefRecord {
+  readonly id: string
+  readonly plan_version_id: string | null
+  readonly stable_key: string
+  readonly title: string
+  readonly status: PlanWorkItemStatus
+  readonly executor_kind: string
+  readonly priority: number
+}
+
+/**
+ * Resolve one `work_items` row by full id or stable key within the project.
+ * @param db - open ledger database.
+ * @param projectId - the project the item belongs to.
+ * @param itemRef - full work item id or stable key.
+ * @returns the matched row, or `undefined` when the project records no such item.
+ * @throws when the ref matches more than one item of the project.
+ */
+export function resolveWorkItemRow(
+  db: DatabaseSync,
+  projectId: ProjectId,
+  itemRef: string,
+): ItemRefRecord | undefined {
+  const itemRows = db.prepare(
+    'SELECT id, plan_version_id, stable_key, title, status, executor_kind, priority FROM work_items '
+      + 'WHERE project_id = ? AND (id = ? OR stable_key = ?) ORDER BY id',
+  ).all(projectId, itemRef, itemRef) as unknown as ItemRefRecord[]
+  const [item] = itemRows
+  // The first row of the match exists exactly when the ref matched anything.
+  if (item === undefined) return undefined
+  if (itemRows.length > 1) {
+    throw new Error(
+      `work item ref "${itemRef}" matches ${String(itemRows.length)} items of project ${projectId}; name the full id`,
+    )
+  }
+  return item
+}
+
 /**
  * Read one work item's review: the item's identity and status over every
  * acceptance criterion with its latest evaluation. The ref matches the item's
@@ -142,26 +204,8 @@ export function readWorkItemReview(
   projectId: ProjectId,
   itemRef: string,
 ): WorkItemReview | undefined {
-  const itemRows = db.prepare(
-    'SELECT id, plan_version_id, stable_key, title, status, executor_kind, priority FROM work_items '
-      + 'WHERE project_id = ? AND (id = ? OR stable_key = ?) ORDER BY id',
-  ).all(projectId, itemRef, itemRef) as {
-    id: string
-    plan_version_id: string | null
-    stable_key: string
-    title: string
-    status: PlanWorkItemStatus
-    executor_kind: string
-    priority: number
-  }[]
-  const [item] = itemRows
-  // The first row of the match exists exactly when the ref matched anything.
+  const item = resolveWorkItemRow(db, projectId, itemRef)
   if (item === undefined) return undefined
-  if (itemRows.length > 1) {
-    throw new Error(
-      `work item ref "${itemRef}" matches ${String(itemRows.length)} items of project ${projectId}; name the full id`,
-    )
-  }
   const criteria = db.prepare(
     'SELECT id, criterion_kind, description, required, status FROM acceptance_criteria '
       + 'WHERE work_item_id = ? ORDER BY ordinal',
@@ -172,15 +216,7 @@ export function readWorkItemReview(
   ).all(item.id) as unknown as EvaluationRecord[]
   const latestByCriterion = latestEvaluationPerCriterion(evaluations)
   return {
-    workItemId: brandString<WorkItemId>(item.id),
-    planVersionId: item.plan_version_id === null
-      ? null
-      : brandString<PlanVersionId>(item.plan_version_id),
-    stableKey: item.stable_key,
-    title: item.title,
-    status: item.status,
-    executorKind: item.executor_kind,
-    priority: item.priority,
+    ...workItemIdentityOf(item),
     criteria: criteria.map(criterion => reviewedCriterionOf(criterion, latestByCriterion)),
   }
 }

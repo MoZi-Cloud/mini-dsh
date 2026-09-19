@@ -90,7 +90,17 @@ The plan document bumped to version 4 with a fresh batch (`PW-EXPORT-VIEW-001`, 
 
 An immediate rerun passed idempotently (`alreadyComplete: true`, `replayDrift: 0`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE), and the complete doc-sync gate stayed green (41/41) with the reshaped digest documented bilingually. `PW-ITEM-HISTORY-001` stays claimable in version 4 for a later increment.
 
+### 2026-09-19 — PW-ITEM-HISTORY-001 through the shipped tools
+
+The same lane drove `PW-ITEM-HISTORY-001` against the persistent ledger: a new `readWorkItemHistory` ledger read seam lists one work item's every recorded evaluation newest-first — verdict, evaluator, time, and observed payload per attempt — the attempts the review's latest-only view collapses away. The item-ref resolution and identity fields moved into shared helpers (`resolveWorkItemRow`, `workItemIdentityOf`) that the review and history seams now both consume, so the two per-item reads keep one resolution contract, one ambiguity error, and one id-branding path. `/project history <stable-key-or-id> [<project-id>]` renders the timeline with the observed exit code and output-tail excerpt per attempt. Claim by `agent:mini-real-use-lane`, stored verifier `pnpm exec vitest run mini-profile` (exit 0), item DONE, doctor 0 issues, replay audit 0 drift, event replay DONE; the project timeline now holds 79 events and version 4 is fully complete. First-run report line:
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v4","workItemId":"wi:mini-dsh:PW-ITEM-HISTORY-001","stableKey":"PW-ITEM-HISTORY-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-ITEM-HISTORY-001:AC-PW-ITEM-HISTORY-001","command":"pnpm exec vitest run mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+An immediate rerun passed idempotently (`alreadyComplete: true`, `replayDrift: 0`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE). All nine real-use items across four plan versions are now DONE; later real-use items require a version 5 batch.
+
 ## Status toward the gate
 
 
-Items completed through the ledger: 23 (15 golden-plan items by the v1.6a build itself, plus the eight entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.
+Items completed through the ledger: 24 (15 golden-plan items by the v1.6a build itself, plus the nine entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.

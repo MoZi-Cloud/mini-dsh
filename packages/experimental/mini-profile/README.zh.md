@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 ## 概述
 
-当 `mini` profile 需要以唯一受支持的启动形态挂载 v1.6a Project Ledger 能力时，使用本 bundle。它在 `dsh-base` 之上叠加三个插入：`mini-project-ledger` 插件经 SQLite store 的 fail-closed 打开账本数据库，以 `ctx.projectLedger` 暴露；`mini-project-commands` 插件注册只读的 `/project` 命令（todo 视图 §11、plan doctor F05、item 审阅、重放对账、证据摘要与导出）；`mini-project-work` 插件注册认领工作并交付有界 WorkPacket（§16/§17）的 `project_work_*` 工具。账本路径来自 `DSH_MINI_LEDGER_PATH`（带回退到 dsh home）。本包不新增 bin，也不运行 verifier。
+当 `mini` profile 需要以唯一受支持的启动形态挂载 v1.6a Project Ledger 能力时，使用本 bundle。它在 `dsh-base` 之上叠加三个插入：`mini-project-ledger` 插件经 SQLite store 的 fail-closed 打开账本数据库、以 `ctx.projectLedger` 暴露；`mini-project-commands` 插件注册只读的 `/project` 命令（todo 视图 §11、plan doctor F05、item 审阅与历史、重放对账、证据摘要与导出）；`mini-project-work` 插件注册认领工作、交付有界 WorkPacket（§16/§17）的 `project_work_*` 工具。账本路径来自 `DSH_MINI_LEDGER_PATH`（带回退到 dsh home）。本包不新增 bin，也不运行 verifier。
 
 ## 目录
 
@@ -39,7 +39,7 @@ declare const ctx: Context
 const db = ctx.projectLedger.db
 ```
 
-挂载后的 `/project` 命令在 profile 的交互式命令适配器中应答：`/project todo [--agent] [<project-id>]` 列出未完成的 owner（或 agent）工作，附带重算的 readiness 与活跃租约；`/project doctor [<plan-version-id>]` 对 current（或指定）plan 版本运行只读 plan doctor；`/project item <stable-key-or-id> [<project-id>]` 经账本的 review 接缝审视单个工作项——每条标准的投影状态与最新评估，附观察到的 exitCode 与折叠成单行的输出尾部摘录；`/project replay [<project-id>]` 经重放接缝对账账本——折叠项目全量事件，把重建投影与物化行逐族双向比对；`/project digest [<project-id>]` 经 digest 接缝读取全项目证据摘要——每个 plan 及其版本与生命周期戳、每个条目逐条标准的完成度与最新判定、以及重放结论；`/project export [<project-id>]` 把同一记录渲染成单个可归档的 markdown 块，逐条证据摘录俱全，可直接粘进 §33 记录或评审；裸 `/project` 打印用法。未指明时，命令经账本的 plan 目录解析项目与版本。
+挂载后的 `/project` 命令在 profile 的交互式命令适配器中应答：`/project todo [--agent] [<project-id>]` 列出未完成的 owner（或 agent）工作，附带重算的 readiness 与活跃租约；`/project doctor [<plan-version-id>]` 对 current（或指定）plan 版本运行只读 plan doctor；`/project item <stable-key-or-id> [<project-id>]` 经账本的 review 接缝审视单个工作项——每条标准的投影状态与最新评估，附观察到的 exitCode 与折叠成单行的输出尾部摘录；`/project history <stable-key-or-id> [<project-id>]` 经账本的历史接缝按最新在前列出该条目的全部已记录尝试——判定、评估者、时间与同一摘录格式；`/project replay [<project-id>]` 经重放接缝对账账本——折叠项目全量事件，把重建投影与物化行逐族双向比对；`/project digest [<project-id>]` 经 digest 接缝读取全项目证据摘要——每个 plan 及其版本与生命周期戳、每个条目逐条标准的完成度与最新判定、以及重放结论；`/project export [<project-id>]` 把同一记录渲染成单个可归档的 markdown 块，逐条证据摘录俱全，可直接粘进 §33 记录或评审；裸 `/project` 打印用法。未指明时，命令经账本的 plan 目录解析项目与版本。
 
 profile 内的 agent 还获得三个面向模型的工具。`project_work_next` 列出 agent todo 视图，附带可认领性、阻塞原因与租约持有者；`project_work_claim` 对一个就绪条目取得租约并返回有界 work packet——目标、阶段、阻塞回执、验收标准与存储的 verifier 规格；`project_work_update` 推进持有的认领：`heartbeat` 延长租约，`release` 归还条目，`report` 记录 agent 的 verifier 观察——判定连同可选 exitCode 与有界输出尾部，存入每条评估的 observed 载荷——把条目移入 `VERIFYING` 或 `FAILED`，且只有当全部必备标准都已通过时才完成它。认领与心跳时长是部署配置（`leaseTtlMs`、`leaseHeartbeatIntervalMs`）。
 

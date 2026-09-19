@@ -22,7 +22,7 @@
 ./benchmarks/real-use/run-real-use.sh
 ```
 
-脚本先用 benchmark tsdown 配置编译 worker，再以纯 Node 基于已构建的 workspace 库运行（全新树先 `pnpm install && pnpm run build`）。这是功能性 lane 门，不是计时 benchmark；不属于 `test:bench`。lane 以两倍 verifier 超时的 `leaseTtlMs` 挂载工作插件，因此分钟级的存储 verifier（doc-sync 门套件一项就要约 6 分钟）绝不会活得比领取短。`DSH_REAL_USE_ITEM` 指定要领取的工作项（默认 `PW-EXPORT-VIEW-001`，即 `fork-mini-DSH-post-v1.6a.plan.yaml` 版本 4 的首个条目）。
+脚本先用 benchmark tsdown 配置编译 worker，再以纯 Node 基于已构建的 workspace 库运行（全新树先 `pnpm install && pnpm run build`）。这是功能性 lane 门，不是计时 benchmark；不属于 `test:bench`。lane 以两倍 verifier 超时的 `leaseTtlMs` 挂载工作插件，因此分钟级的存储 verifier（doc-sync 门套件一项就要约 6 分钟）绝不会活得比领取短。`DSH_REAL_USE_ITEM` 指定要领取的工作项（默认 `PW-ITEM-HISTORY-001`，即 `fork-mini-DSH-post-v1.6a.plan.yaml` 版本 4 的第二个条目）。
 
 <a id="ledger-and-idempotency"></a>
 
