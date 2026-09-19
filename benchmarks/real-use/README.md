@@ -22,7 +22,7 @@ From the repository root:
 ./benchmarks/real-use/run-real-use.sh
 ```
 
-The script compiles the worker with the benchmark tsdown config, then runs it under plain Node against the built workspace libraries (`pnpm install && pnpm run build` first on a fresh tree). This is a functional lane gate, not a timed benchmark; it is not part of `test:bench`. The lane mounts the work plugins with `leaseTtlMs` at twice the verifier timeout, so a minutes-long stored verifier (doc-sync's gate suite alone takes ~6) never outlives its claim. `DSH_REAL_USE_ITEM` names the item to claim (default `PW-LEASE-DOCTOR-001`, the first item of version 5 in `fork-mini-DSH-post-v1.6a.plan.yaml`).
+The script compiles the worker with the benchmark tsdown config, then runs it under plain Node against the built workspace libraries (`pnpm install && pnpm run build` first on a fresh tree). This is a functional lane gate, not a timed benchmark; it is not part of `test:bench`. The lane mounts the work plugins with `leaseTtlMs` at twice the verifier timeout, so a minutes-long stored verifier (doc-sync's gate suite alone takes ~6) never outlives its claim. `DSH_REAL_USE_ITEM` names the item to claim (default `PW-4K-GATE-001`, the second item of version 5 in `fork-mini-DSH-post-v1.6a.plan.yaml`).
 
 <a id="ledger-and-idempotency"></a>
 

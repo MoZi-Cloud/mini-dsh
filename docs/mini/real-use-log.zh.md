@@ -110,7 +110,17 @@ post-v1.6a 真实使用 lane（`./benchmarks/real-use/run-real-use.sh`）经 SHI
 
 紧接着的重跑幂等通过（`alreadyComplete: true`、`replayDrift: 0`、零写入）。4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`PW-4K-GATE-001`——把 §33 的 BOOT/4K 无回归门槛本身作为存储 verifier（直接跑钉住的 4K lane）——在版本 5 中保持可领取，留给后续增量。
 
+### 2026-09-19 —— 经 shipped 工具完成 PW-4K-GATE-001
+
+同一 lane 领取了 `PW-4K-GATE-001`，§33 的 BOOT/4K 无回归门槛随之进入账本记录本身：该条目的存储 verifier 在领取租约内把钉住的 4K context-light 真实使用切片（`sh benchmarks/context-light/run-4k.sh`）作为真实子进程完整执行，门槛的结论从此是账本数据——带观察到的退出码的验收评估，落在这份文字日志旁边，是 §33 要的那种进入证据而非设计声明。本次没有产品代码改动；lane 的默认目标移到该条目，其余全部由 shipped 工具完成。`agent:mini-real-use-lane` 领取，verifier 退出码 0（lane 观察并报告的正是 4K lane 本身），工作项 DONE、doctor 0 问题、重放对账 0 drift、事件重放 DONE；项目时间线现有 97 事件，版本 5 全部完成。首次运行报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v5","workItemId":"wi:mini-dsh:PW-4K-GATE-001","stableKey":"PW-4K-GATE-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-4K-GATE-001:AC-PW-4K-GATE-001","command":"sh benchmarks/context-light/run-4k.sh","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+紧接着的重跑幂等通过（`alreadyComplete: true`、零写入）。版本 5 两项条目全部完成；后续真实使用条目需要版本 6 批次。
+
 ## 相对门槛的状态
 
 
-经账本完成的工作项：25（15 个黄金计划项由 v1.6a 构建本身完成，加上面十条）。BOOT/4K 回归：无记录；`run-4k.sh` 与 BOOT 验收套件保持绿色。用户价值确认：待定——进入决策按 §33 归 owner。
+经账本完成的工作项：26（15 个黄金计划项由 v1.6a 构建本身完成，加上面十一条）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0），BOOT 验收套件保持绿色。用户价值确认：待定——进入决策按 §33 归 owner。

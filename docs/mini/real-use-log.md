@@ -110,7 +110,17 @@ The plan document bumped to version 5 with a fresh batch (`PW-LEASE-DOCTOR-001`,
 
 An immediate rerun passed idempotently (`alreadyComplete: true`, `replayDrift: 0`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE). `PW-4K-GATE-001` — the §33 BOOT/4K no-regression bar as a stored verifier running the pinned 4K lane itself — stays claimable in version 5 for a later increment.
 
+### 2026-09-19 — PW-4K-GATE-001 through the shipped tools
+
+The same lane claimed `PW-4K-GATE-001`, and with it the §33 BOOT/4K no-regression bar entered the ledger record itself: the item's stored verifier runs the pinned 4K context-light real-use slice (`sh benchmarks/context-light/run-4k.sh`) as a real subprocess inside the claim's lease, so the gate's outcome is now ledger data — an acceptance evaluation with the observed exit code, sitting beside this prose log as entry evidence of the kind §33 asks for rather than a design claim. No product code changed hands; the lane's default target moved to this item and the shipped tools did the rest. Claim by `agent:mini-real-use-lane`, verifier exit 0 (the lane observed and reported the 4K lane itself), item DONE, doctor 0 issues, replay audit 0 drift, event replay DONE; the project timeline now holds 97 events and version 5 is fully complete. First-run report line:
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v5","workItemId":"wi:mini-dsh:PW-4K-GATE-001","stableKey":"PW-4K-GATE-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-4K-GATE-001:AC-PW-4K-GATE-001","command":"sh benchmarks/context-light/run-4k.sh","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+An immediate rerun passed idempotently (`alreadyComplete: true`, no writes). Version 5 is complete in two items; later real-use items require a version 6 batch.
+
 ## Status toward the gate
 
 
-Items completed through the ledger: 25 (15 golden-plan items by the v1.6a build itself, plus the ten entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.
+Items completed through the ledger: 26 (15 golden-plan items by the v1.6a build itself, plus the eleven entries above). BOOT/4K regression: none recorded — the 4K bar is itself a completed ledger item (`PW-4K-GATE-001`, stored verifier `run-4k.sh`, exit 0), and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.
