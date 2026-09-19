@@ -5,7 +5,7 @@ project:
 plan:
   id: mini-dsh-v16b-owner-decision
   name: v1.6b Owner Decision Domain
-  version: 1
+  version: 2
 phases:
   - id: DEC1
     title: Owner decision and approval records
@@ -14,31 +14,34 @@ phases:
     description: >
       The v1.6b owner/decision/resource domain (proposal "v1.6b — Owner /
       Decision / Resource Domain"), entered through the §33 gate on
-      2026-09-19: decision_requests / decisions first, approvals next. Items
-      land in the order priority names; each carries a stored verifier
-      command the real-use lane executes.
+      2026-09-19. Version 1 carried the decision and approval domains;
+      version 2 batches the remaining scope: resource
+      requirements/instances/verifications next, actors/roles basic
+      expansion after. Fresh stable keys only — version 1's items stay
+      recorded under version 1.
 workItems:
-  - id: PB-DECISION-RECORD-001
+  - id: PB-RESOURCE-RECORD-001
     phaseId: DEC1
     type: IMPLEMENTATION
     executorKind: AGENT
-    title: Decision requests and decisions recorded through the ledger
+    title: Resource requirements, instances, and verifications recorded through the ledger
     description: >
-      The decision recording loop (v1.6 blueprint attachment §22/§23,
-      adapted to the v1.6a ledger): decision_requests with enumerated
-      options and the one decision that resolves each, as ledger schema v2
-      tables, two required vocabulary events (decision/requested,
-      decision/recorded, event format 2 with adjacent reads of format-1
-      timelines), transactional write seams, a newest-first project read,
-      replay-audit and doctor parity over the new family, and the read-only
-      /project decisions view. The owner's own §33 entry confirmation is the
-      first decision the seams record.
+      The resource loop (v1.6 blueprint attachment §25/§26/§27, adapted to
+      the v1.6a ledger like the decision and approval domains): a project
+      opens resource requirements, instances are provided against them, and
+      each instance is verified PASS or FAIL against a stored spec — as
+      ledger schema v4 tables, three required vocabulary events
+      (resource/required, resource/provided, resource/verified, event
+      format 4 with adjacent reads), transactional write seams, a
+      newest-first project read nesting instances and verifications,
+      replay-audit and doctor parity over the new families, and the
+      read-only /project resources view.
     priority: 10
     status: READY
     acceptance:
-      - id: AC-PB-DECISION-RECORD-001
+      - id: AC-PB-RESOURCE-RECORD-001
         kind: TEST
-        description: The project-ledger, project-ledger-sqlite, and mini-profile package suites pass with the decision domain covered.
+        description: The project-ledger, project-ledger-sqlite, and mini-profile package suites pass with the resource domain covered.
         required: true
         verifier:
           kind: TEST
@@ -46,22 +49,23 @@ workItems:
           expectedExitCode: 0
           sandboxRequired: true
           approvalRequired: false
-  - id: PB-APPROVAL-RECORD-001
+  - id: PB-ACTOR-ROLE-001
     phaseId: DEC1
     type: IMPLEMENTATION
     executorKind: AGENT
-    title: Approvals recorded beside their subjects
+    title: Actors and roles recorded as first-class ledger rows
     description: >
-      The approvals loop (v1.6 blueprint attachment §24): approval rows over
-      a typed subject reference, requested and decided by actors, kept
-      separate from decisions per the blueprint's one-line ruling, with the
-      same event/replay/command treatment the decision domain established.
+      Actors/roles basic expansion (v1.6 blueprint attachment): actor and
+      role tables that give the decision and approval domains' actor
+      strings and required_role references a durable referent, with the
+      same event/replay/command treatment the earlier v1.6b domains
+      established.
     priority: 20
     status: READY
     acceptance:
-      - id: AC-PB-APPROVAL-RECORD-001
+      - id: AC-PB-ACTOR-ROLE-001
         kind: TEST
-        description: The project-ledger, project-ledger-sqlite, and mini-profile package suites pass with the approval domain covered.
+        description: The project-ledger, project-ledger-sqlite, and mini-profile package suites pass with the actor/role domain covered.
         required: true
         verifier:
           kind: TEST

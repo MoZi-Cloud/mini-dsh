@@ -19,6 +19,9 @@ import {
   openDecisionRequest,
   recordDecision,
   requestApproval,
+  openResourceRequirement,
+  provideResourceInstance,
+  verifyResourceInstance,
   type AcceptanceCriterionId,
   type DecisionRequestId,
   type ProjectId,
@@ -69,7 +72,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project')).resolves.toMatchObject({
         kind: 'success',
         text: expect.stringMatching(
-          /todo \[--agent\][\s\S]*doctor[\s\S]*item[\s\S]*history[\s\S]*replay[\s\S]*digest[\s\S]*export[\s\S]*decisions[\s\S]*approvals/,
+          /todo \[--agent\][\s\S]*doctor[\s\S]*item[\s\S]*history[\s\S]*replay[\s\S]*digest[\s\S]*export[\s\S]*resources/u,
         ) as string,
       })
     } finally {
@@ -94,6 +97,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project export a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project decisions a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project approvals a b')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project resources a b')).resolves.toEqual(usage)
     } finally {
       await unmount(mounted)
     }
@@ -112,6 +116,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project export')).resolves.toEqual(empty)
       await expect(run(mounted, '/project decisions')).resolves.toEqual(empty)
       await expect(run(mounted, '/project approvals')).resolves.toEqual(empty)
+      await expect(run(mounted, '/project resources')).resolves.toEqual(empty)
     } finally {
       await unmount(mounted)
     }
@@ -131,6 +136,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project digest')).resolves.toEqual(ambiguous)
       await expect(run(mounted, '/project decisions')).resolves.toEqual(ambiguous)
       await expect(run(mounted, '/project approvals')).resolves.toEqual(ambiguous)
+      await expect(run(mounted, '/project resources')).resolves.toEqual(ambiguous)
     } finally {
       await unmount(mounted)
     }
@@ -477,7 +483,7 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 4, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 5, 'plan/imported', 0, '{}', 1)",
       ).run()
       const result = await run(mounted, '/project replay')
       expect(result).toMatchObject({ kind: 'success' })
@@ -797,6 +803,77 @@ describe('/project', () => {
     }
   })
 
+  it('lists resource requirements with instances and verification verdicts', async () => {
+    const mounted = await mount()
+    try {
+      const db = mounted.ctx.projectLedger.db
+      seedActivePlan(db, SOLO_PLAN_TEXT)
+      await expect(run(mounted, '/project resources')).resolves.toEqual({
+        kind: 'success',
+        text: 'No resource requirements in project solo-proj.',
+      })
+
+      const requirement = openResourceRequirement(db, brandString<ProjectId>('solo-proj'), {
+        requirementKey: 'persistent-ledger',
+        requirementKind: 'ENVIRONMENT',
+        name: 'Persistent ledger file',
+        constraintsJson: '{"journal":"wal"}',
+        requestedFrom: 'owner',
+      }, { nowMs: 80_000, actorRef: 'spec-owner' })
+      const instance = provideResourceInstance(db, {
+        requirementId: requirement.requirementId,
+        label: 'ledger.sqlite',
+        provider: 'host',
+      }, { nowMs: 81_000, actorRef: 'spec-owner' })
+      verifyResourceInstance(db, instance.instanceId, {
+        verifierKind: 'TEST',
+        verifier: 'lane',
+        verificationSpec: 'replay audit reports zero drift',
+        observedJson: '{"drift":0}',
+        result: 'PASS',
+      }, { nowMs: 82_000, actorRef: 'spec-owner' })
+
+      // Absent optionals render as their bare fallbacks.
+      const bare = openResourceRequirement(db, brandString<ProjectId>('solo-proj'), {
+        requirementKey: 'bare',
+        requirementKind: 'TOOL',
+        name: 'Bare requirement',
+        constraintsJson: '{}',
+      }, { nowMs: 83_000, actorRef: 'spec-owner' })
+      const bareInstance = provideResourceInstance(db, {
+        requirementId: bare.requirementId,
+        label: 'bare-instance',
+      }, { nowMs: 84_000, actorRef: 'spec-owner' })
+      verifyResourceInstance(db, bareInstance.instanceId, {
+        verifierKind: 'COMMAND',
+        verificationSpec: 'the command exits 0',
+        result: 'FAIL',
+      }, { nowMs: 85_000, actorRef: 'spec-owner' })
+
+      const expected = [
+        'Project solo-proj — resource requirements, 2:',
+        '- bare (TOOL) OPEN — Bare requirement (requested from unknown)',
+        '  constraints: {}',
+        '  instance bare-instance AVAILABLE — provided by unknown',
+        '    at 1970-01-01T00:01:24.000Z',
+        '    verified FAIL (COMMAND) at 1970-01-01T00:01:25.000Z:',
+        '- persistent-ledger (ENVIRONMENT) OPEN — Persistent ledger file (requested from owner)',
+        '  constraints: {"journal":"wal"}',
+        '  instance ledger.sqlite AVAILABLE — provided by host',
+        '    at 1970-01-01T00:01:21.000Z',
+        '    verified PASS (TEST) at 1970-01-01T00:01:22.000Z: observed {"drift":0}',
+      ].join('\n')
+      await expect(run(mounted, '/project resources')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project resources solo-proj')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project resources no-such-project')).resolves.toEqual({
+        kind: 'error',
+        text: 'No plan in this ledger records project "no-such-project".',
+      })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
   it('digests a versionless plan, drift findings, and an undecodable timeline', async () => {
     const mounted = await mount((db) => {
       seedActivePlan(db, TINY_PLAN_TEXT)
@@ -861,13 +938,13 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 4, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 5, 'plan/imported', 0, '{}', 1)",
       ).run()
       const broken = await run(mounted, '/project digest tiny-proj')
       expect(broken).toMatchObject({ kind: 'success' })
       if (broken.kind !== 'success' || broken.text === undefined) return
       expect(broken.text).toContain('Replay audit: the timeline cannot be decoded by this build — ')
-      expect(broken.text).toContain('carries event format 4; this build reads up to format 3')
+      expect(broken.text).toContain('carries event format 5; this build reads up to format 4')
       expect(broken.text).not.toContain('Replay audit: clean')
 
       // The export's replay section reports the decode failure, not parity.
@@ -875,7 +952,7 @@ describe('/project', () => {
       expect(brokenExport).toMatchObject({ kind: 'success' })
       if (brokenExport.kind !== 'success' || brokenExport.text === undefined) return
       expect(brokenExport.text).toContain('the timeline cannot be decoded by this build — ')
-      expect(brokenExport.text).toContain('carries event format 4; this build reads up to format 3')
+      expect(brokenExport.text).toContain('carries event format 5; this build reads up to format 4')
       expect(brokenExport.text).not.toContain('clean over')
     } finally {
       await unmount(mounted)

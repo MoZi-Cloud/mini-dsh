@@ -134,6 +134,7 @@ function materializedProjection(db: DatabaseSync): Record<string, unknown> {
   return {
     planVersions, workItems, leases, workPackets: new Map(),
     decisionRequests: new Map(), decisions: new Map(), approvals: new Map(),
+    resourceRequirements: new Map(), resourceInstances: new Map(), resourceVerifications: new Map(),
   }
 }
 

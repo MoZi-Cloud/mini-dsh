@@ -15,9 +15,12 @@ import {
   parsePlanDocument,
   readProjectReplay,
   recordDecision,
+  openResourceRequirement,
+  provideResourceInstance,
   releaseWorkLease,
   requestApproval,
   validatePlanSchema,
+  verifyResourceInstance,
   type AcceptanceCriterionId,
   type ProjectId,
   type WorkItemId,
@@ -92,8 +95,16 @@ describe('readProjectReplay', () => {
       projectId: PROJECT,
       eventCount: 5,
       lastSequenceNo: 5,
-      replayed: { planVersions: 1, workItems: 1, criteria: 1, leases: 1, workPackets: 0, decisionRequests: 0, decisions: 0, approvals: 0 },
-      materialized: { planVersions: 1, workItems: 1, criteria: 1, leases: 1, decisionRequests: 0, decisions: 0, approvals: 0 },
+      replayed: {
+        planVersions: 1, workItems: 1, criteria: 1, leases: 1, workPackets: 0,
+        decisionRequests: 0, decisions: 0, approvals: 0,
+        resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
+      },
+      materialized: {
+        planVersions: 1, workItems: 1, criteria: 1, leases: 1,
+        decisionRequests: 0, decisions: 0, approvals: 0,
+        resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
+      },
       drift: [],
     })
   })
@@ -169,9 +180,12 @@ describe('readProjectReplay', () => {
     expect(report.replayed).toEqual({
       planVersions: 2, workItems: 2, criteria: 2, leases: 1,
       workPackets: 0, decisionRequests: 0, decisions: 0, approvals: 0,
+      resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
     })
     expect(report.materialized).toEqual({
-      planVersions: 1, workItems: 1, criteria: 1, leases: 0, decisionRequests: 0, decisions: 0, approvals: 0,
+      planVersions: 1, workItems: 1, criteria: 1, leases: 0,
+      decisionRequests: 0, decisions: 0, approvals: 0,
+      resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
     })
     expect(report.drift.map(finding => finding.message)).toEqual([
       'plan version "plv:replay-plan:v9" replays from a plan/imported event but no row is materialized',
@@ -333,12 +347,89 @@ describe('readProjectReplay', () => {
     ])
   })
 
+  it('flags materialized resource rows no event replays, and disagreeing resource facts', async () => {
+    const db = await ledgerOf(REPLAY_PLAN_TEXT)
+    const requirement = openResourceRequirement(db, PROJECT, {
+      requirementKey: 'parity', requirementKind: 'ENVIRONMENT', name: 'Parity', constraintsJson: '{}',
+    }, { nowMs: 10, actorRef: 'spec-owner' })
+    const instance = provideResourceInstance(db, {
+      requirementId: requirement.requirementId, label: 'inst', provider: 'spec-owner',
+    }, { nowMs: 11, actorRef: 'spec-owner' })
+    const verification = verifyResourceInstance(db, instance.instanceId, {
+      verifierKind: 'TEST', verificationSpec: 'x', result: 'PASS',
+    }, { nowMs: 12, actorRef: 'spec-owner' })
+    // Tampered facts in both directions, plus materialized- and replayed-only
+    // ghosts; the retarget points at the hand row because the foreign key
+    // requires a real requirement.
+    db.prepare('UPDATE resource_requirements SET name = ?, status = ? WHERE id = ?')
+      .run('Tampered', 'FULFILLED', requirement.requirementId)
+    db.prepare(
+      'INSERT INTO resource_requirements '
+      + '(id, project_id, plan_version_id, requirement_key, requirement_kind, name, constraints_json, status, created_at_ms) '
+      + "VALUES ('rr:replay-proj:hand', 'replay-proj', NULL, 'hand', 'K', 'Hand row', '{}', 'OPEN', 5)",
+    ).run()
+    db.prepare('UPDATE resource_instances SET requirement_id = ? WHERE id = ?')
+      .run('rr:replay-proj:hand', instance.instanceId)
+    db.prepare("UPDATE resource_instances SET status = 'RETIRED' WHERE id = ?").run(instance.instanceId)
+    db.prepare("UPDATE resource_verifications SET result = 'FAIL' WHERE id = ?").run(verification.verificationId)
+    appendProjectEvent(db, PROJECT, 'resource/provided', {
+      instanceId: 'ri:replay-proj:event-only',
+      requirementId: requirement.requirementId,
+      label: 'timeline only',
+    }, { entityType: 'resource_instance', entityId: 'ri:replay-proj:event-only', nowMs: 13, actorRef: 'spec-owner' })
+    appendProjectEvent(db, PROJECT, 'resource/required', {
+      requirementId: 'rr:replay-proj:event-only',
+      requirementKey: 'event-only',
+      requirementKind: 'K',
+      name: 'Timeline only',
+      constraintsJson: '{}',
+    }, { entityType: 'resource_requirement', entityId: 'rr:replay-proj:event-only', nowMs: 14, actorRef: 'spec-owner' })
+    db.prepare(
+      'INSERT INTO resource_instances '
+      + '(id, requirement_id, provider, label, metadata_json, status, provided_at_ms) '
+      + "VALUES ('ri:replay-proj:hand', 'rr:replay-proj:hand', NULL, 'Hand instance', NULL, 'AVAILABLE', 6)",
+    ).run()
+    db.prepare(
+      'INSERT INTO resource_verifications '
+      + '(id, resource_instance_id, verifier, verifier_kind, verification_spec, observed_json, result, verified_at_ms) '
+      + "VALUES ('rv:replay-proj:hand', 'ri:replay-proj:hand', NULL, 'TEST', 'spec', NULL, 'PASS', 7)",
+    ).run()
+    appendProjectEvent(db, PROJECT, 'resource/verified', {
+      verificationId: 'rv:replay-proj:event-only',
+      instanceId: instance.instanceId,
+      verifierKind: 'TEST',
+      verificationSpec: 'x',
+      result: 'PASS',
+      verifiedAtMs: 15,
+    }, { entityType: 'resource_verification', entityId: 'rv:replay-proj:event-only', nowMs: 15, actorRef: 'spec-owner' })
+
+    const report = readProjectReplay(db, PROJECT)
+    expect(report.outcome).toBe('compared')
+    if (report.outcome !== 'compared') return
+    expect(report.drift.map(finding => finding.message)).toEqual([
+      'resource requirement "rr:replay-proj:hand" is materialized but no resource/required event replays it',
+      `resource requirement "${requirement.requirementId}" materializes as ENVIRONMENT "parity" (Tampered) `
+        + 'but replays as ENVIRONMENT "parity" (Parity)',
+      `resource requirement "${requirement.requirementId}" has materialized status FULFILLED but replays to OPEN`,
+      'resource requirement "rr:replay-proj:event-only" replays from a resource/required event but no row is materialized',
+      `resource instance "${instance.instanceId}" materializes for "rr:replay-proj:hand" `
+        + `but replays for "${requirement.requirementId}"`,
+      `resource instance "${instance.instanceId}" has materialized status RETIRED but replays to AVAILABLE`,
+      'resource instance "ri:replay-proj:hand" is materialized but no resource/provided event replays it',
+      'resource instance "ri:replay-proj:event-only" replays from a resource/provided event but no row is materialized',
+      'resource verification "rv:replay-proj:hand" is materialized but no resource/verified event replays it',
+      `resource verification "${verification.verificationId}" materializes FAIL for "${instance.instanceId}" `
+        + `but replays PASS for "${instance.instanceId}"`,
+      'resource verification "rv:replay-proj:event-only" replays from a resource/verified event but no row is materialized',
+    ])
+  })
+
   it('reports an undecodable timeline without comparing parity', async () => {
     const db = await ledgerOf(REPLAY_PLAN_TEXT)
     db.prepare(
       'INSERT INTO project_events '
         + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-        + "VALUES (?, 99, 4, 'plan/imported', 0, '{}', 1)",
+        + "VALUES (?, 99, 5, 'plan/imported', 0, '{}', 1)",
     ).run(PROJECT)
     const report = readProjectReplay(db, PROJECT)
     expect(report).toMatchObject({
@@ -346,10 +437,14 @@ describe('readProjectReplay', () => {
       projectId: PROJECT,
       eventCount: 3,
       lastSequenceNo: 99,
-      materialized: { planVersions: 1, workItems: 1, criteria: 1, leases: 0, decisionRequests: 0, decisions: 0, approvals: 0 },
+      materialized: {
+        planVersions: 1, workItems: 1, criteria: 1, leases: 0,
+        decisionRequests: 0, decisions: 0, approvals: 0,
+        resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
+      },
     })
     expect(report.outcome).toBe('undecodable')
     if (report.outcome !== 'undecodable') return
-    expect(report.timelineError).toMatch(/carries event format 4; this build reads up to format 3/u)
+    expect(report.timelineError).toMatch(/carries event format 5; this build reads up to format 4/u)
   })
 })

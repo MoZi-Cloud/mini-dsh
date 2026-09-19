@@ -18,6 +18,7 @@ import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
+import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
 import { replayProjectEvents, type ReplayedProjectProjection } from './project-events.js'
 
 /** One replay-audit finding: the rebuilt projection and the materialized rows disagree. */
@@ -37,6 +38,9 @@ export interface ProjectReplayEntityCounts {
   readonly decisionRequests: number
   readonly decisions: number
   readonly approvals: number
+  readonly resourceRequirements: number
+  readonly resourceInstances: number
+  readonly resourceVerifications: number
 }
 
 /** What the fold rebuilt, plus the packet recipes that have no materialized table. */
@@ -126,6 +130,29 @@ interface ApprovalRow {
   readonly decided_by: string | null
 }
 
+/** One `resource_requirements` row the audit reads, in select order. */
+interface RequirementFactsRow {
+  readonly id: string
+  readonly requirement_key: string
+  readonly requirement_kind: string
+  readonly name: string
+  readonly status: string
+}
+
+/** One `resource_instances` row the audit reads, in select order. */
+interface InstanceFactsRow {
+  readonly id: string
+  readonly requirement_id: string
+  readonly status: string
+}
+
+/** One `resource_verifications` row the audit reads, in select order. */
+interface VerificationFactsRow {
+  readonly id: string
+  readonly resource_instance_id: string
+  readonly result: string
+}
+
 /**
  * Audit one project's ledger integrity read-only: fold the project's event
  * timeline and compare the rebuilt projection with the materialized tables,
@@ -163,6 +190,18 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
   const approvalRows = db.prepare(
     'SELECT id, subject_type, subject_id, status, decided_by FROM approvals WHERE project_id = ? ORDER BY id',
   ).all(projectId) as unknown as ApprovalRow[]
+  const requirementRows = db.prepare(
+    'SELECT id, requirement_key, requirement_kind, name, status FROM resource_requirements WHERE project_id = ? ORDER BY id',
+  ).all(projectId) as unknown as RequirementFactsRow[]
+  const instanceRows = db.prepare(
+    'SELECT i.id, i.requirement_id, i.status FROM resource_instances i '
+    + 'JOIN resource_requirements r ON r.id = i.requirement_id WHERE r.project_id = ? ORDER BY i.id',
+  ).all(projectId) as unknown as InstanceFactsRow[]
+  const verificationRows = db.prepare(
+    'SELECT v.id, v.resource_instance_id, v.result FROM resource_verifications v '
+    + 'JOIN resource_instances i ON i.id = v.resource_instance_id '
+    + 'JOIN resource_requirements r ON r.id = i.requirement_id WHERE r.project_id = ? ORDER BY v.id',
+  ).all(projectId) as unknown as VerificationFactsRow[]
   const materialized: ProjectReplayEntityCounts = {
     planVersions: versionRows.length,
     workItems: itemRows.length,
@@ -171,6 +210,9 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     decisionRequests: decisionRequestRows.length,
     decisions: decisionRows.length,
     approvals: approvalRows.length,
+    resourceRequirements: requirementRows.length,
+    resourceInstances: instanceRows.length,
+    resourceVerifications: verificationRows.length,
   }
   let projection: ReplayedProjectProjection
   try {
@@ -195,6 +237,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
   collectLeaseDrift(leaseRows, projection, drift)
   collectDecisionDrift(decisionRequestRows, decisionRows, projection, drift)
   collectApprovalDrift(approvalRows, projection, drift)
+  collectResourceDrift(requirementRows, instanceRows, verificationRows, projection, drift)
   return {
     outcome: 'compared',
     projectId,
@@ -209,6 +252,9 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
       decisionRequests: projection.decisionRequests.size,
       decisions: projection.decisions.size,
       approvals: projection.approvals.size,
+      resourceRequirements: projection.resourceRequirements.size,
+      resourceInstances: projection.resourceInstances.size,
+      resourceVerifications: projection.resourceVerifications.size,
     },
     materialized,
     drift,
@@ -437,6 +483,98 @@ function collectApprovalDrift(
     }
   }
   pushReplayOnlyDrift(replayedIds, drift, refId => `approval "${refId}" replays from an approval/requested event but no row is materialized`)
+}
+
+/**
+ * Compare the resource domain, both directions, family by family:
+ * requirement identity facts and status, instance requirement and status,
+ * verification instance and result.
+ */
+function collectResourceDrift(
+  requirements: readonly RequirementFactsRow[],
+  instances: readonly InstanceFactsRow[],
+  verifications: readonly VerificationFactsRow[],
+  projection: ReplayedProjectProjection,
+  drift: ProjectReplayDrift[],
+): void {
+  const replayedRequirementIds = new Set(projection.resourceRequirements.keys())
+  for (const row of requirements) {
+    const id = brandString<ResourceRequirementId>(row.id)
+    const replayed = projection.resourceRequirements.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `resource requirement "${row.id}" is materialized but no resource/required event replays it`,
+      })
+      continue
+    }
+    replayedRequirementIds.delete(id)
+    if (replayed.requirementKey !== row.requirement_key || replayed.requirementKind !== row.requirement_kind
+      || replayed.name !== row.name) {
+      drift.push({
+        refId: row.id,
+        message: `resource requirement "${row.id}" materializes as ${row.requirement_kind} "${row.requirement_key}" `
+          + `(${row.name}) but replays as ${replayed.requirementKind} "${replayed.requirementKey}" (${replayed.name})`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      drift.push({
+        refId: row.id,
+        message: `resource requirement "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedRequirementIds, drift, refId => `resource requirement "${refId}" replays from a resource/required event but no row is materialized`)
+
+  const replayedInstanceIds = new Set(projection.resourceInstances.keys())
+  for (const row of instances) {
+    const id = brandString<ResourceInstanceId>(row.id)
+    const replayed = projection.resourceInstances.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `resource instance "${row.id}" is materialized but no resource/provided event replays it`,
+      })
+      continue
+    }
+    replayedInstanceIds.delete(id)
+    if (replayed.requirementId !== row.requirement_id) {
+      drift.push({
+        refId: row.id,
+        message: `resource instance "${row.id}" materializes for "${row.requirement_id}" `
+          + `but replays for "${replayed.requirementId}"`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      drift.push({
+        refId: row.id,
+        message: `resource instance "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedInstanceIds, drift, refId => `resource instance "${refId}" replays from a resource/provided event but no row is materialized`)
+
+  const replayedVerificationIds = new Set(projection.resourceVerifications.keys())
+  for (const row of verifications) {
+    const id = brandString<ResourceVerificationId>(row.id)
+    const replayed = projection.resourceVerifications.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `resource verification "${row.id}" is materialized but no resource/verified event replays it`,
+      })
+      continue
+    }
+    replayedVerificationIds.delete(id)
+    if (replayed.instanceId !== row.resource_instance_id || replayed.result !== row.result) {
+      drift.push({
+        refId: row.id,
+        message: `resource verification "${row.id}" materializes ${row.result} for "${row.resource_instance_id}" `
+          + `but replays ${replayed.result} for "${replayed.instanceId}"`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedVerificationIds, drift, refId => `resource verification "${refId}" replays from a resource/verified event but no row is materialized`)
 }
 
 /** Record one drift per replayed entity no materialized row carries. */

@@ -4,10 +4,11 @@
  * adjacent migration steps, the v1 Ledger Core layout — plans, plan
  * versions, phases, work items, work item relations, external blockers,
  * acceptance criteria, verification specs, acceptance evaluations, project
- * events, plan imports, compile diagnostics, and work leases — and the v1.6b
- * decision-domain layout (decision requests, options, decisions) plus its
+ * events, plan imports, compile diagnostics, and work leases — the v1.6b
+ * decision-domain layout (decision requests, options, decisions), its
  * approval layout (blueprint §24: approvals over a typed subject reference,
- * kept separate from decisions).
+ * kept separate from decisions), and its resource layout (blueprint
+ * §25/§26/§27: requirements, instances, verifications).
  *
  * The database is a source of truth, not a rebuildable index: a stamped
  * `user_version` newer than this build rejects, upgrades advance one
@@ -86,6 +87,12 @@ export const PROJECT_LEDGER_MIGRATIONS: readonly ProjectLedgerMigration[] = [
     toVersion: 3,
     description: 'v1.6b approval domain (approvals)',
     apply: createApprovalTables,
+  },
+  {
+    fromVersion: 3,
+    toVersion: 4,
+    description: 'v1.6b resource domain (resource requirements, instances, verifications)',
+    apply: createResourceTables,
   },
 ]
 
@@ -525,5 +532,62 @@ function createApprovalTables(db: DatabaseSync): void {
       ON approvals(project_id, status, requested_at_ms);
     CREATE INDEX IF NOT EXISTS idx_approvals_subject
       ON approvals(subject_type, subject_id);
+  `)
+}
+
+/**
+ * Materialize the v1.6b resource-domain tables and indexes (blueprint
+ * §25/§26/§27, adapted like the decision and approval domains: inline spec
+ * and JSON text, actor strings, project-scoped key uniqueness). Statuses
+ * beyond the writer-reachable ones are reserved rows. Idempotent by design.
+ */
+function createResourceTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS resource_requirements (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      plan_version_id TEXT REFERENCES plan_versions(id),
+      requirement_key TEXT NOT NULL,
+      requirement_kind TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      constraints_json TEXT NOT NULL,
+      status          TEXT NOT NULL CHECK(status IN (
+        'OPEN','FULFILLED','CANCELLED'
+      )),
+      requested_from  TEXT,
+      created_at_ms   INTEGER NOT NULL,
+      UNIQUE(project_id, requirement_key)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_resource_requirements_project
+      ON resource_requirements(project_id, status, created_at_ms);
+
+    CREATE TABLE IF NOT EXISTS resource_instances (
+      id              TEXT PRIMARY KEY,
+      requirement_id  TEXT NOT NULL REFERENCES resource_requirements(id),
+      provider        TEXT,
+      label           TEXT NOT NULL,
+      metadata_json   TEXT,
+      status          TEXT NOT NULL CHECK(status IN (
+        'AVAILABLE','RETIRED'
+      )),
+      provided_at_ms  INTEGER NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_resource_instances_requirement
+      ON resource_instances(requirement_id, status);
+
+    CREATE TABLE IF NOT EXISTS resource_verifications (
+      id                    TEXT PRIMARY KEY,
+      resource_instance_id  TEXT NOT NULL REFERENCES resource_instances(id),
+      verifier              TEXT,
+      verifier_kind         TEXT NOT NULL CHECK(verifier_kind IN (
+        'COMMAND','TEST','SQL_ASSERTION','GRAPH_ASSERTION','OWNER_CONFIRMATION'
+      )),
+      verification_spec     TEXT NOT NULL,
+      observed_json         TEXT,
+      result                TEXT NOT NULL CHECK(result IN ('PASS','FAIL')),
+      verified_at_ms        INTEGER NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_resource_verifications_instance
+      ON resource_verifications(resource_instance_id, verified_at_ms);
   `)
 }

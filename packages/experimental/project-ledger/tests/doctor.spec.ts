@@ -16,9 +16,12 @@ import {
   parsePlanDocument,
   planDoctor,
   recordDecision,
+  openResourceRequirement,
+  provideResourceInstance,
   releaseWorkLease,
   requestApproval,
   validatePlanSchema,
+  verifyResourceInstance,
   type AcceptanceCriterionId,
   type CompiledPlan,
   type PlanVersionId,
@@ -99,8 +102,8 @@ describe('planDoctor', () => {
         versionNo: 1,
         status: 'DRAFT',
         projectId: 'mini-dsh',
-        databaseUserVersion: 3,
-        eventFormatVersion: 3,
+        databaseUserVersion: 4,
+        eventFormatVersion: 4,
         baselineRepoHead: null,
         baselineWorktreeHash: null,
         counts: { phases: 13, workItems: 15, relations: 14, criteria: 16, events: 16 },
@@ -261,7 +264,7 @@ describe('planDoctor', () => {
       const issues = planDoctor(unreadable, GOLDEN_VERSION).issues
       expect(issues).toHaveLength(1)
       expect(issues[0]?.code).toBe('event-timeline-unreadable')
-      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 3')
+      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 4')
     } finally {
       unreadable.close()
     }
@@ -396,6 +399,88 @@ describe('planDoctor', () => {
       ])
     } finally {
       approvalDrift.close()
+    }
+
+    const resourceDrift = await goldenLedger()
+    try {
+      const requirement = openResourceRequirement(resourceDrift, brandString<ProjectId>('mini-dsh'), {
+        requirementKey: 'parity', requirementKind: 'ENVIRONMENT', name: 'Parity', constraintsJson: '{}',
+      }, { nowMs: 40, actorRef: 'doctor/agent' })
+      const instance = provideResourceInstance(resourceDrift, {
+        requirementId: requirement.requirementId, label: 'inst',
+      }, { nowMs: 41, actorRef: 'doctor/agent' })
+      const verification = verifyResourceInstance(resourceDrift, instance.instanceId, {
+        verifierKind: 'TEST', verificationSpec: 'x', result: 'PASS',
+      }, { nowMs: 42, actorRef: 'doctor/agent' })
+      resourceDrift.prepare('UPDATE resource_requirements SET name = ?, status = ? WHERE id = ?')
+        .run('Tampered', 'CANCELLED', requirement.requirementId)
+      resourceDrift.prepare(
+        'INSERT INTO resource_requirements '
+        + '(id, project_id, plan_version_id, requirement_key, requirement_kind, name, constraints_json, status, created_at_ms) '
+        + "VALUES ('rr:mini-dsh:hand', 'mini-dsh', NULL, 'hand', 'K', 'Hand row', '{}', 'OPEN', 43)",
+      ).run()
+      resourceDrift.prepare("UPDATE resource_verifications SET result = 'FAIL' WHERE id = ?")
+        .run(verification.verificationId)
+      resourceDrift.prepare(
+        'INSERT INTO resource_instances '
+        + '(id, requirement_id, provider, label, metadata_json, status, provided_at_ms) '
+        + "VALUES ('ri:mini-dsh:hand', 'rr:mini-dsh:hand', NULL, 'Hand instance', NULL, 'AVAILABLE', 44)",
+      ).run()
+      resourceDrift.prepare("UPDATE resource_instances SET requirement_id = 'rr:mini-dsh:hand', status = 'RETIRED' WHERE id = ?")
+        .run(instance.instanceId)
+      resourceDrift.prepare(
+        'INSERT INTO resource_verifications '
+        + '(id, resource_instance_id, verifier, verifier_kind, verification_spec, observed_json, result, verified_at_ms) '
+        + "VALUES ('rv:mini-dsh:hand', 'ri:mini-dsh:hand', NULL, 'TEST', 'spec', NULL, 'PASS', 45)",
+      ).run()
+      const issues = planDoctor(resourceDrift, GOLDEN_VERSION, { nowMs: 46 }).issues
+      expect(issues).toEqual([
+        {
+          code: 'projection-drift',
+          refId: 'rr:mini-dsh:hand',
+          message: 'resource requirement "rr:mini-dsh:hand" has materialized status OPEN but no replayed resource/required event',
+        },
+        {
+          code: 'projection-drift',
+          refId: requirement.requirementId,
+          message: `resource requirement "${requirement.requirementId}" materializes as ENVIRONMENT "parity" (Tampered) `
+            + 'but replays as ENVIRONMENT "parity" (Parity)',
+        },
+        {
+          code: 'projection-drift',
+          refId: requirement.requirementId,
+          message: `resource requirement "${requirement.requirementId}" has materialized status CANCELLED but replays to OPEN`,
+        },
+        {
+          code: 'projection-drift',
+          refId: instance.instanceId,
+          message: `resource instance "${instance.instanceId}" materializes for "rr:mini-dsh:hand" `
+            + `but replays for "${requirement.requirementId}"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: instance.instanceId,
+          message: `resource instance "${instance.instanceId}" has materialized status RETIRED but replays to AVAILABLE`,
+        },
+        {
+          code: 'projection-drift',
+          refId: 'ri:mini-dsh:hand',
+          message: 'resource instance "ri:mini-dsh:hand" has materialized status AVAILABLE but no replayed resource/provided event',
+        },
+        {
+          code: 'projection-drift',
+          refId: 'rv:mini-dsh:hand',
+          message: 'resource verification "rv:mini-dsh:hand" has materialized result PASS but no replayed resource/verified event',
+        },
+        {
+          code: 'projection-drift',
+          refId: verification.verificationId,
+          message: `resource verification "${verification.verificationId}" materializes FAIL for "${instance.instanceId}" `
+            + `but replays PASS for "${instance.instanceId}"`,
+        },
+      ])
+    } finally {
+      resourceDrift.close()
     }
 
     const rawCriterion = await goldenLedger()

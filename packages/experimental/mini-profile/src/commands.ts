@@ -12,8 +12,10 @@
  * evidence summary through the ledger's digest read seam, which `export`
  * renders again as one archival markdown block, `decisions` lists the
  * project's owner decision requests with their options and the decisions
- * that resolved them, and `approvals` lists the project's approvals over
- * their typed subjects with the decisions that answered them. The project and plan version
+ * that resolved them, `approvals` lists the project's approvals over
+ * their typed subjects with the decisions that answered them, and
+ * `resources` lists the project's resource requirements with their
+ * instances and verification verdicts. The project and plan version
  * resolve through the ledger's plan directory when the command names none. The handler never mutates ledger state, never sends anything to
  * the model, and never executes a verifier command — mutating surfaces stay
  * with their owning writers and later work.
@@ -35,6 +37,7 @@ import {
   planDoctor,
   readProjectApprovals,
   readProjectDecisions,
+  readProjectResources,
   readProjectDigest,
   readProjectReplay,
   readWorkItemHistory,
@@ -46,6 +49,7 @@ import {
   type ProjectDigest,
   type ProjectId,
   type ProjectReplayReport,
+  type ResourceRequirement,
   type ReviewedCriterion,
   type WorkItemHistory,
   type WorkItemReview,
@@ -71,6 +75,7 @@ type ProjectCommand =
   | { readonly kind: 'export'; readonly projectId: string | undefined }
   | { readonly kind: 'decisions'; readonly projectId: string | undefined }
   | { readonly kind: 'approvals'; readonly projectId: string | undefined }
+  | { readonly kind: 'resources'; readonly projectId: string | undefined }
 
 /* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
@@ -88,6 +93,7 @@ const HELP_TEXT = [
   '/project export [<project-id>] — render the whole evidence record as one archival markdown block',
   '/project decisions [<project-id>] — list owner decision requests with options and the decisions that resolved them',
   '/project approvals [<project-id>] — list approvals over their typed subjects with the decisions that answered them',
+  '/project resources [<project-id>] — list resource requirements with instances and verification verdicts',
 ].join('\n')
 
 /** The usage hint the command registry shows for /project. */
@@ -101,6 +107,7 @@ const PROJECT_INPUT_HINT = [
   'export [<project-id>]',
   'decisions [<project-id>]',
   'approvals [<project-id>]',
+  'resources [<project-id>]',
 ].join(' | ')
 
 /**
@@ -161,6 +168,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
   if (tokens[0] === 'approvals') {
     return tokens.length <= 2
       ? { kind: 'approvals', projectId: tokens[1] }
+      : undefined
+  }
+  if (tokens[0] === 'resources') {
+    return tokens.length <= 2
+      ? { kind: 'resources', projectId: tokens[1] }
       : undefined
   }
   return undefined
@@ -585,6 +597,45 @@ function renderApprovals(projectId: ProjectId, approvals: readonly Approval[]): 
 }
 
 /**
+ * Render the project's resource requirements as command output: a header
+ * line, then one entry per requirement — newest first — with its kind,
+ * status, constraints, and the instances serving it with their verification
+ * verdicts.
+ * @param projectId - the project whose requirements are listed.
+ * @param requirements - the listed requirements, newest first.
+ * @returns the multi-line command text.
+ */
+function renderResources(projectId: ProjectId, requirements: readonly ResourceRequirement[]): string {
+  if (requirements.length === 0) {
+    return `No resource requirements in project ${projectId}.`
+  }
+  const lines = [`Project ${projectId} — resource requirements, ${requirements.length}:`]
+  for (const requirement of requirements) {
+    const requestedFrom = requirement.requestedFrom === undefined ? 'unknown' : requirement.requestedFrom
+    lines.push(
+      `- ${requirement.requirementKey} (${requirement.requirementKind}) ${requirement.status} — ${requirement.name} `
+        + `(requested from ${requestedFrom})`,
+    )
+    lines.push(`  constraints: ${requirement.constraintsJson}`)
+    for (const instance of requirement.instances) {
+      const provider = instance.provider === undefined ? 'unknown' : instance.provider
+      lines.push(
+        `  instance ${instance.label} ${instance.status} — provided by ${provider}`,
+        `    at ${new Date(instance.providedAtMs).toISOString()}`,
+      )
+      for (const verification of instance.verifications) {
+        const observed = verification.observedJson === undefined ? '' : ` observed ${verification.observedJson}`
+        lines.push(
+          `    verified ${verification.result} (${verification.verifierKind}) at `
+            + `${new Date(verification.verifiedAtMs).toISOString()}:${observed}`,
+        )
+      }
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
  * Execute one parsed `/project` invocation against the mounted ledger.
  * @param ctx - context whose `projectLedger` service owns the opened database.
  * @param rawInput - exact text after the command name.
@@ -646,6 +697,10 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
       case 'approvals': {
         const projectId = resolveProjectId(listPlans(db), command.projectId)
         return { kind: 'success', text: renderApprovals(projectId, readProjectApprovals(db, projectId)) }
+      }
+      case 'resources': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        return { kind: 'success', text: renderResources(projectId, readProjectResources(db, projectId)) }
       }
       /* v8 ignore next 2 -- the parse step returns a closed union */
       default: return assertNever(command, 'project command')

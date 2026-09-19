@@ -140,7 +140,18 @@ approvals 闭环（蓝图 §24）作为 v1.6b 计划第二项完成：一张 `ap
 
 运行之后，owner 的 §33 进入批准经 shipped 接缝成为该域第一批行：挂在 v1.6b plan 版本（`plv:mini-dsh-v16b-owner-decision:v1`，要求 `owner` 角色）上的 approval `ap:mini-dsh:117` 被决定为 APPROVED，即事件 117–118——时间线第一批 format-3 行。持久账本现在把 1/2/3 混合时间线折叠干净（118 事件中 97 条 format-1、19 条 format-2、2 条 format-3；本次运行新增的七条 format-2 行由重建前上一版已构建表面写入，戳记如实反映其写入者），并在首次打开时就地迁移 schema 2→3。当前构建上的紧接着重跑幂等通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。v1.6b 计划前两项全部完成；actors/roles 与 resource 域留给后续增量。
 
+
+### 2026-09-19 —— PB-RESOURCE-RECORD-001：resource 闭环随计划版本 2 落地
+
+v1.6b 计划 supersede 了自己的版本 1，本增量完成版本 2 批次的第一项：resource 闭环（蓝图 §25/§26/§27，照 decision 与 approval 域的改编方式——项目内键唯一、内联约束与 spec 文本、actor 字符串），经一次追加的 3→4 迁移落为 schema 版本 4。三个必需词汇事件（`resource/required`、`resource/provided`、`resource/verified`）在相邻读取契约下把事件格式升到 4；写入接缝（`openResourceRequirement`、`provideResourceInstance`、`verifyResourceInstance`）在解析接缝校验 JSON 对象形态的 constraints/metadata/observed 文本、只允许实例服务 OPEN 需求、把每份 verifier spec 作为存储数据——绝不执行，且同实例可复验。`readProjectResources` 把实例与其验证按需求最新在前嵌套，重放对账与 doctor 奇偶覆盖三族（身份事实、引用、状态、结果——双向），只读的 `/project resources` 视图负责渲染。verifier kind 词表由事件编解码器以 `ResourceVerifierKind` 持有（与 acceptance 同五类，因 codis-catalog 重名教训改用资源命名）。lane 运行还真实演练了 §22 supersede：`mini-dsh-v16b-owner-decision` 版本 1（两项已 DONE）在版本 2 之下冻结，版本 2 的全新稳定键绝不重列版本 1 的条目。`agent:mini-real-use-lane` 领取，存储 verifier `pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile`（退出码 0；302 项测试、三包 per-file 100% 覆盖），工作项 DONE、doctor 0 问题、重放对账 0 drift、事件重放 DONE。首次运行报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-v16b-owner-decision:v2","workItemId":"wi:mini-dsh:PB-RESOURCE-RECORD-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PB-RESOURCE-RECORD-001:AC-PB-RESOURCE-RECORD-001","command":"pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+运行之后，该域第一批行记录了本项目的真实资源：需求 `rr:mini-dsh:persistent-ledger`（ENVIRONMENT，constraints 钉住账本路径与 WAL journal，挂在 v1.6b plan 版本上），实例 `ri:mini-dsh:131`——账本文件本身，由 lane 提供——以刚刚把整条时间线折叠干净的重放审计为验证记为 PASS。持久账本现在折叠 1/2/3/4 混合时间线（132 事件中 97 + 19 + 2 + 14 个戳记），并在首次打开时就地迁移 schema 3→4。重建表面上的幂等重跑通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`PB-ACTOR-ROLE-001`——作为一等行的 actors 与 roles——在版本 2 中保持 READY。
+
 ## 相对门槛的状态
 
 
-经账本完成的工作项：28（15 个黄金计划项由 v1.6a 构建本身完成，加上面十三条）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入；v1.6a 门槛就此关闭。
+经账本完成的工作项：29（15 个黄金计划项由 v1.6a 构建本身完成，加上面十四条）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入；v1.6a 门槛就此关闭。

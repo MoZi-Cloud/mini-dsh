@@ -16,10 +16,13 @@ import {
   openDecisionRequest,
   parsePlanDocument,
   readProjectEvents,
+  openResourceRequirement,
+  provideResourceInstance,
   recordDecision,
   replayProjectEvents,
   requestApproval,
   validatePlanSchema,
+  verifyResourceInstance,
   type AcceptanceCriterionId,
   type AcceptanceCriterionStatus,
   type ApprovalId,
@@ -37,11 +40,18 @@ import {
   type ReplayedCriterion,
   type ReplayedDecision,
   type ReplayedDecisionRequest,
+  type ReplayedResourceInstance,
+  type ReplayedResourceRequirement,
+  type ReplayedResourceVerification,
   type ReplayedLease,
   type ReplayedLeaseStatus,
   type ReplayedPlanVersion,
   type ReplayedProjectProjection,
   type ReplayedWorkItem,
+  type ResourceRequirementId,
+  type ResourceInstanceId,
+  type ResourceVerificationId,
+  type ResourceVerificationResult,
   type SourceDocumentHash,
   type WorkItemId,
   type WorkLeaseId,
@@ -229,8 +239,54 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       decidedBy: row.decided_by ?? undefined,
     })
   }
+  const resourceRequirements = new Map<ResourceRequirementId, ReplayedResourceRequirement>()
+  for (const row of db.prepare(
+    'SELECT id, requirement_key, requirement_kind, name, status FROM resource_requirements',
+  ).all() as { id: string; requirement_key: string; requirement_kind: string; name: string; status: 'OPEN' }[]) {
+    resourceRequirements.set(brandString<ResourceRequirementId>(row.id), {
+      requirementKey: row.requirement_key,
+      requirementKind: row.requirement_kind,
+      name: row.name,
+      status: row.status,
+    })
+  }
+  const resourceInstances = new Map<ResourceInstanceId, ReplayedResourceInstance>()
+  for (const row of db.prepare('SELECT id, requirement_id, label, status FROM resource_instances').all() as {
+    id: string
+    requirement_id: string
+    label: string
+    status: 'AVAILABLE'
+  }[]) {
+    resourceInstances.set(brandString<ResourceInstanceId>(row.id), {
+      requirementId: brandString<ResourceRequirementId>(row.requirement_id),
+      label: row.label,
+      status: row.status,
+    })
+  }
+  const resourceVerifications = new Map<ResourceVerificationId, ReplayedResourceVerification>()
+  for (const row of db.prepare('SELECT id, resource_instance_id, result FROM resource_verifications').all() as {
+    id: string
+    resource_instance_id: string
+    result: ResourceVerificationResult
+  }[]) {
+    resourceVerifications.set(brandString<ResourceVerificationId>(row.id), {
+      instanceId: brandString<ResourceInstanceId>(row.resource_instance_id),
+      result: row.result,
+    })
+  }
   // No test in this file prepares work packets; the rebuild seam owns packet parity.
-  return { planVersions, workItems, leases, workPackets: new Map(), decisionRequests, decisions, approvals }
+  return {
+    planVersions,
+    workItems,
+    leases,
+    workPackets: new Map(),
+    decisionRequests,
+    decisions,
+    approvals,
+    resourceRequirements,
+    resourceInstances,
+    resourceVerifications,
+  }
 }
 
 describe('appendProjectEvent', () => {
@@ -553,6 +609,9 @@ describe('replayProjectEvents', () => {
       decisionRequests: new Map(),
       decisions: new Map(),
       approvals: new Map(),
+      resourceRequirements: new Map(),
+      resourceInstances: new Map(),
+      resourceVerifications: new Map(),
     })
     db.close()
   })
@@ -791,6 +850,167 @@ describe('replayProjectEvents', () => {
     }
     expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
       .toContain(`decides approval "${approval.approvalId}" twice in this timeline`)
+    db.close()
+  })
+
+  it('replays the resource domain to the materialized projection', async () => {
+    const db = await goldenLedger()
+    const requirement = openResourceRequirement(db, PROJECT, {
+      requirementKey: 'persistent-ledger',
+      requirementKind: 'ENVIRONMENT',
+      name: 'Persistent ledger file',
+      constraintsJson: '{"journal":"wal"}',
+      requestedFrom: 'owner',
+      planVersionId: brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v1'),
+    }, { nowMs: 20, actorRef: 'tester' })
+    const instance = provideResourceInstance(db, {
+      requirementId: requirement.requirementId,
+      label: 'ledger.sqlite',
+      provider: 'host',
+      metadataJson: '{"path":"~/.dsh"}',
+    }, { nowMs: 21, actorRef: 'tester' })
+    verifyResourceInstance(db, instance.instanceId, {
+      verifierKind: 'TEST',
+      verifier: 'lane',
+      verificationSpec: 'replay audit reports zero drift',
+      observedJson: '{"drift":0}',
+      result: 'PASS',
+    }, { nowMs: 22, actorRef: 'tester' })
+
+    const replayed = replayProjectEvents(db, PROJECT)
+    expect(replayed).toEqual(materializedProjection(db))
+    expect(replayed.resourceRequirements.get(requirement.requirementId)).toEqual({
+      requirementKey: 'persistent-ledger',
+      requirementKind: 'ENVIRONMENT',
+      name: 'Persistent ledger file',
+      status: 'OPEN',
+    })
+    expect(replayed.resourceInstances.get(instance.instanceId)).toEqual({
+      requirementId: requirement.requirementId,
+      label: 'ledger.sqlite',
+      status: 'AVAILABLE',
+    })
+    expect([...replayed.resourceVerifications.values()]).toEqual([
+      { instanceId: instance.instanceId, result: 'PASS' },
+    ])
+    db.close()
+  })
+
+  it('fails replay on resource events naming unreplayed entities', async () => {
+    const db = await goldenLedger()
+    appendProjectEvent(db, PROJECT, 'resource/provided', {
+      instanceId: 'ri:mini-dsh:ghost',
+      requirementId: 'rr:mini-dsh:ghost',
+      label: 'orphan',
+    }, { entityType: 'resource_instance', entityId: 'ri:mini-dsh:ghost', nowMs: 2 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "requirementId" names no replayed resource requirement (rr:mini-dsh:ghost)')
+    db.prepare('DELETE FROM project_events WHERE sequence_no = 17').run()
+
+    appendProjectEvent(db, PROJECT, 'resource/verified', {
+      verificationId: 'rv:ghost:1',
+      instanceId: 'ri:mini-dsh:ghost',
+      verifierKind: 'TEST',
+      verificationSpec: 'x',
+      result: 'PASS',
+      verifiedAtMs: 1,
+    }, { entityType: 'resource_verification', entityId: 'rv:ghost:1', nowMs: 2 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "instanceId" names no replayed resource instance (ri:mini-dsh:ghost)')
+    db.prepare('DELETE FROM project_events WHERE sequence_no = 17').run()
+
+    appendProjectEvent(db, PROJECT, 'resource/required', {
+      requirementId: 'rr:mini-dsh:foreign',
+      requirementKey: 'foreign',
+      requirementKind: 'K',
+      name: 'N',
+      constraintsJson: '{}',
+      planVersionId: 'plv:mini-dsh:ghost',
+    }, { entityType: 'resource_requirement', entityId: 'rr:mini-dsh:foreign', nowMs: 2 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "planVersionId" names no replayed plan version (plv:mini-dsh:ghost)')
+    db.close()
+  })
+
+  it('fails replay on resource payloads with missing, mistyped, or invalid fields', async () => {
+    const db = await goldenLedger()
+    const baseRequired: Record<string, unknown> = {
+      requirementId: 'rr:mini-dsh:payload',
+      requirementKey: 'payload',
+      requirementKind: 'ENVIRONMENT',
+      name: 'Payload probe',
+      constraintsJson: '{}',
+    }
+    const required = appendProjectEvent(db, PROJECT, 'resource/required', baseRequired, {
+      entityType: 'resource_requirement',
+      entityId: 'rr:mini-dsh:payload',
+      nowMs: 2,
+    })
+    const setPayload = (sequenceNo: number, payload: unknown): void => {
+      db.prepare('UPDATE project_events SET payload_json = ? WHERE project_id = ? AND sequence_no = ?')
+        .run(JSON.stringify(payload), PROJECT, sequenceNo)
+    }
+    for (const field of ['requirementId', 'requirementKey', 'requirementKind', 'name', 'constraintsJson']) {
+      const payload = Object.fromEntries(Object.entries(baseRequired).filter(([key]) => key !== field))
+      setPayload(required.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(required.sequenceNo, { ...baseRequired, requestedFrom: 7 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "requestedFrom" must be a string')
+    db.prepare('DELETE FROM project_events WHERE sequence_no = ?').run(required.sequenceNo)
+
+    const requirement = openResourceRequirement(db, PROJECT, {
+      requirementKey: 'host', requirementKind: 'K', name: 'N', constraintsJson: '{}',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const instance = provideResourceInstance(db, {
+      requirementId: requirement.requirementId, label: 'inst',
+    }, { nowMs: 11, actorRef: 'tester' })
+    const baseProvided: Record<string, unknown> = {
+      instanceId: instance.instanceId,
+      requirementId: requirement.requirementId,
+      label: 'inst',
+    }
+    const provided = appendProjectEvent(db, PROJECT, 'resource/provided', baseProvided, {
+      entityType: 'resource_instance',
+      entityId: instance.instanceId,
+      nowMs: 12,
+    })
+    for (const field of ['instanceId', 'requirementId', 'label']) {
+      const payload = Object.fromEntries(Object.entries(baseProvided).filter(([key]) => key !== field))
+      setPayload(provided.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(provided.sequenceNo, { ...baseProvided, metadataJson: 9 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "metadataJson" must be a string')
+    db.prepare('DELETE FROM project_events WHERE sequence_no = ?').run(provided.sequenceNo)
+
+    const baseVerified: Record<string, unknown> = {
+      verificationId: 'rv:payload:1',
+      instanceId: instance.instanceId,
+      verifierKind: 'TEST',
+      verificationSpec: 'x',
+      result: 'PASS',
+      verifiedAtMs: 5,
+    }
+    const verified = appendProjectEvent(db, PROJECT, 'resource/verified', baseVerified, {
+      entityType: 'resource_verification',
+      entityId: 'rv:payload:1',
+      nowMs: 13,
+    })
+    for (const field of ['verificationId', 'instanceId', 'verifierKind', 'verificationSpec', 'result', 'verifiedAtMs']) {
+      const payload = Object.fromEntries(Object.entries(baseVerified).filter(([key]) => key !== field))
+      setPayload(verified.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(verified.sequenceNo, { ...baseVerified, verifierKind: 'TELEPORT' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "verifierKind" is not a resource verifier kind: "TELEPORT"')
+    setPayload(verified.sequenceNo, { ...baseVerified, result: 'MAYBE' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "result" is not a resource verification result: "MAYBE"')
+    setPayload(verified.sequenceNo, baseVerified)
     db.close()
   })
 

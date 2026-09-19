@@ -53,6 +53,9 @@ const LEDGER_TABLES = [
   'plan_versions',
   'plans',
   'project_events',
+  'resource_instances',
+  'resource_requirements',
+  'resource_verifications',
   'verification_specs',
   'work_external_blockers',
   'work_item_relations',
@@ -70,6 +73,9 @@ const LEDGER_INDEXES = [
   'idx_plan_diag_import',
   'idx_plan_versions_plan_status',
   'idx_project_events_type',
+  'idx_resource_instances_requirement',
+  'idx_resource_requirements_project',
+  'idx_resource_verifications_instance',
   'idx_work_items_parent',
   'idx_work_items_phase',
   'idx_work_items_ready',
@@ -289,6 +295,37 @@ describe('adjacent migration fixture', () => {
     expect(decisions.n).toBe(1)
     const approvals = reopened.prepare('SELECT COUNT(*) AS n FROM approvals').get() as { n: number }
     expect(approvals.n).toBe(0)
+    reopened.close()
+  })
+
+  it('upgrades a v3 database through the shipped 3→4 step without losing rows', async () => {
+    const path = tmpFile('v3-to-v4.sqlite')
+    // A real v3 database: the shipped steps' own layout, stamped as v3 and
+    // carrying one approval row.
+    const [coreStep, decisionStep, approvalStep] = PROJECT_LEDGER_MIGRATIONS
+    if (coreStep === undefined || decisionStep === undefined || approvalStep === undefined) {
+      throw new Error('test setup: the registry ships a missing step')
+    }
+    const raw = new DatabaseSync(path)
+    coreStep.apply(raw)
+    decisionStep.apply(raw)
+    approvalStep.apply(raw)
+    raw.exec(
+      'INSERT INTO approvals '
+      + '(id, project_id, subject_type, subject_id, required_role, requested_by, status, requested_at_ms) '
+      + "VALUES ('ap:p:1', 'p', 'plan-version', 'plv:x:v1', NULL, 'owner', 'PENDING', 1)",
+    )
+    raw.exec('PRAGMA user_version = 3')
+    raw.close()
+
+    const reopened = await openProjectLedgerDatabase(path)
+    expect(userVersionOf(reopened)).toBe(PROJECT_LEDGER_SCHEMA_VERSION)
+    expect(tableNames(reopened)).toEqual(LEDGER_TABLES)
+    expect(indexNames(reopened)).toEqual(LEDGER_INDEXES)
+    const approvals = reopened.prepare('SELECT COUNT(*) AS n FROM approvals').get() as { n: number }
+    expect(approvals.n).toBe(1)
+    const requirements = reopened.prepare('SELECT COUNT(*) AS n FROM resource_requirements').get() as { n: number }
+    expect(requirements.n).toBe(0)
     reopened.close()
   })
 

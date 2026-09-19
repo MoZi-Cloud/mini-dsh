@@ -11,7 +11,7 @@
  * the immutable plan-version supersede and baseline-drift writers, the
  * read-only plan doctor, the plan directory listing, the work-item review
  * read, the work-item evaluation history, the project replay audit, the
- * owner evidence digest, and the v1.6b decision and approval domains.
+ * owner evidence digest, and the v1.6b decision, approval, and resource domains.
  * Compiling, importing, replaying, reading readiness, recording evaluations,
  * claiming, reaping, building packets, listing todos, superseding, recording
  * drift, doctoring, listing plans, reading item reviews and histories,
@@ -26,7 +26,7 @@ export { validatePlanSemantics } from './plan-semantics.js'
 export { ORDERING_RELATION_KINDS, findChainCycles, findOrderingCycles } from './relation-graph.js'
 export { PLAN_COMPILER_VERSION, planVersionRowId, compilePlan, type AcceptanceCriterionId, type CompiledCriterion, type CompiledIrHash, type CompiledPlan, type CompiledRelation, type CompiledWorkItem, type CompilePlanOptions, type PhaseId, type PlanId, type PlanVersionId, type ProjectId, type SourceDocumentHash, type VerifierSpecId, type WorkItemId, type WorkItemRelationId } from './plan-compile.js'
 export { PLAN_PARSER_VERSION, DEFAULT_IMPORT_ACTOR_REF, PlanImportError, importPlanVersion, type ImportPlanVersionOptions, type PlanImportErrorCode, type PlanImportResult } from './plan-import.js'
-export { ACCEPTANCE_CRITERION_STATUSES, ACCEPTANCE_EVALUATION_RESULTS, APPROVAL_OUTCOMES, APPROVAL_SUBJECT_TYPES, DECISION_BLOCKING_LEVELS, PROJECT_EVENT_FORMAT_VERSION, PROJECT_EVENT_TYPES, SUPERSEDE_POLICY, WORK_PACKET_REFERENCE_KINDS, ProjectEventError, appendProjectEvent, decodeWorkPacketPreparedPayload, nextProjectEventSequence, readProjectEvents, readWorkPacketEvent, replayProjectEvents, type AcceptanceCriterionStatus, type AcceptanceEvaluationResult, type AppendProjectEventOptions, type ApprovalDecisionOutcome, type ApprovalSubjectType, type DecisionBlockingLevel, type ProjectEventEnvelope, type ProjectEventErrorCode, type ProjectEventType, type ReplayedApproval, type ReplayedCriterion, type ReplayedDecision, type ReplayedDecisionRequest, type ReplayedLease, type ReplayedLeaseStatus, type ReplayedPlanVersion, type ReplayedProjectProjection, type ReplayedWorkItem, type ReplayedWorkPacket, type ReplayedWorkPacketReference, type WorkPacketReferenceKind } from './project-events.js'
+export { ACCEPTANCE_CRITERION_STATUSES, ACCEPTANCE_EVALUATION_RESULTS, APPROVAL_OUTCOMES, APPROVAL_SUBJECT_TYPES, RESOURCE_VERIFICATION_RESULTS, RESOURCE_VERIFIER_KINDS, DECISION_BLOCKING_LEVELS, PROJECT_EVENT_FORMAT_VERSION, PROJECT_EVENT_TYPES, SUPERSEDE_POLICY, WORK_PACKET_REFERENCE_KINDS, ProjectEventError, appendProjectEvent, decodeWorkPacketPreparedPayload, nextProjectEventSequence, readProjectEvents, readWorkPacketEvent, replayProjectEvents, type AcceptanceCriterionStatus, type AcceptanceEvaluationResult, type AppendProjectEventOptions, type ApprovalDecisionOutcome, type ApprovalSubjectType, type ResourceVerificationResult, type ResourceVerifierKind, type DecisionBlockingLevel, type ProjectEventEnvelope, type ProjectEventErrorCode, type ProjectEventType, type ReplayedApproval, type ReplayedCriterion, type ReplayedDecision, type ReplayedDecisionRequest, type ReplayedLease, type ReplayedLeaseStatus, type ReplayedPlanVersion, type ReplayedProjectProjection, type ReplayedResourceInstance, type ReplayedResourceRequirement, type ReplayedResourceVerification, type ReplayedWorkItem, type ReplayedWorkPacket, type ReplayedWorkPacketReference, type WorkPacketReferenceKind } from './project-events.js'
 export { WORK_READINESS_BLOCKER_KINDS, WorkReadinessError, computeWorkReadiness, detectWorkGraphCycles, type ComputeWorkReadinessOptions, type WorkGraphCycles, type WorkReadiness, type WorkReadinessBlockerKind, type WorkReadinessErrorCode, type WorkReadinessReason } from './work-readiness.js'
 export { DEFAULT_STATUS_ACTOR_REF, WORK_STATUS_TRANSITIONS, WorkStatusError, changeWorkStatus, type ChangeWorkStatusOptions, type WorkStatusChange, type WorkStatusErrorCode } from './work-status.js'
 export { DEFAULT_EVALUATION_ACTOR_REF, AcceptanceEvaluationError, evaluateAcceptanceCriterion, type AcceptanceEvaluation, type AcceptanceEvaluationErrorCode, type AcceptanceEvaluationId, type EvaluateAcceptanceCriterionOptions } from './acceptance.js'
@@ -82,3 +82,24 @@ export {
   type DecideApprovalInput,
   type RequestApprovalInput,
 } from './approvals.js'
+export {
+  DEFAULT_RESOURCE_ACTOR_REF,
+  ResourceError,
+  openResourceRequirement,
+  provideResourceInstance,
+  readProjectResources,
+  verifyResourceInstance,
+  type OpenResourceRequirementInput,
+  type ProvideResourceInstanceInput,
+  type ResourceErrorCode,
+  type ResourceInstance,
+  type ResourceInstanceId,
+  type ResourceInstanceStatus,
+  type ResourceRequirement,
+  type ResourceRequirementId,
+  type ResourceRequirementStatus,
+  type ResourceVerification,
+  type ResourceVerificationId,
+  type ResourceWriteOptions,
+  type VerifyResourceInstanceInput,
+} from './resources.js'

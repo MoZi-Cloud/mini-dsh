@@ -19,6 +19,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
+import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
 import type { WorkExternalBlockerId } from './versioning.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanId, PlanVersionId, ProjectId, SourceDocumentHash, WorkItemId } from './plan-compile.js'
@@ -130,6 +131,36 @@ export type ApprovalDecisionOutcome = (typeof APPROVAL_OUTCOMES)[number]
 const APPROVAL_OUTCOME_SET: ReadonlySet<string> = new Set<string>(APPROVAL_OUTCOMES)
 
 /**
+ * The outcomes a `resource/verified` payload may record. Owned here (not in
+ * the resources module) because the payload codec validates it on read.
+ */
+export const RESOURCE_VERIFICATION_RESULTS = ['PASS', 'FAIL'] as const
+
+/** The outcome one resource verification records. */
+export type ResourceVerificationResult = (typeof RESOURCE_VERIFICATION_RESULTS)[number]
+
+const RESOURCE_VERIFICATION_RESULT_SET: ReadonlySet<string> = new Set<string>(RESOURCE_VERIFICATION_RESULTS)
+
+/**
+ * The verifier kinds a `resource/verified` payload may name — the same five
+ * kinds the acceptance vocabulary uses, owned here under a resource name so
+ * the resource seam never imports the plan-document types. The payload codec
+ * validates it on read.
+ */
+export const RESOURCE_VERIFIER_KINDS = [
+  'COMMAND',
+  'TEST',
+  'SQL_ASSERTION',
+  'GRAPH_ASSERTION',
+  'OWNER_CONFIRMATION',
+] as const
+
+/** A verifier kind of one resource verification. */
+export type ResourceVerifierKind = (typeof RESOURCE_VERIFIER_KINDS)[number]
+
+const RESOURCE_VERIFIER_KIND_SET: ReadonlySet<string> = new Set<string>(RESOURCE_VERIFIER_KINDS)
+
+/**
  * The event envelope version recorded in the `event_format_version` column of
  * every `project_events` row — the single home of this constant. Adding a
  * required vocabulary entry bumps it together with the codec; purely
@@ -138,7 +169,7 @@ const APPROVAL_OUTCOME_SET: ReadonlySet<string> = new Set<string>(APPROVAL_OUTCO
  * (the vocabulary is cumulative), and only a row stamped newer than this
  * build rejects.
  */
-export const PROJECT_EVENT_FORMAT_VERSION = 3
+export const PROJECT_EVENT_FORMAT_VERSION = 4
 
 /**
  * The event vocabulary. Every listed type is required: rows carry
@@ -147,7 +178,8 @@ export const PROJECT_EVENT_FORMAT_VERSION = 3
  * `work/unblocked`, `work/claimed`, `work/lease-heartbeat`,
  * `work/lease-expired`, `work/lease-released`, `acceptance/evaluated`,
  * `project/work-packet-prepared`, `decision/requested`,
- * `decision/recorded`, `approval/requested`, and `approval/decided`), and a
+ * `decision/recorded`, `approval/requested`, `approval/decided`,
+ * `resource/required`, `resource/provided`, and `resource/verified`), and a
  * reader that does not know the type
  * fails closed. `plan/version-superseded` and `baseline/drift-detected` are
  * validated without state change: their writers own lifecycle columns and
@@ -172,6 +204,9 @@ export const PROJECT_EVENT_TYPES = [
   'decision/recorded',
   'approval/requested',
   'approval/decided',
+  'resource/required',
+  'resource/provided',
+  'resource/verified',
 ] as const
 
 /** A vocabulary type of the v1 event format. */
@@ -497,6 +532,29 @@ export interface ReplayedApproval {
   readonly decidedBy: string | undefined
 }
 
+/** Resource-requirement facts the resource events replay; the opened stamp is the requesting event's `createdAtMs`. */
+export interface ReplayedResourceRequirement {
+  readonly requirementKey: string
+  readonly requirementKind: string
+  readonly name: string
+  /** `FULFILLED`/`CANCELLED` are reserved statuses with no writer yet. */
+  readonly status: 'OPEN'
+}
+
+/** Resource-instance facts the `resource/provided` event replays. */
+export interface ReplayedResourceInstance {
+  readonly requirementId: ResourceRequirementId
+  readonly label: string
+  /** `RETIRED` is a reserved status with no writer yet. */
+  readonly status: 'AVAILABLE'
+}
+
+/** Resource-verification facts the `resource/verified` event replays. */
+export interface ReplayedResourceVerification {
+  readonly instanceId: ResourceInstanceId
+  readonly result: ResourceVerificationResult
+}
+
 /** The projection replaying a project's events rebuilds. */
 export interface ReplayedProjectProjection {
   readonly planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>
@@ -510,6 +568,10 @@ export interface ReplayedProjectProjection {
   readonly decisions: ReadonlyMap<DecisionId, ReplayedDecision>
   /** The approval domain, rebuilt from `approval/requested` and `approval/decided`. */
   readonly approvals: ReadonlyMap<ApprovalId, ReplayedApproval>
+  /** The resource domain, rebuilt from the `resource/*` events. */
+  readonly resourceRequirements: ReadonlyMap<ResourceRequirementId, ReplayedResourceRequirement>
+  readonly resourceInstances: ReadonlyMap<ResourceInstanceId, ReplayedResourceInstance>
+  readonly resourceVerifications: ReadonlyMap<ResourceVerificationId, ReplayedResourceVerification>
 }
 
 /**
@@ -531,6 +593,9 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
   const decisionRequests = new Map<DecisionRequestId, ReplayedDecisionRequest>()
   const decisions = new Map<DecisionId, ReplayedDecision>()
   const approvals = new Map<ApprovalId, ReplayedApproval>()
+  const resourceRequirements = new Map<ResourceRequirementId, ReplayedResourceRequirement>()
+  const resourceInstances = new Map<ResourceInstanceId, ReplayedResourceInstance>()
+  const resourceVerifications = new Map<ResourceVerificationId, ReplayedResourceVerification>()
   // Validation state for the supersede applier: a version retires once.
   const supersededPlanVersionIds = new Set<PlanVersionId>()
   for (const event of readProjectEvents(db, projectId)) {
@@ -794,11 +859,54 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         approvals.set(payload.approvalId, { ...approval, status: payload.outcome, decidedBy: payload.decidedBy })
         break
       }
+      case 'resource/required': {
+        const payload = decodeResourceRequiredPayload(event)
+        if (payload.planVersionId !== undefined) {
+          requireReplayedPlanVersion(planVersions, payload.planVersionId, event)
+        }
+        resourceRequirements.set(payload.requirementId, {
+          requirementKey: payload.requirementKey,
+          requirementKind: payload.requirementKind,
+          name: payload.name,
+          status: 'OPEN',
+        })
+        break
+      }
+      case 'resource/provided': {
+        const payload = decodeResourceProvidedPayload(event)
+        requireReplayedResourceRequirement(resourceRequirements, payload.requirementId, event)
+        resourceInstances.set(payload.instanceId, {
+          requirementId: payload.requirementId,
+          label: payload.label,
+          status: 'AVAILABLE',
+        })
+        break
+      }
+      case 'resource/verified': {
+        const payload = decodeResourceVerifiedPayload(event)
+        requireReplayedResourceInstance(resourceInstances, payload.instanceId, event)
+        resourceVerifications.set(payload.verificationId, {
+          instanceId: payload.instanceId,
+          result: payload.result,
+        })
+        break
+      }
       default:
         break
     }
   }
-  return { planVersions, workItems, leases, workPackets, decisionRequests, decisions, approvals }
+  return {
+    planVersions,
+    workItems,
+    leases,
+    workPackets,
+    decisionRequests,
+    decisions,
+    approvals,
+    resourceRequirements,
+    resourceInstances,
+    resourceVerifications,
+  }
 }
 
 /** Fail closed when a payload names a work item the fold has not replayed. */
@@ -892,6 +1000,40 @@ function requireReplayedApprovalSubject(
         + `names no replayed ${payload.subjectType} of this timeline (${payload.subjectId})`,
     )
   }
+}
+
+/** Fail closed when a payload names a resource requirement the fold has not replayed. */
+function requireReplayedResourceRequirement(
+  requirements: ReadonlyMap<ResourceRequirementId, ReplayedResourceRequirement>,
+  requirementId: ResourceRequirementId,
+  event: ProjectEventEnvelope,
+): ReplayedResourceRequirement {
+  const replayed = requirements.get(requirementId)
+  if (replayed === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "requirementId" `
+        + `names no replayed resource requirement (${requirementId})`,
+    )
+  }
+  return replayed
+}
+
+/** Fail closed when a payload names a resource instance the fold has not replayed. */
+function requireReplayedResourceInstance(
+  instances: ReadonlyMap<ResourceInstanceId, ReplayedResourceInstance>,
+  instanceId: ResourceInstanceId,
+  event: ProjectEventEnvelope,
+): ReplayedResourceInstance {
+  const replayed = instances.get(instanceId)
+  if (replayed === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "instanceId" `
+        + `names no replayed resource instance (${instanceId})`,
+    )
+  }
+  return replayed
 }
 
 /** Fail closed when a payload names a lease the fold has not replayed. */
@@ -1071,6 +1213,38 @@ interface ApprovalDecidedPayload {
   readonly decidedBy: string
   readonly decisionText: string
   readonly decidedAtMs: number
+}
+
+/** Payload facts of one `resource/required` event; the opened stamp is the envelope's `createdAtMs`. */
+interface ResourceRequiredPayload {
+  readonly requirementId: ResourceRequirementId
+  readonly requirementKey: string
+  readonly requirementKind: string
+  readonly name: string
+  readonly constraintsJson: string
+  readonly requestedFrom: string | undefined
+  readonly planVersionId: PlanVersionId | undefined
+}
+
+/** Payload facts of one `resource/provided` event; the provided stamp is the envelope's `createdAtMs`. */
+interface ResourceProvidedPayload {
+  readonly instanceId: ResourceInstanceId
+  readonly requirementId: ResourceRequirementId
+  readonly label: string
+  readonly provider: string | undefined
+  readonly metadataJson: string | undefined
+}
+
+/** Payload facts of one `resource/verified` event. */
+interface ResourceVerifiedPayload {
+  readonly verificationId: ResourceVerificationId
+  readonly instanceId: ResourceInstanceId
+  readonly verifierKind: ResourceVerifierKind
+  readonly verifier: string | undefined
+  readonly verificationSpec: string
+  readonly observedJson: string | undefined
+  readonly result: ResourceVerificationResult
+  readonly verifiedAtMs: number
 }
 
 /** The event payload must be a JSON object for appliers to read fields from. */
@@ -1694,5 +1868,80 @@ function decodeApprovalDecidedPayload(event: ProjectEventEnvelope): ApprovalDeci
     decidedBy: requiredString(fields, event, 'decidedBy'),
     decisionText: requiredString(fields, event, 'decisionText'),
     decidedAtMs: requiredNumber(fields, event, 'decidedAtMs'),
+  }
+}
+
+/** Read one required resource verification outcome payload field. */
+function requiredResourceVerificationResult(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+): ResourceVerificationResult {
+  const value = requiredString(fields, event, field)
+  if (!RESOURCE_VERIFICATION_RESULT_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not a resource verification result: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as ResourceVerificationResult
+}
+
+/** Decode one `resource/required` payload, failing closed on missing or mistyped fields. */
+function decodeResourceRequiredPayload(event: ProjectEventEnvelope): ResourceRequiredPayload {
+  const fields = payloadFields(event)
+  return {
+    requirementId: requiredString(fields, event, 'requirementId') as ResourceRequirementId,
+    requirementKey: requiredString(fields, event, 'requirementKey'),
+    requirementKind: requiredString(fields, event, 'requirementKind'),
+    name: requiredString(fields, event, 'name'),
+    constraintsJson: requiredString(fields, event, 'constraintsJson'),
+    requestedFrom: optionalString(fields, event, 'requestedFrom'),
+    planVersionId: optionalString(fields, event, 'planVersionId') as PlanVersionId | undefined,
+  }
+}
+
+/** Decode one `resource/provided` payload, failing closed on missing or mistyped fields. */
+function decodeResourceProvidedPayload(event: ProjectEventEnvelope): ResourceProvidedPayload {
+  const fields = payloadFields(event)
+  return {
+    instanceId: requiredString(fields, event, 'instanceId') as ResourceInstanceId,
+    requirementId: requiredString(fields, event, 'requirementId') as ResourceRequirementId,
+    label: requiredString(fields, event, 'label'),
+    provider: optionalString(fields, event, 'provider'),
+    metadataJson: optionalString(fields, event, 'metadataJson'),
+  }
+}
+
+/** Read one required resource verifier kind payload field. */
+function requiredResourceVerifierKind(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+): ResourceVerifierKind {
+  const value = requiredString(fields, event, field)
+  if (!RESOURCE_VERIFIER_KIND_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not a resource verifier kind: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as ResourceVerifierKind
+}
+
+/** Decode one `resource/verified` payload, failing closed on missing or mistyped fields. */
+function decodeResourceVerifiedPayload(event: ProjectEventEnvelope): ResourceVerifiedPayload {
+  const fields = payloadFields(event)
+  return {
+    verificationId: requiredString(fields, event, 'verificationId') as ResourceVerificationId,
+    instanceId: requiredString(fields, event, 'instanceId') as ResourceInstanceId,
+    verifierKind: requiredResourceVerifierKind(fields, event, 'verifierKind'),
+    verifier: optionalString(fields, event, 'verifier'),
+    verificationSpec: requiredString(fields, event, 'verificationSpec'),
+    observedJson: optionalString(fields, event, 'observedJson'),
+    result: requiredResourceVerificationResult(fields, event, 'result'),
+    verifiedAtMs: requiredNumber(fields, event, 'verifiedAtMs'),
   }
 }

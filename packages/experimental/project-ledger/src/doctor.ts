@@ -6,7 +6,7 @@
  * inside one project, no lease row still records ACTIVE past its own expiry,
  * the event timeline is readable by this codec, and the replayed projection
  * agrees with the materialized tables (work items, criteria, leases, the
- * decision domain, and the approval domain). The doctor never
+ * decision, approval, and resource domains). The doctor never
  * mutates and never executes a verifier command; it reports every
  * independent issue it finds, so a caller sees the whole picture in one
  * pass. The database and event format versions ride along as report facts
@@ -20,6 +20,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
+import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
 import { PROJECT_EVENT_FORMAT_VERSION, replayProjectEvents, type ReplayedProjectProjection } from './project-events.js'
@@ -430,6 +431,90 @@ function collectProjectionDrift(
         refId: row.id,
         message: `approval "${row.id}" materializes decided by ${row.decided_by ?? 'nobody'} `
           + `but replays decided by ${replayed.decidedBy ?? 'nobody'}`,
+      })
+    }
+  }
+  const resourceRequirementRows = db.prepare(
+    'SELECT id, requirement_key, requirement_kind, name, status FROM resource_requirements WHERE project_id = ? ORDER BY id',
+  ).all(projectId) as unknown as { id: string; requirement_key: string; requirement_kind: string; name: string; status: string }[]
+  for (const row of resourceRequirementRows) {
+    const replayed = projection.resourceRequirements.get(brandString<ResourceRequirementId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `resource requirement "${row.id}" has materialized status ${row.status} but no replayed resource/required event`,
+      })
+      continue
+    }
+    if (replayed.requirementKey !== row.requirement_key || replayed.requirementKind !== row.requirement_kind
+      || replayed.name !== row.name) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `resource requirement "${row.id}" materializes as ${row.requirement_kind} "${row.requirement_key}" `
+          + `(${row.name}) but replays as ${replayed.requirementKind} "${replayed.requirementKey}" (${replayed.name})`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `resource requirement "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  const resourceInstanceRows = db.prepare(
+    'SELECT i.id, i.requirement_id, i.status FROM resource_instances i '
+    + 'JOIN resource_requirements r ON r.id = i.requirement_id WHERE r.project_id = ? ORDER BY i.id',
+  ).all(projectId) as unknown as { id: string; requirement_id: string; status: string }[]
+  for (const row of resourceInstanceRows) {
+    const replayed = projection.resourceInstances.get(brandString<ResourceInstanceId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `resource instance "${row.id}" has materialized status ${row.status} but no replayed resource/provided event`,
+      })
+      continue
+    }
+    if (replayed.requirementId !== row.requirement_id) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `resource instance "${row.id}" materializes for "${row.requirement_id}" `
+          + `but replays for "${replayed.requirementId}"`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `resource instance "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  const resourceVerificationRows = db.prepare(
+    'SELECT v.id, v.resource_instance_id, v.result FROM resource_verifications v '
+    + 'JOIN resource_instances i ON i.id = v.resource_instance_id '
+    + 'JOIN resource_requirements r ON r.id = i.requirement_id WHERE r.project_id = ? ORDER BY v.id',
+  ).all(projectId) as unknown as { id: string; resource_instance_id: string; result: string }[]
+  for (const row of resourceVerificationRows) {
+    const replayed = projection.resourceVerifications.get(brandString<ResourceVerificationId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `resource verification "${row.id}" has materialized result ${row.result} but no replayed resource/verified event`,
+      })
+      continue
+    }
+    if (replayed.instanceId !== row.resource_instance_id || replayed.result !== row.result) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `resource verification "${row.id}" materializes ${row.result} for "${row.resource_instance_id}" `
+          + `but replays ${replayed.result} for "${replayed.instanceId}"`,
       })
     }
   }

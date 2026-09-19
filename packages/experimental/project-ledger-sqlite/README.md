@@ -1,5 +1,5 @@
 ---
-description: "SQLite persistence for the v1.6a Project Ledger Core and the v1.6b decision and approval tables: adjacent migrations and a fail-closed open, for maintainers building plan import, activation, or project todo tooling on the ledger."
+description: "SQLite persistence for the v1.6a Project Ledger Core and the v1.6b decision, approval, and resource tables: adjacent migrations and a fail-closed open, for maintainers building plan import, activation, or project todo tooling on the ledger."
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-experimental-project-ledger-sqlite` owns the SQLite persistence seam of the v1.6a Ledger Core. `openProjectLedgerDatabase` materializes the v1 layout — thirteen STRICT tables from `plans` to `work_leases` — plus the v2 decision tables and the v3 approvals table, under owner-only files with `foreign_keys` on, WAL by default, and a busy timeout. The database is a source of truth: a stamped `user_version` newer than the build rejects, older versions upgrade through shipped adjacent steps (one `BEGIN IMMEDIATE` transaction each), and the stamp lands only after the migrated layout is complete. Verifier commands are stored data; this package never executes one.
+`dsh-experimental-project-ledger-sqlite` owns the SQLite persistence seam of the v1.6a Ledger Core. `openProjectLedgerDatabase` materializes the v1 layout — thirteen STRICT tables from `plans` to `work_leases` — plus the v2 decision tables, the v3 approvals table, and the v4 resource tables, under owner-only files with `foreign_keys` on, WAL by default, and a busy timeout. The database is a source of truth: a stamped `user_version` newer than the build rejects, older versions upgrade through shipped adjacent steps (one `BEGIN IMMEDIATE` transaction each), and the stamp lands only after the migrated layout is complete. Verifier commands are stored data; this package never executes one.
 
 ## Table of Contents
 

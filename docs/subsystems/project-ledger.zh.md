@@ -12,12 +12,12 @@ Project Ledger 是仓库工作的 Plan-as-Data 事实源：plan 文档经解析�
 
 没有任何表面直接写账本表。[`dsh-experimental-project-ledger`](../../packages/experimental/project-ledger/README.zh.md) 拥有全部接缝：导入 plan 版本、重算工作 readiness、租约生命周期、追加验收评估、supersede 版本、记录 baseline 漂移、构建有界 WorkPacket。两个 profile 表面消费它们：
 
-- `/project` 命令只读：按 executor kind 的 todo 视图、plan doctor、带观察证据的条目审视与评估历史、把重建投影与物化行双向比对的重放对账、聚合 plan 版本、条目完成度（逐条最新判定）与重放结论的证据摘要、owner 决策请求及其选项与解除决策（`/project decisions`）、以及挂在类型化 subject 上的 approvals（`/project approvals`）——`export` 再把同一记录渲染成单个可归档的 markdown 块。
+- `/project` 命令只读：按 executor kind 的 todo 视图、plan doctor、带观察证据的条目审视与评估历史、把重建投影与物化行双向比对的重放对账、聚合 plan 版本、条目完成度（逐条最新判定）与重放结论的证据摘要、owner 决策请求及其选项与解除决策（`/project decisions`）、挂在类型化 subject 上的 approvals（`/project approvals`）、以及带实例与验证判定的资源需求（`/project resources`）——`export` 再把同一记录渲染成单个可归档的 markdown 块。
 - `project_work_next`、`project_work_claim`、`project_work_update` 三个工具让 agent 经每任务一个有界 WorkPacket 处理同样的工作；领取持有的 bearer token 绝不进入模型可见值。
 
 ## 完整性是事实，不是修复
 
-评估是 append-only 历史，状态是投影；验收是唯一的完成权威，会话 todo 或 plan 编辑都无法把工作抄近路到 done。owner 的决策与审批同形：决策请求按项目内键只开一次、恰好一条决策解除它；approval 挂在类型化 subject 引用旁、恰好决定一次——都记为折叠可重放的必需事件。doctor 一次扫描复验已导入版本——连过了自身有效期仍记 ACTIVE 的租约行（reaper 落后时欠着恢复的行）也会点名——重放对账报告事件与行的任何分道，两者都不变更、不执行 verifier 命令。WorkPacket 只携带记录在案的 recipe；重建从当前行重组 packet 并指名漂移之处。
+评估是 append-only 历史，状态是投影；验收是唯一的完成权威，会话 todo 或 plan 编辑都无法把工作抄近路到 done。owner 的决策与审批同形：决策请求按项目内键只开一次、恰好一条决策解除它；approval 挂在类型化 subject 引用旁、恰好决定一次；资源需求收集经验证的实例——都记为折叠可重放的必需事件。doctor 一次扫描复验已导入版本——连过了自身有效期仍记 ACTIVE 的租约行（reaper 落后时欠着恢复的行）也会点名——重放对账报告事件与行的任何分道，两者都不变更、不执行 verifier 命令。WorkPacket 只携带记录在案的 recipe；重建从当前行重组 packet 并指名漂移之处。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
