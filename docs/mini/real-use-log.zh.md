@@ -161,7 +161,11 @@ v1.6b 计划 supersede 了自己的版本 1，本增量完成版本 2 批次的�
 
 运行之后，该域第一批行经 shipped 接缝记录了账本自己的班底：actor `actor:mini-dsh:owner`（HUMAN，go 门的持有人）与 `actor:mini-dsh:agent:mini-real-use-lane`（AGENT，领取了每个条目的 lane），role `role:mini-dsh:owner`（GOVERNANCE——approvals 域的 `required_role` 已指向的名字）与 `role:mini-dsh:executor`（EXECUTION），assignment `asg:mini-dsh:144` 与 `asg:mini-dsh:145`——即事件 140–145。持久账本在首次打开时就地迁移 schema 4→5，现在把 1/2/3/4/5 混合时间线折叠干净（145 事件中 97 + 19 + 2 + 14 + 13 个戳记）。幂等重跑通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。v1.6b 计划的版本 2 批次至此两项全部完成——decisions、approvals、resources 与 actor/roles 全部立为账本记录的域。
 
+### 2026-09-20 —— v1.6d 入场：decisions 域的第二次门用途
+
+来自 v1.6b 收尾门的 v1.6d 前置物——双语协作范围提案（`docs/mini/v1.6d/fork-mini-DSH-v1.6d-collaboration-scope-proposal.md`）——以 §33 进入门收束，本条就是这道门的运行：owner 在以本入场决策为第一选项的门上给出 go，`dr:mini-dsh:v1.6d-entry` 以 `BLOCKING` 打开（三个选项：推荐 `enter-v1.6d-stage-a`、`enter-v1.6d-one-batch`、`keep-accumulating`），裁决选中 `enter-v1.6d-stage-a`——决策 `dc:dr:mini-dsh:v1.6d-entry:147`，事件 146–147，这是 decisions 域在 `dr:mini-dsh:v1.6b-entry`（事件 109）之后的第二次门用途。本增量没有 lane 运行、没有工作项：入账的活动就是门本身，经 shipped 的 `openDecisionRequest`/`recordDecision` 接缝写入。持久账本现在把 1/2/3/4/5 混合时间线折叠干净（147 事件中 97 + 19 + 2 + 14 + 15 个戳记）；replay 审计 0 drift，doctor 在活跃的 v1.6b 计划版本上 0 issues。下一步：v1.6d 计划 yaml（阶段 A 批次——工作指派、交接、按 actor 的领取可见性）随第一个阶段 A 增量起草，其条目届时才可领取。
+
 ## 相对门槛的状态
 
 
-经账本完成的工作项：30（15 个黄金计划项由 v1.6a 构建本身完成，加上面十五条）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入；v1.6a 门槛就此关闭。
+经账本完成的工作项：30（15 个黄金计划项由 v1.6a 构建本身完成，加上面十五条 lane 条目；最新一条是 v1.6d 入场决策，不完成工作项）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入并随其完成报告关闭；**v1.6d 已于 2026-09-20 给出**——决策 `dr:mini-dsh:v1.6d-entry`（选中 `enter-v1.6d-stage-a`）——v1.6d 阶段 A 已进入。
