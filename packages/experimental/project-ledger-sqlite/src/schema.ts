@@ -7,8 +7,9 @@
  * events, plan imports, compile diagnostics, and work leases — the v1.6b
  * decision-domain layout (decision requests, options, decisions), its
  * approval layout (blueprint §24: approvals over a typed subject reference,
- * kept separate from decisions), and its resource layout (blueprint
- * §25/§26/§27: requirements, instances, verifications).
+ * kept separate from decisions), its resource layout (blueprint
+ * §25/§26/§27: requirements, instances, verifications), and its actor/role
+ * layout (blueprint §3/§4: actors, roles, and the assignments between them).
  *
  * The database is a source of truth, not a rebuildable index: a stamped
  * `user_version` newer than this build rejects, upgrades advance one
@@ -93,6 +94,12 @@ export const PROJECT_LEDGER_MIGRATIONS: readonly ProjectLedgerMigration[] = [
     toVersion: 4,
     description: 'v1.6b resource domain (resource requirements, instances, verifications)',
     apply: createResourceTables,
+  },
+  {
+    fromVersion: 4,
+    toVersion: 5,
+    description: 'v1.6b actor/role domain (actors, roles, actor roles)',
+    apply: createActorTables,
   },
 ]
 
@@ -589,5 +596,62 @@ function createResourceTables(db: DatabaseSync): void {
     ) STRICT;
     CREATE INDEX IF NOT EXISTS idx_resource_verifications_instance
       ON resource_verifications(resource_instance_id, verified_at_ms);
+  `)
+}
+
+/**
+ * Materialize the v1.6b actor/role tables and indexes (blueprint §3/§4,
+ * adapted like the other v1.6b domains: actor strings become the project
+ * `actor_key` the decision, approval, and resource actor columns already
+ * record; kinds and statuses use the ledger's uppercase controlled sets;
+ * `INACTIVE` and a non-null `valid_to_ms` are reserved with no writer yet).
+ * An actor holds a role at most once at a time, enforced by the partial
+ * unique index over live assignments. Idempotent by design.
+ */
+function createActorTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS actors (
+      id                TEXT PRIMARY KEY,
+      project_id        TEXT NOT NULL,
+      actor_key         TEXT NOT NULL,
+      actor_kind        TEXT NOT NULL CHECK(actor_kind IN (
+        'HUMAN','AGENT','SERVICE','SYSTEM'
+      )),
+      display_name      TEXT NOT NULL,
+      external_identity TEXT,
+      metadata_json     TEXT,
+      status            TEXT NOT NULL CHECK(status IN (
+        'ACTIVE','INACTIVE'
+      )),
+      created_at_ms     INTEGER NOT NULL,
+      UNIQUE(project_id, actor_key)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_actors_project_kind
+      ON actors(project_id, actor_kind, status);
+
+    CREATE TABLE IF NOT EXISTS roles (
+      id             TEXT PRIMARY KEY,
+      project_id     TEXT NOT NULL,
+      role_name      TEXT NOT NULL,
+      role_kind      TEXT NOT NULL CHECK(role_kind IN (
+        'GOVERNANCE','EXECUTION'
+      )),
+      description    TEXT,
+      created_at_ms  INTEGER NOT NULL,
+      UNIQUE(project_id, role_name)
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS actor_roles (
+      id             TEXT PRIMARY KEY,
+      actor_id       TEXT NOT NULL REFERENCES actors(id),
+      role_id        TEXT NOT NULL REFERENCES roles(id),
+      valid_from_ms  INTEGER NOT NULL,
+      valid_to_ms    INTEGER
+    ) STRICT;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_one_live_assignment_per_pair
+      ON actor_roles(actor_id, role_id)
+      WHERE valid_to_ms IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_actor_roles_actor
+      ON actor_roles(actor_id, role_id);
   `)
 }

@@ -4961,6 +4961,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type PreToolDecision = {\n    kind: \'allow\';\n} | {\n    kind: \'deny\';\n    reason: string;\n    info?: ToolErrorInfo;\n} | {\n    kind: \'cancel\';\n} | {\n    kind: \'ask\';\n    reason?: string;\n};',
   },
   {
+    name: 'ProjectId',
+    declaration: 'export type ProjectId = Branded<\'ProjectId\'>;',
+  },
+  {
     name: 'ProjectionChangeListener',
     declaration: 'export type ProjectionChangeListener = (session: Session, key: Extract<keyof SessionProjectionMap, string>, value: unknown, seq: SessionSeq) => void;',
   },
@@ -5147,6 +5151,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ResumeAgentOptions',
     declaration: 'export interface ResumeAgentOptions {\n    readonly resumeSessionId: SessionId;\n    readonly parentAgent?: Agent;\n    readonly agentOptions?: AgentOptions;\n    readonly signal?: AbortSignal;\n    readonly setup?: AgentSetup;\n}',
+  },
+  {
+    name: 'Role',
+    declaration: 'export interface Role {\n    readonly roleId: RoleId;\n    readonly projectId: ProjectId;\n    readonly roleName: string;\n    readonly roleKind: RoleKind;\n    readonly description: string | undefined;\n    readonly createdAtMs: number;\n}',
+  },
+  {
+    name: 'RoleId',
+    declaration: 'export type RoleId = Branded<\'RoleId\'>;',
+  },
+  {
+    name: 'RoleKind',
+    declaration: 'export type RoleKind = (typeof ROLE_KINDS)[number];',
   },
   {
     name: 'RunnerFailureRule',

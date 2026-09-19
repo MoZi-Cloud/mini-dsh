@@ -10,8 +10,10 @@ import {
   PROJECT_EVENT_FORMAT_VERSION,
   ProjectEventError,
   appendProjectEvent,
+  assignRole,
   compilePlan,
   decideApproval,
+  defineRole,
   importPlanVersion,
   openDecisionRequest,
   parsePlanDocument,
@@ -19,12 +21,15 @@ import {
   openResourceRequirement,
   provideResourceInstance,
   recordDecision,
+  registerActor,
   replayProjectEvents,
   requestApproval,
   validatePlanSchema,
   verifyResourceInstance,
   type AcceptanceCriterionId,
   type AcceptanceCriterionStatus,
+  type ActorId,
+  type ActorRoleId,
   type ApprovalId,
   type ApprovalSubjectType,
   type CompiledPlan,
@@ -37,6 +42,8 @@ import {
   type ProjectEventEnvelope,
   type ProjectId,
   type ReplayedApproval,
+  type ReplayedActor,
+  type ReplayedActorRole,
   type ReplayedCriterion,
   type ReplayedDecision,
   type ReplayedDecisionRequest,
@@ -47,11 +54,13 @@ import {
   type ReplayedLeaseStatus,
   type ReplayedPlanVersion,
   type ReplayedProjectProjection,
+  type ReplayedRole,
   type ReplayedWorkItem,
   type ResourceRequirementId,
   type ResourceInstanceId,
   type ResourceVerificationId,
   type ResourceVerificationResult,
+  type RoleId,
   type SourceDocumentHash,
   type WorkItemId,
   type WorkLeaseId,
@@ -274,6 +283,41 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       result: row.result,
     })
   }
+  const actors = new Map<ActorId, ReplayedActor>()
+  for (const row of db.prepare(
+    'SELECT id, actor_key, actor_kind, display_name, status FROM actors',
+  ).all() as { id: string; actor_key: string; actor_kind: string; display_name: string; status: 'ACTIVE' }[]) {
+    actors.set(brandString<ActorId>(row.id), {
+      actorKey: row.actor_key,
+      actorKind: row.actor_kind as ReplayedActor['actorKind'],
+      displayName: row.display_name,
+      status: row.status,
+    })
+  }
+  const roles = new Map<RoleId, ReplayedRole>()
+  for (const row of db.prepare('SELECT id, role_name, role_kind FROM roles').all() as {
+    id: string
+    role_name: string
+    role_kind: string
+  }[]) {
+    roles.set(brandString<RoleId>(row.id), {
+      roleName: row.role_name,
+      roleKind: row.role_kind as ReplayedRole['roleKind'],
+    })
+  }
+  const actorRoles = new Map<ActorRoleId, ReplayedActorRole>()
+  for (const row of db.prepare('SELECT id, actor_id, role_id, valid_to_ms FROM actor_roles').all() as {
+    id: string
+    actor_id: string
+    role_id: string
+    valid_to_ms: number | null
+  }[]) {
+    actorRoles.set(brandString<ActorRoleId>(row.id), {
+      actorId: brandString<ActorId>(row.actor_id),
+      roleId: brandString<RoleId>(row.role_id),
+      validToMs: row.valid_to_ms ?? undefined,
+    })
+  }
   // No test in this file prepares work packets; the rebuild seam owns packet parity.
   return {
     planVersions,
@@ -286,6 +330,9 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
     resourceRequirements,
     resourceInstances,
     resourceVerifications,
+    actors,
+    roles,
+    actorRoles,
   }
 }
 
@@ -612,6 +659,9 @@ describe('replayProjectEvents', () => {
       resourceRequirements: new Map(),
       resourceInstances: new Map(),
       resourceVerifications: new Map(),
+      actors: new Map(),
+      roles: new Map(),
+      actorRoles: new Map(),
     })
     db.close()
   })
@@ -1014,8 +1064,7 @@ describe('replayProjectEvents', () => {
     db.close()
   })
 
-  it('fails replay on approval payloads with missing, mistyped, or invalid fields', async () => {
-    const db = await goldenLedger()
+  it('fails replay on approval payloads with missing, mistyped, or invalid fields', async () => {    const db = await goldenLedger()
     const baseRequested: Record<string, unknown> = {
       approvalId: 'ap:mini-dsh:payload',
       subjectType: 'plan-version',
@@ -1065,6 +1114,167 @@ describe('replayProjectEvents', () => {
     expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
       .toContain('payload field "outcome" is not an approval outcome: "DEFERRED"')
     setPayload(decided.sequenceNo, baseDecided)
+    db.close()
+  })
+
+  it('replays the actor/role domain to the materialized projection', async () => {
+    const db = await goldenLedger()
+    const owner = registerActor(db, PROJECT, {
+      actorKey: 'owner',
+      actorKind: 'HUMAN',
+      displayName: 'Owner',
+      externalIdentity: 'lincoln@local',
+      metadataJson: '{"gate":"go"}',
+    }, { nowMs: 20, actorRef: 'tester' })
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 21, actorRef: 'tester' })
+    const ownerRole = defineRole(db, PROJECT, {
+      roleName: 'owner', roleKind: 'GOVERNANCE', description: 'gates the ledger',
+    }, { nowMs: 22, actorRef: 'tester' })
+    const executorRole = defineRole(db, PROJECT, {
+      roleName: 'executor', roleKind: 'EXECUTION',
+    }, { nowMs: 23, actorRef: 'tester' })
+    assignRole(db, { actorId: owner.actorId, roleId: ownerRole.roleId }, { nowMs: 24, actorRef: 'tester' })
+    assignRole(db, { actorId: lane.actorId, roleId: executorRole.roleId }, { nowMs: 25, actorRef: 'tester' })
+
+    const replayed = replayProjectEvents(db, PROJECT)
+    expect(replayed).toEqual(materializedProjection(db))
+    expect(replayed.actors.get(owner.actorId)).toEqual({
+      actorKey: 'owner',
+      actorKind: 'HUMAN',
+      displayName: 'Owner',
+      status: 'ACTIVE',
+    })
+    expect(replayed.actors.get(lane.actorId)).toEqual({
+      actorKey: 'lane',
+      actorKind: 'AGENT',
+      displayName: 'Lane',
+      status: 'ACTIVE',
+    })
+    expect(replayed.roles.get(ownerRole.roleId)).toEqual({ roleName: 'owner', roleKind: 'GOVERNANCE' })
+    expect(replayed.roles.get(executorRole.roleId)).toEqual({ roleName: 'executor', roleKind: 'EXECUTION' })
+    expect(replayed.actorRoles.get(brandString<ActorRoleId>('asg:mini-dsh:21'))).toEqual({
+      actorId: owner.actorId,
+      roleId: ownerRole.roleId,
+      validToMs: undefined,
+    })
+    db.close()
+  })
+
+  it('fails replay on role/assigned events naming unreplayed entities', async () => {
+    const db = await goldenLedger()
+    appendProjectEvent(db, PROJECT, 'role/assigned', {
+      assignmentId: 'asg:mini-dsh:ghost',
+      actorId: 'actor:mini-dsh:ghost',
+      roleId: 'role:mini-dsh:ghost',
+    }, { entityType: 'actor_role', entityId: 'asg:mini-dsh:ghost', nowMs: 2 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "actorId" names no replayed actor (actor:mini-dsh:ghost)')
+    db.prepare('DELETE FROM project_events WHERE sequence_no = 17').run()
+
+    const owner = registerActor(db, PROJECT, {
+      actorKey: 'owner', actorKind: 'HUMAN', displayName: 'Owner',
+    }, { nowMs: 10, actorRef: 'tester' })
+    appendProjectEvent(db, PROJECT, 'role/assigned', {
+      assignmentId: 'asg:mini-dsh:ghost',
+      actorId: owner.actorId,
+      roleId: 'role:mini-dsh:ghost',
+    }, { entityType: 'actor_role', entityId: 'asg:mini-dsh:ghost', nowMs: 2 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "roleId" names no replayed role (role:mini-dsh:ghost)')
+    db.close()
+  })
+
+  it('fails replay on a role assigned while a live assignment already holds it', async () => {
+    const db = await goldenLedger()
+    const owner = registerActor(db, PROJECT, {
+      actorKey: 'owner', actorKind: 'HUMAN', displayName: 'Owner',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const role = defineRole(db, PROJECT, { roleName: 'owner', roleKind: 'GOVERNANCE' }, { nowMs: 11, actorRef: 'tester' })
+    assignRole(db, { actorId: owner.actorId, roleId: role.roleId }, { nowMs: 12, actorRef: 'tester' })
+    appendProjectEvent(db, PROJECT, 'role/assigned', {
+      assignmentId: 'asg:mini-dsh:19',
+      actorId: owner.actorId,
+      roleId: role.roleId,
+    }, { entityType: 'actor_role', entityId: 'asg:mini-dsh:19', nowMs: 3 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain(`assigns actor "${owner.actorId}" to role "${role.roleId}" while live assignment`)
+    db.close()
+  })
+
+  it('fails replay on actor and role payloads with missing, mistyped, or invalid fields', async () => {
+    const db = await goldenLedger()
+    const baseRegistered: Record<string, unknown> = {
+      actorId: 'actor:mini-dsh:payload',
+      actorKey: 'payload',
+      actorKind: 'HUMAN',
+      displayName: 'Payload probe',
+    }
+    const registered = appendProjectEvent(db, PROJECT, 'actor/registered', baseRegistered, {
+      entityType: 'actor',
+      entityId: 'actor:mini-dsh:payload',
+      nowMs: 2,
+    })
+    const setPayload = (sequenceNo: number, payload: unknown): void => {
+      db.prepare('UPDATE project_events SET payload_json = ? WHERE project_id = ? AND sequence_no = ?')
+        .run(JSON.stringify(payload), PROJECT, sequenceNo)
+    }
+    for (const field of ['actorId', 'actorKey', 'actorKind', 'displayName']) {
+      const payload = Object.fromEntries(Object.entries(baseRegistered).filter(([key]) => key !== field))
+      setPayload(registered.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(registered.sequenceNo, { ...baseRegistered, externalIdentity: 7 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "externalIdentity" must be a string')
+    setPayload(registered.sequenceNo, { ...baseRegistered, actorKind: 'TELEPORT' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "actorKind" is not an actor kind: "TELEPORT"')
+    db.prepare('DELETE FROM project_events WHERE sequence_no = ?').run(registered.sequenceNo)
+
+    const baseDefined: Record<string, unknown> = {
+      roleId: 'role:mini-dsh:payload',
+      roleName: 'payload',
+      roleKind: 'GOVERNANCE',
+    }
+    const defined = appendProjectEvent(db, PROJECT, 'role/defined', baseDefined, {
+      entityType: 'role',
+      entityId: 'role:mini-dsh:payload',
+      nowMs: 2,
+    })
+    for (const field of ['roleId', 'roleName', 'roleKind']) {
+      const payload = Object.fromEntries(Object.entries(baseDefined).filter(([key]) => key !== field))
+      setPayload(defined.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(defined.sequenceNo, { ...baseDefined, description: 7 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "description" must be a string')
+    setPayload(defined.sequenceNo, { ...baseDefined, roleKind: 'DECORATIVE' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "roleKind" is not a role kind: "DECORATIVE"')
+    setPayload(defined.sequenceNo, baseDefined)
+
+    const owner = registerActor(db, PROJECT, {
+      actorKey: 'owner', actorKind: 'HUMAN', displayName: 'Owner',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const baseAssigned: Record<string, unknown> = {
+      assignmentId: 'asg:mini-dsh:19',
+      actorId: owner.actorId,
+      roleId: 'role:mini-dsh:payload',
+    }
+    const assigned = appendProjectEvent(db, PROJECT, 'role/assigned', baseAssigned, {
+      entityType: 'actor_role',
+      entityId: 'asg:mini-dsh:19',
+      nowMs: 3,
+    })
+    for (const field of ['assignmentId', 'actorId', 'roleId']) {
+      const payload = Object.fromEntries(Object.entries(baseAssigned).filter(([key]) => key !== field))
+      setPayload(assigned.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(assigned.sequenceNo, baseAssigned)
     db.close()
   })
 })

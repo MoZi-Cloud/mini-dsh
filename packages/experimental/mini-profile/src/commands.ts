@@ -13,9 +13,10 @@
  * renders again as one archival markdown block, `decisions` lists the
  * project's owner decision requests with their options and the decisions
  * that resolved them, `approvals` lists the project's approvals over
- * their typed subjects with the decisions that answered them, and
+ * their typed subjects with the decisions that answered them,
  * `resources` lists the project's resource requirements with their
- * instances and verification verdicts. The project and plan version
+ * instances and verification verdicts, and `actors` lists the project's
+ * registered actors, defined roles, and live assignments. The project and plan version
  * resolve through the ledger's plan directory when the command names none. The handler never mutates ledger state, never sends anything to
  * the model, and never executes a verifier command — mutating surfaces stay
  * with their owning writers and later work.
@@ -35,6 +36,7 @@ import {
   listOwnerTodo,
   listPlans,
   planDoctor,
+  readProjectActors,
   readProjectApprovals,
   readProjectDecisions,
   readProjectResources,
@@ -42,6 +44,7 @@ import {
   readProjectReplay,
   readWorkItemHistory,
   readWorkItemReview,
+  type ActorDirectory,
   type Approval,
   type DecisionRequest,
   type PlanDoctorReport,
@@ -76,6 +79,7 @@ type ProjectCommand =
   | { readonly kind: 'decisions'; readonly projectId: string | undefined }
   | { readonly kind: 'approvals'; readonly projectId: string | undefined }
   | { readonly kind: 'resources'; readonly projectId: string | undefined }
+  | { readonly kind: 'actors'; readonly projectId: string | undefined }
 
 /* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
@@ -94,6 +98,7 @@ const HELP_TEXT = [
   '/project decisions [<project-id>] — list owner decision requests with options and the decisions that resolved them',
   '/project approvals [<project-id>] — list approvals over their typed subjects with the decisions that answered them',
   '/project resources [<project-id>] — list resource requirements with instances and verification verdicts',
+  '/project actors [<project-id>] — list registered actors, defined roles, and live assignments',
 ].join('\n')
 
 /** The usage hint the command registry shows for /project. */
@@ -108,6 +113,7 @@ const PROJECT_INPUT_HINT = [
   'decisions [<project-id>]',
   'approvals [<project-id>]',
   'resources [<project-id>]',
+  'actors [<project-id>]',
 ].join(' | ')
 
 /**
@@ -173,6 +179,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
   if (tokens[0] === 'resources') {
     return tokens.length <= 2
       ? { kind: 'resources', projectId: tokens[1] }
+      : undefined
+  }
+  if (tokens[0] === 'actors') {
+    return tokens.length <= 2
+      ? { kind: 'actors', projectId: tokens[1] }
       : undefined
   }
   return undefined
@@ -636,6 +647,36 @@ function renderResources(projectId: ProjectId, requirements: readonly ResourceRe
 }
 
 /**
+ * Render the project's actor directory as command output: actors, roles, and
+ * the live assignments between them, each with its defining facts.
+ * @param projectId - the project whose directory is listed.
+ * @param directory - the listed actors, roles, and assignments.
+ * @returns the multi-line command text.
+ */
+function renderActors(projectId: ProjectId, directory: ActorDirectory): string {
+  if (directory.actors.length === 0 && directory.roles.length === 0) {
+    return `No actors or roles in project ${projectId}.`
+  }
+  const lines = [
+    `Project ${projectId} — actors, ${directory.actors.length}:`,
+    ...directory.actors.map((actor) => {
+      const external = actor.externalIdentity === undefined ? '' : ` — external ${actor.externalIdentity}`
+      return `- ${actor.actorKey} (${actor.actorKind}) ${actor.status} — ${actor.displayName}${external}`
+    }),
+    `roles, ${directory.roles.length}:`,
+    ...directory.roles.map((role) => {
+      const described = role.description === undefined ? '' : ` — ${role.description}`
+      return `- ${role.roleName} (${role.roleKind})${described}`
+    }),
+    `assignments, ${directory.assignments.length}:`,
+    ...directory.assignments.map(assignment =>
+      `- ${assignment.actorKey} holds ${assignment.roleName} since `
+        + new Date(assignment.validFromMs).toISOString()),
+  ]
+  return lines.join('\n')
+}
+
+/**
  * Execute one parsed `/project` invocation against the mounted ledger.
  * @param ctx - context whose `projectLedger` service owns the opened database.
  * @param rawInput - exact text after the command name.
@@ -701,6 +742,10 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
       case 'resources': {
         const projectId = resolveProjectId(listPlans(db), command.projectId)
         return { kind: 'success', text: renderResources(projectId, readProjectResources(db, projectId)) }
+      }
+      case 'actors': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        return { kind: 'success', text: renderActors(projectId, readProjectActors(db, projectId)) }
       }
       /* v8 ignore next 2 -- the parse step returns a closed union */
       default: return assertNever(command, 'project command')

@@ -17,6 +17,7 @@
 
 import { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
+import type { ActorId, ActorRoleId, RoleId } from './actors.js'
 import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
@@ -161,6 +162,33 @@ export type ResourceVerifierKind = (typeof RESOURCE_VERIFIER_KINDS)[number]
 const RESOURCE_VERIFIER_KIND_SET: ReadonlySet<string> = new Set<string>(RESOURCE_VERIFIER_KINDS)
 
 /**
+ * The kinds an `actor/registered` payload may name (blueprint §3's actor
+ * kinds, uppercased to the ledger's controlled-set convention). Owned here
+ * (not in the actors module) because the payload codec validates it on read.
+ */
+export const ACTOR_KINDS = ['HUMAN', 'AGENT', 'SERVICE', 'SYSTEM'] as const
+
+/** A kind of one project actor. */
+export type ActorKind = (typeof ACTOR_KINDS)[number]
+
+const ACTOR_KIND_SET: ReadonlySet<string> = new Set<string>(ACTOR_KINDS)
+
+/**
+ * The kinds a `role/defined` payload may name — the two duties the ledger's
+ * roles carry: `GOVERNANCE` roles (like `owner`, the referent of approval
+ * `required_role` references) gate decisions and approvals; `EXECUTION`
+ * roles (like `executor`) claim and complete work. The blueprint leaves
+ * `role_kind` unvalued; this build closes it to these two. Owned here (not
+ * in the actors module) because the payload codec validates it on read.
+ */
+export const ROLE_KINDS = ['GOVERNANCE', 'EXECUTION'] as const
+
+/** A kind of one project role. */
+export type RoleKind = (typeof ROLE_KINDS)[number]
+
+const ROLE_KIND_SET: ReadonlySet<string> = new Set<string>(ROLE_KINDS)
+
+/**
  * The event envelope version recorded in the `event_format_version` column of
  * every `project_events` row — the single home of this constant. Adding a
  * required vocabulary entry bumps it together with the codec; purely
@@ -169,7 +197,7 @@ const RESOURCE_VERIFIER_KIND_SET: ReadonlySet<string> = new Set<string>(RESOURCE
  * (the vocabulary is cumulative), and only a row stamped newer than this
  * build rejects.
  */
-export const PROJECT_EVENT_FORMAT_VERSION = 4
+export const PROJECT_EVENT_FORMAT_VERSION = 5
 
 /**
  * The event vocabulary. Every listed type is required: rows carry
@@ -179,7 +207,8 @@ export const PROJECT_EVENT_FORMAT_VERSION = 4
  * `work/lease-expired`, `work/lease-released`, `acceptance/evaluated`,
  * `project/work-packet-prepared`, `decision/requested`,
  * `decision/recorded`, `approval/requested`, `approval/decided`,
- * `resource/required`, `resource/provided`, and `resource/verified`), and a
+ * `resource/required`, `resource/provided`, `resource/verified`,
+ * `actor/registered`, `role/defined`, and `role/assigned`), and a
  * reader that does not know the type
  * fails closed. `plan/version-superseded` and `baseline/drift-detected` are
  * validated without state change: their writers own lifecycle columns and
@@ -207,6 +236,9 @@ export const PROJECT_EVENT_TYPES = [
   'resource/required',
   'resource/provided',
   'resource/verified',
+  'actor/registered',
+  'role/defined',
+  'role/assigned',
 ] as const
 
 /** A vocabulary type of the v1 event format. */
@@ -555,6 +587,32 @@ export interface ReplayedResourceVerification {
   readonly result: ResourceVerificationResult
 }
 
+/** Actor facts the `actor/registered` event replays; the registered stamp is the event's `createdAtMs`. */
+export interface ReplayedActor {
+  readonly actorKey: string
+  readonly actorKind: ActorKind
+  readonly displayName: string
+  /** `INACTIVE` is a reserved status with no writer yet. */
+  readonly status: 'ACTIVE'
+}
+
+/** Role facts the `role/defined` event replays; the defined stamp is the event's `createdAtMs`. */
+export interface ReplayedRole {
+  readonly roleName: string
+  readonly roleKind: RoleKind
+}
+
+/**
+ * Assignment facts the `role/assigned` event replays; the assignment's
+ * `valid_from_ms` is the event's `createdAtMs` and `valid_to_ms` is reserved
+ * (no end-of-assignment writer yet, so the fold always replays `undefined`).
+ */
+export interface ReplayedActorRole {
+  readonly actorId: ActorId
+  readonly roleId: RoleId
+  readonly validToMs: number | undefined
+}
+
 /** The projection replaying a project's events rebuilds. */
 export interface ReplayedProjectProjection {
   readonly planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>
@@ -572,6 +630,10 @@ export interface ReplayedProjectProjection {
   readonly resourceRequirements: ReadonlyMap<ResourceRequirementId, ReplayedResourceRequirement>
   readonly resourceInstances: ReadonlyMap<ResourceInstanceId, ReplayedResourceInstance>
   readonly resourceVerifications: ReadonlyMap<ResourceVerificationId, ReplayedResourceVerification>
+  /** The actor/role domain, rebuilt from the `actor/*` and `role/*` events. */
+  readonly actors: ReadonlyMap<ActorId, ReplayedActor>
+  readonly roles: ReadonlyMap<RoleId, ReplayedRole>
+  readonly actorRoles: ReadonlyMap<ActorRoleId, ReplayedActorRole>
 }
 
 /**
@@ -596,6 +658,9 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
   const resourceRequirements = new Map<ResourceRequirementId, ReplayedResourceRequirement>()
   const resourceInstances = new Map<ResourceInstanceId, ReplayedResourceInstance>()
   const resourceVerifications = new Map<ResourceVerificationId, ReplayedResourceVerification>()
+  const actors = new Map<ActorId, ReplayedActor>()
+  const roles = new Map<RoleId, ReplayedRole>()
+  const actorRoles = new Map<ActorRoleId, ReplayedActorRole>()
   // Validation state for the supersede applier: a version retires once.
   const supersededPlanVersionIds = new Set<PlanVersionId>()
   for (const event of readProjectEvents(db, projectId)) {
@@ -891,6 +956,46 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         })
         break
       }
+      case 'actor/registered': {
+        const payload = decodeActorRegisteredPayload(event)
+        actors.set(payload.actorId, {
+          actorKey: payload.actorKey,
+          actorKind: payload.actorKind,
+          displayName: payload.displayName,
+          status: 'ACTIVE',
+        })
+        break
+      }
+      case 'role/defined': {
+        const payload = decodeRoleDefinedPayload(event)
+        roles.set(payload.roleId, {
+          roleName: payload.roleName,
+          roleKind: payload.roleKind,
+        })
+        break
+      }
+      case 'role/assigned': {
+        const payload = decodeRoleAssignedPayload(event)
+        requireReplayedActor(actors, payload.actorId, event)
+        requireReplayedRole(roles, payload.roleId, event)
+        for (const [assignmentId, assignment] of actorRoles) {
+          if (assignment.actorId === payload.actorId && assignment.roleId === payload.roleId
+            && assignment.validToMs === undefined) {
+            throw new ProjectEventError(
+              'malformed-event-payload',
+              `project event ${event.sequenceNo} of "${event.projectId}" assigns actor `
+                + `"${payload.actorId}" to role "${payload.roleId}" while live assignment `
+                + `"${assignmentId}" already holds it`,
+            )
+          }
+        }
+        actorRoles.set(payload.assignmentId, {
+          actorId: payload.actorId,
+          roleId: payload.roleId,
+          validToMs: undefined,
+        })
+        break
+      }
       default:
         break
     }
@@ -906,6 +1011,9 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
     resourceRequirements,
     resourceInstances,
     resourceVerifications,
+    actors,
+    roles,
+    actorRoles,
   }
 }
 
@@ -1031,6 +1139,40 @@ function requireReplayedResourceInstance(
       'malformed-event-payload',
       `project event ${event.sequenceNo} of "${event.projectId}" payload field "instanceId" `
         + `names no replayed resource instance (${instanceId})`,
+    )
+  }
+  return replayed
+}
+
+/** Fail closed when a payload names an actor the fold has not replayed. */
+function requireReplayedActor(
+  actors: ReadonlyMap<ActorId, ReplayedActor>,
+  actorId: ActorId,
+  event: ProjectEventEnvelope,
+): ReplayedActor {
+  const replayed = actors.get(actorId)
+  if (replayed === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "actorId" `
+        + `names no replayed actor (${actorId})`,
+    )
+  }
+  return replayed
+}
+
+/** Fail closed when a payload names a role the fold has not replayed. */
+function requireReplayedRole(
+  roles: ReadonlyMap<RoleId, ReplayedRole>,
+  roleId: RoleId,
+  event: ProjectEventEnvelope,
+): ReplayedRole {
+  const replayed = roles.get(roleId)
+  if (replayed === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "roleId" `
+        + `names no replayed role (${roleId})`,
     )
   }
   return replayed
@@ -1245,6 +1387,31 @@ interface ResourceVerifiedPayload {
   readonly observedJson: string | undefined
   readonly result: ResourceVerificationResult
   readonly verifiedAtMs: number
+}
+
+/** Payload facts of one `actor/registered` event; the registered stamp is the envelope's `createdAtMs`. */
+interface ActorRegisteredPayload {
+  readonly actorId: ActorId
+  readonly actorKey: string
+  readonly actorKind: ActorKind
+  readonly displayName: string
+  readonly externalIdentity: string | undefined
+  readonly metadataJson: string | undefined
+}
+
+/** Payload facts of one `role/defined` event; the defined stamp is the envelope's `createdAtMs`. */
+interface RoleDefinedPayload {
+  readonly roleId: RoleId
+  readonly roleName: string
+  readonly roleKind: RoleKind
+  readonly description: string | undefined
+}
+
+/** Payload facts of one `role/assigned` event; the assignment's `valid_from_ms` is the envelope's `createdAtMs`. */
+interface RoleAssignedPayload {
+  readonly assignmentId: ActorRoleId
+  readonly actorId: ActorId
+  readonly roleId: RoleId
 }
 
 /** The event payload must be a JSON object for appliers to read fields from. */
@@ -1943,5 +2110,65 @@ function decodeResourceVerifiedPayload(event: ProjectEventEnvelope): ResourceVer
     observedJson: optionalString(fields, event, 'observedJson'),
     result: requiredResourceVerificationResult(fields, event, 'result'),
     verifiedAtMs: requiredNumber(fields, event, 'verifiedAtMs'),
+  }
+}
+
+/** Read one required actor kind payload field. */
+function requiredActorKind(fields: Record<string, unknown>, event: ProjectEventEnvelope, field: string): ActorKind {
+  const value = requiredString(fields, event, field)
+  if (!ACTOR_KIND_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not an actor kind: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as ActorKind
+}
+
+/** Read one required role kind payload field. */
+function requiredRoleKind(fields: Record<string, unknown>, event: ProjectEventEnvelope, field: string): RoleKind {
+  const value = requiredString(fields, event, field)
+  if (!ROLE_KIND_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not a role kind: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as RoleKind
+}
+
+/** Decode one `actor/registered` payload, failing closed on missing or mistyped fields. */
+function decodeActorRegisteredPayload(event: ProjectEventEnvelope): ActorRegisteredPayload {
+  const fields = payloadFields(event)
+  return {
+    actorId: requiredString(fields, event, 'actorId') as ActorId,
+    actorKey: requiredString(fields, event, 'actorKey'),
+    actorKind: requiredActorKind(fields, event, 'actorKind'),
+    displayName: requiredString(fields, event, 'displayName'),
+    externalIdentity: optionalString(fields, event, 'externalIdentity'),
+    metadataJson: optionalString(fields, event, 'metadataJson'),
+  }
+}
+
+/** Decode one `role/defined` payload, failing closed on missing or mistyped fields. */
+function decodeRoleDefinedPayload(event: ProjectEventEnvelope): RoleDefinedPayload {
+  const fields = payloadFields(event)
+  return {
+    roleId: requiredString(fields, event, 'roleId') as RoleId,
+    roleName: requiredString(fields, event, 'roleName'),
+    roleKind: requiredRoleKind(fields, event, 'roleKind'),
+    description: optionalString(fields, event, 'description'),
+  }
+}
+
+/** Decode one `role/assigned` payload, failing closed on missing or mistyped fields. */
+function decodeRoleAssignedPayload(event: ProjectEventEnvelope): RoleAssignedPayload {
+  const fields = payloadFields(event)
+  return {
+    assignmentId: requiredString(fields, event, 'assignmentId') as ActorRoleId,
+    actorId: requiredString(fields, event, 'actorId') as ActorId,
+    roleId: requiredString(fields, event, 'roleId') as RoleId,
   }
 }

@@ -26,6 +26,7 @@ import {
   type ResourceVerifierKind,
 } from './project-events.js'
 import type { PlanVersionId, ProjectId } from './plan-compile.js'
+import { requireJsonObject } from './json-text.js'
 import { appendProjectEvent, nextProjectEventSequence } from './project-events.js'
 
 /** Identity of one resource requirement row (`resource_requirements.id`). */
@@ -159,20 +160,6 @@ function requireNonEmpty(field: string, value: string): void {
   }
 }
 
-/** Reject JSON-text inputs that must parse as a JSON object when present. */
-function requireJsonObject(field: string, value: string | undefined): void {
-  if (value === undefined) return
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(value)
-  } catch {
-    throw new ResourceError('invalid-argument', `${field} must be valid JSON text`)
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new ResourceError('invalid-argument', `${field} must be a JSON object`)
-  }
-}
-
 /**
  * Open one resource requirement: validate the inputs, then record the
  * requirement and one `resource/required` event in a single `BEGIN
@@ -197,7 +184,7 @@ export function openResourceRequirement(
   requireNonEmpty('requirementKind', input.requirementKind)
   requireNonEmpty('name', input.name)
   requireNonEmpty('constraintsJson', input.constraintsJson)
-  requireJsonObject('constraintsJson', input.constraintsJson)
+  requireJsonObject('constraintsJson', input.constraintsJson, message => new ResourceError('invalid-argument', message))
   const requirementId = brandString<ResourceRequirementId>(`rr:${projectId}:${input.requirementKey}`)
   db.exec('BEGIN IMMEDIATE')
   try {
@@ -290,7 +277,7 @@ export function provideResourceInstance(
   const nowMs = options.nowMs ?? Date.now()
   const actorRef = options.actorRef ?? DEFAULT_RESOURCE_ACTOR_REF
   requireNonEmpty('label', input.label)
-  requireJsonObject('metadataJson', input.metadataJson)
+  requireJsonObject('metadataJson', input.metadataJson, message => new ResourceError('invalid-argument', message))
   db.exec('BEGIN IMMEDIATE')
   try {
     const requirement = db.prepare(
@@ -379,7 +366,7 @@ export function verifyResourceInstance(
   const nowMs = options.nowMs ?? Date.now()
   const actorRef = options.actorRef ?? DEFAULT_RESOURCE_ACTOR_REF
   requireNonEmpty('verificationSpec', input.verificationSpec)
-  requireJsonObject('observedJson', input.observedJson)
+  requireJsonObject('observedJson', input.observedJson, message => new ResourceError('invalid-argument', message))
   if (!RESOURCE_VERIFIER_KINDS.includes(input.verifierKind)) {
     throw new ResourceError(
       'invalid-argument',

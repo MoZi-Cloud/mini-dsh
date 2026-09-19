@@ -1,5 +1,5 @@
 ---
-description: "v1.6a Project Ledger Core 与 v1.6b decision/approval/resource 表的 SQLite 持久层：相邻迁移与 fail-closed 打开，供维护者在账本之上构建计划导入、激活或项目 todo 工具。"
+description: "v1.6a Project Ledger Core 与 v1.6b decision/approval/resource/actor-role 表的 SQLite 持久层：相邻迁移与 fail-closed 打开，供维护者在账本之上构建计划导入、激活或项目 todo 工具。"
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-experimental-project-ledger-sqlite` 拥有 v1.6a Ledger Core 的 SQLite 持久化接缝。`openProjectLedgerDatabase` 物化 v1 布局——从 `plans` 到 `work_leases` 的十三张 STRICT 表——加上 v2 的 decision 表、v3 的 approvals 表与 v4 的 resource 表，文件仅属主可访问，`foreign_keys` 开启，默认 WAL，并带 busy timeout。数据库是事实源：`user_version` 比构建更新的库直接拒绝；更旧的版本经相邻步骤升级（每步一个 `BEGIN IMMEDIATE` 事务），版本戳只在迁移后布局完整时落笔。verifier 命令是存储数据；本包绝不执行它们。
+`dsh-experimental-project-ledger-sqlite` 拥有 v1.6a Ledger Core 的 SQLite 持久化接缝。`openProjectLedgerDatabase` 物化 v1 布局——从 `plans` 到 `work_leases` 的十三张 STRICT 表——加上 v2 的 decision 表、v3 的 approvals 表、v4 的 resource 表与 v5 的 actor/role 表，文件仅属主可访问，`foreign_keys` 开启，默认 WAL，并带 busy timeout。数据库是事实源：`user_version` 比构建更新的库直接拒绝；更旧的版本经相邻步骤升级（每步一个事务），版本戳只在迁移完成时落笔。verifier 命令是存储数据；本包绝不执行它们。
 
 ## 目录
 

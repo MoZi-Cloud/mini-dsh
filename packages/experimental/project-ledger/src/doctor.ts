@@ -6,7 +6,7 @@
  * inside one project, no lease row still records ACTIVE past its own expiry,
  * the event timeline is readable by this codec, and the replayed projection
  * agrees with the materialized tables (work items, criteria, leases, the
- * decision, approval, and resource domains). The doctor never
+ * decision, approval, resource, and actor/role domains). The doctor never
  * mutates and never executes a verifier command; it reports every
  * independent issue it finds, so a caller sees the whole picture in one
  * pass. The database and event format versions ride along as report facts
@@ -21,6 +21,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
+import type { ActorId, ActorRoleId, RoleId } from './actors.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
 import { PROJECT_EVENT_FORMAT_VERSION, replayProjectEvents, type ReplayedProjectProjection } from './project-events.js'
@@ -515,6 +516,90 @@ function collectProjectionDrift(
         refId: row.id,
         message: `resource verification "${row.id}" materializes ${row.result} for "${row.resource_instance_id}" `
           + `but replays ${replayed.result} for "${replayed.instanceId}"`,
+      })
+    }
+  }
+  const actorRows = db.prepare(
+    'SELECT id, actor_key, actor_kind, display_name, status FROM actors WHERE project_id = ? ORDER BY id',
+  ).all(projectId) as unknown as { id: string; actor_key: string; actor_kind: string; display_name: string; status: string }[]
+  for (const row of actorRows) {
+    const replayed = projection.actors.get(brandString<ActorId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `actor "${row.id}" has materialized status ${row.status} but no replayed actor/registered event`,
+      })
+      continue
+    }
+    if (replayed.actorKey !== row.actor_key || replayed.actorKind !== row.actor_kind
+      || replayed.displayName !== row.display_name) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `actor "${row.id}" materializes as ${row.actor_kind} "${row.actor_key}" `
+          + `(${row.display_name}) but replays as ${replayed.actorKind} "${replayed.actorKey}" `
+          + `(${replayed.displayName})`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `actor "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  const roleRows = db.prepare(
+    'SELECT id, role_name, role_kind FROM roles WHERE project_id = ? ORDER BY id',
+  ).all(projectId) as unknown as { id: string; role_name: string; role_kind: string }[]
+  for (const row of roleRows) {
+    const replayed = projection.roles.get(brandString<RoleId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `role "${row.id}" materializes ${row.role_kind} "${row.role_name}" but no replayed role/defined event`,
+      })
+      continue
+    }
+    if (replayed.roleName !== row.role_name || replayed.roleKind !== row.role_kind) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `role "${row.id}" materializes as ${row.role_kind} "${row.role_name}" `
+          + `but replays as ${replayed.roleKind} "${replayed.roleName}"`,
+      })
+    }
+  }
+  const assignmentRows = db.prepare(
+    'SELECT a.id, a.actor_id, a.role_id, a.valid_to_ms FROM actor_roles a '
+    + 'JOIN actors c ON c.id = a.actor_id WHERE c.project_id = ? ORDER BY a.id',
+  ).all(projectId) as unknown as { id: string; actor_id: string; role_id: string; valid_to_ms: number | null }[]
+  for (const row of assignmentRows) {
+    const replayed = projection.actorRoles.get(brandString<ActorRoleId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `actor role "${row.id}" is materialized but no replayed role/assigned event`,
+      })
+      continue
+    }
+    if (replayed.actorId !== row.actor_id || replayed.roleId !== row.role_id) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `actor role "${row.id}" materializes actor "${row.actor_id}" over role "${row.role_id}" `
+          + `but replays actor "${replayed.actorId}" over role "${replayed.roleId}"`,
+      })
+    }
+    if (replayed.validToMs !== (row.valid_to_ms ?? undefined)) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `actor role "${row.id}" materializes valid until ${row.valid_to_ms === null ? 'now' : row.valid_to_ms} `
+          + `but replays valid until ${replayed.validToMs === undefined ? 'now' : replayed.validToMs}`,
       })
     }
   }

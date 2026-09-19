@@ -43,6 +43,8 @@ function userVersionOf(db: DatabaseSync): number {
 const LEDGER_TABLES = [
   'acceptance_criteria',
   'acceptance_evaluations',
+  'actor_roles',
+  'actors',
   'approvals',
   'decision_options',
   'decision_requests',
@@ -56,6 +58,7 @@ const LEDGER_TABLES = [
   'resource_instances',
   'resource_requirements',
   'resource_verifications',
+  'roles',
   'verification_specs',
   'work_external_blockers',
   'work_item_relations',
@@ -65,6 +68,8 @@ const LEDGER_TABLES = [
 
 const LEDGER_INDEXES = [
   'idx_accept_eval_criterion',
+  'idx_actor_roles_actor',
+  'idx_actors_project_kind',
   'idx_approvals_project',
   'idx_approvals_subject',
   'idx_decision_requests_project',
@@ -82,6 +87,7 @@ const LEDGER_INDEXES = [
   'idx_work_rel_from',
   'idx_work_rel_to',
   'uq_one_active_lease_per_work',
+  'uq_one_live_assignment_per_pair',
 ]
 
 function tableNames(db: DatabaseSync): string[] {
@@ -326,6 +332,39 @@ describe('adjacent migration fixture', () => {
     expect(approvals.n).toBe(1)
     const requirements = reopened.prepare('SELECT COUNT(*) AS n FROM resource_requirements').get() as { n: number }
     expect(requirements.n).toBe(0)
+    reopened.close()
+  })
+
+  it('upgrades a v4 database through the shipped 4→5 step without losing rows', async () => {
+    const path = tmpFile('v4-to-v5.sqlite')
+    // A real v4 database: the shipped steps' own layout, stamped as v4 and
+    // carrying one resource row.
+    const [coreStep, decisionStep, approvalStep, resourceStep] = PROJECT_LEDGER_MIGRATIONS
+    if (coreStep === undefined || decisionStep === undefined || approvalStep === undefined
+      || resourceStep === undefined) {
+      throw new Error('test setup: the registry ships a missing step')
+    }
+    const raw = new DatabaseSync(path)
+    coreStep.apply(raw)
+    decisionStep.apply(raw)
+    approvalStep.apply(raw)
+    resourceStep.apply(raw)
+    raw.exec(
+      'INSERT INTO resource_requirements '
+      + '(id, project_id, plan_version_id, requirement_key, requirement_kind, name, constraints_json, status, created_at_ms) '
+      + "VALUES ('rr:p:1', 'p', NULL, 'k', 'K', 'N', '{}', 'OPEN', 1)",
+    )
+    raw.exec('PRAGMA user_version = 4')
+    raw.close()
+
+    const reopened = await openProjectLedgerDatabase(path)
+    expect(userVersionOf(reopened)).toBe(PROJECT_LEDGER_SCHEMA_VERSION)
+    expect(tableNames(reopened)).toEqual(LEDGER_TABLES)
+    expect(indexNames(reopened)).toEqual(LEDGER_INDEXES)
+    const requirements = reopened.prepare('SELECT COUNT(*) AS n FROM resource_requirements').get() as { n: number }
+    expect(requirements.n).toBe(1)
+    const actors = reopened.prepare('SELECT COUNT(*) AS n FROM actors').get() as { n: number }
+    expect(actors.n).toBe(0)
     reopened.close()
   })
 

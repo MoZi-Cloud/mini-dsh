@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/experimental/project-ledger-sqlite/README.md
-README.md: 9f678ced5cb1cdae6ab8850188858662fcc445bd
-README.zh.md: f0a7a053a313be2ebf197a940e28e9c98575a3d9
+README.md: 12b3a89dc49d4862900915404d7eae2474b676d6
+README.zh.md: 68a2eeb30e18a8bb3e96ab57d4768bc6218c4879

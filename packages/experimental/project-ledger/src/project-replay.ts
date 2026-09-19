@@ -14,6 +14,7 @@
 
 import type { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
+import type { ActorId, ActorRoleId, RoleId } from './actors.js'
 import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { WorkLeaseId } from './lease.js'
@@ -41,6 +42,9 @@ export interface ProjectReplayEntityCounts {
   readonly resourceRequirements: number
   readonly resourceInstances: number
   readonly resourceVerifications: number
+  readonly actors: number
+  readonly roles: number
+  readonly actorRoles: number
 }
 
 /** What the fold rebuilt, plus the packet recipes that have no materialized table. */
@@ -153,6 +157,30 @@ interface VerificationFactsRow {
   readonly result: string
 }
 
+/** One `actors` row the audit reads, in select order. */
+interface ActorFactsRow {
+  readonly id: string
+  readonly actor_key: string
+  readonly actor_kind: string
+  readonly display_name: string
+  readonly status: string
+}
+
+/** One `roles` row the audit reads, in select order. */
+interface RoleFactsRow {
+  readonly id: string
+  readonly role_name: string
+  readonly role_kind: string
+}
+
+/** One `actor_roles` row the audit reads, in select order. */
+interface AssignmentFactsRow {
+  readonly id: string
+  readonly actor_id: string
+  readonly role_id: string
+  readonly valid_to_ms: number | null
+}
+
 /**
  * Audit one project's ledger integrity read-only: fold the project's event
  * timeline and compare the rebuilt projection with the materialized tables,
@@ -202,6 +230,16 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     + 'JOIN resource_instances i ON i.id = v.resource_instance_id '
     + 'JOIN resource_requirements r ON r.id = i.requirement_id WHERE r.project_id = ? ORDER BY v.id',
   ).all(projectId) as unknown as VerificationFactsRow[]
+  const actorRows = db.prepare(
+    'SELECT id, actor_key, actor_kind, display_name, status FROM actors WHERE project_id = ? ORDER BY id',
+  ).all(projectId) as unknown as ActorFactsRow[]
+  const roleRows = db.prepare(
+    'SELECT id, role_name, role_kind FROM roles WHERE project_id = ? ORDER BY id',
+  ).all(projectId) as unknown as RoleFactsRow[]
+  const assignmentRows = db.prepare(
+    'SELECT a.id, a.actor_id, a.role_id, a.valid_to_ms FROM actor_roles a '
+    + 'JOIN actors c ON c.id = a.actor_id WHERE c.project_id = ? ORDER BY a.id',
+  ).all(projectId) as unknown as AssignmentFactsRow[]
   const materialized: ProjectReplayEntityCounts = {
     planVersions: versionRows.length,
     workItems: itemRows.length,
@@ -213,6 +251,9 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     resourceRequirements: requirementRows.length,
     resourceInstances: instanceRows.length,
     resourceVerifications: verificationRows.length,
+    actors: actorRows.length,
+    roles: roleRows.length,
+    actorRoles: assignmentRows.length,
   }
   let projection: ReplayedProjectProjection
   try {
@@ -238,6 +279,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
   collectDecisionDrift(decisionRequestRows, decisionRows, projection, drift)
   collectApprovalDrift(approvalRows, projection, drift)
   collectResourceDrift(requirementRows, instanceRows, verificationRows, projection, drift)
+  collectActorDrift(actorRows, roleRows, assignmentRows, projection, drift)
   return {
     outcome: 'compared',
     projectId,
@@ -255,6 +297,9 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
       resourceRequirements: projection.resourceRequirements.size,
       resourceInstances: projection.resourceInstances.size,
       resourceVerifications: projection.resourceVerifications.size,
+      actors: projection.actors.size,
+      roles: projection.roles.size,
+      actorRoles: projection.actorRoles.size,
     },
     materialized,
     drift,
@@ -584,4 +629,98 @@ function pushReplayOnlyDrift(
   describe: (refId: string) => string,
 ): void {
   for (const refId of ids) drift.push({ refId, message: describe(refId) })
+}
+
+/**
+ * Compare the actor/role domain, both directions, family by family: actor
+ * identity facts and status, role identity facts, assignment pair and
+ * validity window.
+ */
+function collectActorDrift(
+  actors: readonly ActorFactsRow[],
+  roles: readonly RoleFactsRow[],
+  assignments: readonly AssignmentFactsRow[],
+  projection: ReplayedProjectProjection,
+  drift: ProjectReplayDrift[],
+): void {
+  const replayedActorIds = new Set(projection.actors.keys())
+  for (const row of actors) {
+    const id = brandString<ActorId>(row.id)
+    const replayed = projection.actors.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `actor "${row.id}" is materialized but no actor/registered event replays it`,
+      })
+      continue
+    }
+    replayedActorIds.delete(id)
+    if (replayed.actorKey !== row.actor_key || replayed.actorKind !== row.actor_kind
+      || replayed.displayName !== row.display_name) {
+      drift.push({
+        refId: row.id,
+        message: `actor "${row.id}" materializes as ${row.actor_kind} "${row.actor_key}" `
+          + `(${row.display_name}) but replays as ${replayed.actorKind} "${replayed.actorKey}" `
+          + `(${replayed.displayName})`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      drift.push({
+        refId: row.id,
+        message: `actor "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedActorIds, drift, refId => `actor "${refId}" replays from an actor/registered event but no row is materialized`)
+
+  const replayedRoleIds = new Set(projection.roles.keys())
+  for (const row of roles) {
+    const id = brandString<RoleId>(row.id)
+    const replayed = projection.roles.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `role "${row.id}" is materialized but no role/defined event replays it`,
+      })
+      continue
+    }
+    replayedRoleIds.delete(id)
+    if (replayed.roleName !== row.role_name || replayed.roleKind !== row.role_kind) {
+      drift.push({
+        refId: row.id,
+        message: `role "${row.id}" materializes as ${row.role_kind} "${row.role_name}" `
+          + `but replays as ${replayed.roleKind} "${replayed.roleName}"`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedRoleIds, drift, refId => `role "${refId}" replays from a role/defined event but no row is materialized`)
+
+  const replayedAssignmentIds = new Set(projection.actorRoles.keys())
+  for (const row of assignments) {
+    const id = brandString<ActorRoleId>(row.id)
+    const replayed = projection.actorRoles.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `actor role "${row.id}" is materialized but no role/assigned event replays it`,
+      })
+      continue
+    }
+    replayedAssignmentIds.delete(id)
+    if (replayed.actorId !== row.actor_id || replayed.roleId !== row.role_id) {
+      drift.push({
+        refId: row.id,
+        message: `actor role "${row.id}" materializes actor "${row.actor_id}" over role "${row.role_id}" `
+          + `but replays actor "${replayed.actorId}" over role "${replayed.roleId}"`,
+      })
+    }
+    if (replayed.validToMs !== (row.valid_to_ms ?? undefined)) {
+      drift.push({
+        refId: row.id,
+        message: `actor role "${row.id}" materializes valid until ${row.valid_to_ms === null ? 'now' : row.valid_to_ms} `
+          + `but replays valid until ${replayed.validToMs === undefined ? 'now' : replayed.validToMs}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedAssignmentIds, drift, refId => `actor role "${refId}" replays from a role/assigned event but no row is materialized`)
 }

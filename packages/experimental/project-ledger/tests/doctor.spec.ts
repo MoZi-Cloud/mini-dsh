@@ -6,9 +6,11 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
 import {
   PlanDoctorError,
+  assignRole,
   claimWorkItem,
   compilePlan,
   decideApproval,
+  defineRole,
   evaluateAcceptanceCriterion,
   changeWorkStatus,
   importPlanVersion,
@@ -18,6 +20,7 @@ import {
   recordDecision,
   openResourceRequirement,
   provideResourceInstance,
+  registerActor,
   releaseWorkLease,
   requestApproval,
   validatePlanSchema,
@@ -102,8 +105,8 @@ describe('planDoctor', () => {
         versionNo: 1,
         status: 'DRAFT',
         projectId: 'mini-dsh',
-        databaseUserVersion: 4,
-        eventFormatVersion: 4,
+        databaseUserVersion: 5,
+        eventFormatVersion: 5,
         baselineRepoHead: null,
         baselineWorktreeHash: null,
         counts: { phases: 13, workItems: 15, relations: 14, criteria: 16, events: 16 },
@@ -264,7 +267,7 @@ describe('planDoctor', () => {
       const issues = planDoctor(unreadable, GOLDEN_VERSION).issues
       expect(issues).toHaveLength(1)
       expect(issues[0]?.code).toBe('event-timeline-unreadable')
-      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 4')
+      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 5')
     } finally {
       unreadable.close()
     }
@@ -481,6 +484,74 @@ describe('planDoctor', () => {
       ])
     } finally {
       resourceDrift.close()
+    }
+
+    const actorDrift = await goldenLedger()
+    try {
+      const owner = registerActor(actorDrift, brandString<ProjectId>('mini-dsh'), {
+        actorKey: 'owner', actorKind: 'HUMAN', displayName: 'Owner',
+      }, { nowMs: 40, actorRef: 'doctor/agent' })
+      const role = defineRole(actorDrift, brandString<ProjectId>('mini-dsh'), {
+        roleName: 'owner', roleKind: 'GOVERNANCE',
+      }, { nowMs: 41, actorRef: 'doctor/agent' })
+      assignRole(actorDrift, { actorId: owner.actorId, roleId: role.roleId }, { nowMs: 42, actorRef: 'doctor/agent' })
+      actorDrift.prepare('UPDATE actors SET display_name = ?, status = ? WHERE id = ?')
+        .run('Tampered', 'INACTIVE', owner.actorId)
+      actorDrift.prepare(
+        'INSERT INTO actors '
+        + '(id, project_id, actor_key, actor_kind, display_name, external_identity, metadata_json, status, created_at_ms) '
+        + "VALUES ('actor:mini-dsh:hand', 'mini-dsh', 'hand', 'SERVICE', 'Hand row', NULL, NULL, 'ACTIVE', 43)",
+      ).run()
+      actorDrift.prepare('UPDATE roles SET role_kind = ? WHERE id = ?').run('EXECUTION', role.roleId)
+      actorDrift.prepare(
+        'INSERT INTO roles (id, project_id, role_name, role_kind, description, created_at_ms) '
+        + "VALUES ('role:mini-dsh:hand', 'mini-dsh', 'hand', 'GOVERNANCE', NULL, 44)",
+      ).run()
+      actorDrift.prepare(
+        'INSERT INTO actor_roles (id, actor_id, role_id, valid_from_ms, valid_to_ms) '
+        + "VALUES ('asg:mini-dsh:hand', 'actor:mini-dsh:hand', 'role:mini-dsh:hand', 45, NULL)",
+      ).run()
+      actorDrift.prepare('UPDATE actor_roles SET valid_to_ms = 5 WHERE actor_id = ?').run(owner.actorId)
+      const issues = planDoctor(actorDrift, GOLDEN_VERSION, { nowMs: 46 }).issues
+      expect(issues).toEqual([
+        {
+          code: 'projection-drift',
+          refId: 'actor:mini-dsh:hand',
+          message: 'actor "actor:mini-dsh:hand" has materialized status ACTIVE but no replayed actor/registered event',
+        },
+        {
+          code: 'projection-drift',
+          refId: owner.actorId,
+          message: `actor "${owner.actorId}" materializes as HUMAN "owner" (Tampered) but replays as HUMAN "owner" (Owner)`,
+        },
+        {
+          code: 'projection-drift',
+          refId: owner.actorId,
+          message: `actor "${owner.actorId}" has materialized status INACTIVE but replays to ACTIVE`,
+        },
+        {
+          code: 'projection-drift',
+          refId: 'role:mini-dsh:hand',
+          message: 'role "role:mini-dsh:hand" materializes GOVERNANCE "hand" but no replayed role/defined event',
+        },
+        {
+          code: 'projection-drift',
+          refId: role.roleId,
+          message: `role "${role.roleId}" materializes as EXECUTION "owner" but replays as GOVERNANCE "owner"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: 'asg:mini-dsh:19',
+          message: 'actor role "asg:mini-dsh:19" materializes valid until 5 but replays valid until now',
+        },
+        {
+          code: 'projection-drift',
+          refId: 'asg:mini-dsh:hand',
+          message: 'actor role "asg:mini-dsh:hand" is materialized but no replayed role/assigned event',
+        },
+      ])
+    } finally {
+      actorDrift.close()
     }
 
     const rawCriterion = await goldenLedger()

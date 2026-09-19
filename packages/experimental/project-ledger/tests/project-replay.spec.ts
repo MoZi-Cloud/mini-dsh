@@ -6,9 +6,11 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
 import {
   appendProjectEvent,
+  assignRole,
   claimWorkItem,
   decideApproval,
   compilePlan,
+  defineRole,
   evaluateAcceptanceCriterion,
   importPlanVersion,
   openDecisionRequest,
@@ -17,6 +19,7 @@ import {
   recordDecision,
   openResourceRequirement,
   provideResourceInstance,
+  registerActor,
   releaseWorkLease,
   requestApproval,
   validatePlanSchema,
@@ -99,11 +102,13 @@ describe('readProjectReplay', () => {
         planVersions: 1, workItems: 1, criteria: 1, leases: 1, workPackets: 0,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
+        actors: 0, roles: 0, actorRoles: 0,
       },
       materialized: {
         planVersions: 1, workItems: 1, criteria: 1, leases: 1,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
+        actors: 0, roles: 0, actorRoles: 0,
       },
       drift: [],
     })
@@ -181,11 +186,13 @@ describe('readProjectReplay', () => {
       planVersions: 2, workItems: 2, criteria: 2, leases: 1,
       workPackets: 0, decisionRequests: 0, decisions: 0, approvals: 0,
       resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
+      actors: 0, roles: 0, actorRoles: 0,
     })
     expect(report.materialized).toEqual({
       planVersions: 1, workItems: 1, criteria: 1, leases: 0,
       decisionRequests: 0, decisions: 0, approvals: 0,
       resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
+      actors: 0, roles: 0, actorRoles: 0,
     })
     expect(report.drift.map(finding => finding.message)).toEqual([
       'plan version "plv:replay-plan:v9" replays from a plan/imported event but no row is materialized',
@@ -424,12 +431,86 @@ describe('readProjectReplay', () => {
     ])
   })
 
+  it('flags materialized actor rows no event replays, and disagreeing actor facts', async () => {
+    const db = await ledgerOf(REPLAY_PLAN_TEXT)
+    const owner = registerActor(db, PROJECT, {
+      actorKey: 'owner', actorKind: 'HUMAN', displayName: 'Owner',
+    }, { nowMs: 10, actorRef: 'spec-owner' })
+    registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 11, actorRef: 'spec-owner' })
+    const ownerRole = defineRole(db, PROJECT, {
+      roleName: 'owner', roleKind: 'GOVERNANCE',
+    }, { nowMs: 12, actorRef: 'spec-owner' })
+    const executorRole = defineRole(db, PROJECT, {
+      roleName: 'executor', roleKind: 'EXECUTION',
+    }, { nowMs: 13, actorRef: 'spec-owner' })
+    const assignment = assignRole(db, {
+      actorId: owner.actorId, roleId: ownerRole.roleId,
+    }, { nowMs: 14, actorRef: 'spec-owner' })
+    // Tampered facts in both directions, plus materialized- and replayed-only
+    // ghosts; the retarget points at the hand row because the foreign keys
+    // require real rows.
+    db.prepare('UPDATE actors SET display_name = ?, status = ? WHERE id = ?')
+      .run('Tampered', 'INACTIVE', owner.actorId)
+    db.prepare(
+      'INSERT INTO actors '
+      + '(id, project_id, actor_key, actor_kind, display_name, external_identity, metadata_json, status, created_at_ms) '
+      + "VALUES ('actor:replay-proj:hand', 'replay-proj', 'hand', 'SERVICE', 'Hand row', NULL, NULL, 'ACTIVE', 5)",
+    ).run()
+    appendProjectEvent(db, PROJECT, 'actor/registered', {
+      actorId: 'actor:replay-proj:event-only',
+      actorKey: 'event-only',
+      actorKind: 'SYSTEM',
+      displayName: 'Timeline only',
+    }, { entityType: 'actor', entityId: 'actor:replay-proj:event-only', nowMs: 15, actorRef: 'spec-owner' })
+    db.prepare('UPDATE roles SET role_kind = ? WHERE id = ?').run('EXECUTION', ownerRole.roleId)
+    db.prepare(
+      'INSERT INTO roles (id, project_id, role_name, role_kind, description, created_at_ms) '
+      + "VALUES ('role:replay-proj:hand', 'replay-proj', 'hand', 'GOVERNANCE', NULL, 6)",
+    ).run()
+    appendProjectEvent(db, PROJECT, 'role/defined', {
+      roleId: 'role:replay-proj:event-only',
+      roleName: 'event-only',
+      roleKind: 'EXECUTION',
+    }, { entityType: 'role', entityId: 'role:replay-proj:event-only', nowMs: 16, actorRef: 'spec-owner' })
+    db.prepare('UPDATE actor_roles SET role_id = ? WHERE id = ?').run('role:replay-proj:hand', assignment.assignmentId)
+    db.prepare('UPDATE actor_roles SET valid_to_ms = 5 WHERE id = ?').run(assignment.assignmentId)
+    db.prepare(
+      'INSERT INTO actor_roles (id, actor_id, role_id, valid_from_ms, valid_to_ms) '
+      + "VALUES ('asg:replay-proj:hand', 'actor:replay-proj:hand', 'role:replay-proj:hand', 7, NULL)",
+    ).run()
+    appendProjectEvent(db, PROJECT, 'role/assigned', {
+      assignmentId: 'asg:replay-proj:event-only',
+      actorId: owner.actorId,
+      roleId: executorRole.roleId,
+    }, { entityType: 'actor_role', entityId: 'asg:replay-proj:event-only', nowMs: 17, actorRef: 'spec-owner' })
+
+    const report = readProjectReplay(db, PROJECT)
+    expect(report.outcome).toBe('compared')
+    if (report.outcome !== 'compared') return
+    expect(report.drift.map(finding => finding.message)).toEqual([
+      'actor "actor:replay-proj:hand" is materialized but no actor/registered event replays it',
+      `actor "${owner.actorId}" materializes as HUMAN "owner" (Tampered) but replays as HUMAN "owner" (Owner)`,
+      `actor "${owner.actorId}" has materialized status INACTIVE but replays to ACTIVE`,
+      'actor "actor:replay-proj:event-only" replays from an actor/registered event but no row is materialized',
+      'role "role:replay-proj:hand" is materialized but no role/defined event replays it',
+      `role "${ownerRole.roleId}" materializes as EXECUTION "owner" but replays as GOVERNANCE "owner"`,
+      'role "role:replay-proj:event-only" replays from a role/defined event but no row is materialized',
+      `actor role "${assignment.assignmentId}" materializes actor "${owner.actorId}" over role "role:replay-proj:hand" `
+        + `but replays actor "${owner.actorId}" over role "${ownerRole.roleId}"`,
+      `actor role "${assignment.assignmentId}" materializes valid until 5 but replays valid until now`,
+      'actor role "asg:replay-proj:hand" is materialized but no role/assigned event replays it',
+      'actor role "asg:replay-proj:event-only" replays from a role/assigned event but no row is materialized',
+    ])
+  })
+
   it('reports an undecodable timeline without comparing parity', async () => {
     const db = await ledgerOf(REPLAY_PLAN_TEXT)
     db.prepare(
       'INSERT INTO project_events '
         + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-        + "VALUES (?, 99, 5, 'plan/imported', 0, '{}', 1)",
+        + "VALUES (?, 99, 6, 'plan/imported', 0, '{}', 1)",
     ).run(PROJECT)
     const report = readProjectReplay(db, PROJECT)
     expect(report).toMatchObject({
@@ -441,10 +522,11 @@ describe('readProjectReplay', () => {
         planVersions: 1, workItems: 1, criteria: 1, leases: 0,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
+        actors: 0, roles: 0, actorRoles: 0,
       },
     })
     expect(report.outcome).toBe('undecodable')
     if (report.outcome !== 'undecodable') return
-    expect(report.timelineError).toMatch(/carries event format 5; this build reads up to format 4/u)
+    expect(report.timelineError).toMatch(/carries event format 6; this build reads up to format 5/u)
   })
 })
