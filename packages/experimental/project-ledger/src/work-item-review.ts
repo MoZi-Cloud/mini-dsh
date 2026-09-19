@@ -81,6 +81,52 @@ export function latestEvaluationPerCriterion<T extends { readonly criterion_id: 
   return latest
 }
 
+/** Field names of one `acceptance_criteria` row the criterion mapper reads. */
+export interface CriterionRecord {
+  readonly id: string
+  readonly criterion_kind: string
+  readonly description: string
+  readonly required: number
+  readonly status: AcceptanceCriterionStatus
+}
+
+/** Field names of one newest-first evaluation row the criterion mapper reads. */
+export interface EvaluationRecord {
+  readonly criterion_id: string
+  readonly result: AcceptanceEvaluationResult
+  readonly observed_json: string | null
+  readonly evaluated_by: string
+  readonly evaluated_at_ms: number
+}
+
+/**
+ * Assemble one reviewed criterion: the criteria row over the latest
+ * evaluation the newest-first dedup carries, or no evaluation while none was
+ * recorded.
+ * @param criterion - the `acceptance_criteria` row.
+ * @param latestByCriterion - newest-first dedup of evaluation rows, keyed by criterion id.
+ * @returns the reviewed criterion the review and digest reads expose.
+ */
+export function reviewedCriterionOf(
+  criterion: CriterionRecord,
+  latestByCriterion: ReadonlyMap<string, EvaluationRecord>,
+): ReviewedCriterion {
+  const latest = latestByCriterion.get(criterion.id)
+  return {
+    criterionId: brandString<AcceptanceCriterionId>(criterion.id),
+    kind: criterion.criterion_kind,
+    description: criterion.description,
+    required: criterion.required === 1,
+    status: criterion.status,
+    latest: latest === undefined ? null : {
+      result: latest.result,
+      evaluatedBy: latest.evaluated_by,
+      evaluatedAtMs: latest.evaluated_at_ms,
+      observed: latest.observed_json === null ? null : JSON.parse(latest.observed_json) as unknown,
+    },
+  }
+}
+
 /**
  * Read one work item's review: the item's identity and status over every
  * acceptance criterion with its latest evaluation. The ref matches the item's
@@ -119,23 +165,11 @@ export function readWorkItemReview(
   const criteria = db.prepare(
     'SELECT id, criterion_kind, description, required, status FROM acceptance_criteria '
       + 'WHERE work_item_id = ? ORDER BY ordinal',
-  ).all(item.id) as {
-    id: string
-    criterion_kind: string
-    description: string
-    required: number
-    status: AcceptanceCriterionStatus
-  }[]
+  ).all(item.id) as unknown as CriterionRecord[]
   const evaluations = db.prepare(
     'SELECT criterion_id, result, observed_json, evaluated_by, evaluated_at_ms FROM acceptance_evaluations '
       + 'WHERE work_item_id = ? ORDER BY evaluated_at_ms DESC, rowid DESC',
-  ).all(item.id) as {
-    criterion_id: string
-    result: AcceptanceEvaluationResult
-    observed_json: string | null
-    evaluated_by: string
-    evaluated_at_ms: number
-  }[]
+  ).all(item.id) as unknown as EvaluationRecord[]
   const latestByCriterion = latestEvaluationPerCriterion(evaluations)
   return {
     workItemId: brandString<WorkItemId>(item.id),
@@ -147,21 +181,6 @@ export function readWorkItemReview(
     status: item.status,
     executorKind: item.executor_kind,
     priority: item.priority,
-    criteria: criteria.map((criterion) => {
-      const latest = latestByCriterion.get(criterion.id)
-      return {
-        criterionId: brandString<AcceptanceCriterionId>(criterion.id),
-        kind: criterion.criterion_kind,
-        description: criterion.description,
-        required: criterion.required === 1,
-        status: criterion.status,
-        latest: latest === undefined ? null : {
-          result: latest.result,
-          evaluatedBy: latest.evaluated_by,
-          evaluatedAtMs: latest.evaluated_at_ms,
-          observed: latest.observed_json === null ? null : JSON.parse(latest.observed_json) as unknown,
-        },
-      }
-    }),
+    criteria: criteria.map(criterion => reviewedCriterionOf(criterion, latestByCriterion)),
   }
 }

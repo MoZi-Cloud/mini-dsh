@@ -63,7 +63,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project')).resolves.toMatchObject({
         kind: 'success',
         text: expect.stringMatching(
-          /todo \[--agent\][\s\S]*doctor \[<plan-version-id>\][\s\S]*item <stable-key-or-id>[\s\S]*replay \[<project-id>\][\s\S]*digest/,
+          /todo \[--agent\][\s\S]*doctor[\s\S]*item[\s\S]*replay[\s\S]*digest[\s\S]*export/,
         ) as string,
       })
     } finally {
@@ -83,6 +83,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project item a b c')).resolves.toEqual(usage)
       await expect(run(mounted, '/project replay a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project digest a b')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project export a b')).resolves.toEqual(usage)
     } finally {
       await unmount(mounted)
     }
@@ -97,6 +98,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project item AGENT-FREE')).resolves.toEqual(empty)
       await expect(run(mounted, '/project replay')).resolves.toEqual(empty)
       await expect(run(mounted, '/project digest')).resolves.toEqual(empty)
+      await expect(run(mounted, '/project export')).resolves.toEqual(empty)
     } finally {
       await unmount(mounted)
     }
@@ -496,6 +498,89 @@ describe('/project', () => {
     }
   })
 
+  it('exports the evidence record as one archival markdown block', async () => {
+    const mounted = await mount()
+    try {
+      const db = mounted.ctx.projectLedger.db
+      seedActivePlan(db, SOLO_PLAN_TEXT)
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:solo-proj:AGENT-ONLY:AC-AGENT-ONLY'),
+        'FAIL',
+        { evaluatedBy: 'owner', nowMs: 60_000, observed: { exitCode: 1, outputTail: '1 test failed' } },
+      )
+      // The optional criterion passes with a tail but no exit code, so its
+      // verdict line carries evidence and no exit fact.
+      evaluateAcceptanceCriterion(
+        db,
+        brandString<AcceptanceCriterionId>('ac:wi:solo-proj:AGENT-ONLY:AC-AGENT-ONLY-OPT'),
+        'PASS',
+        { evaluatedBy: 'spec-worker', nowMs: 61_000, observed: { outputTail: 'optional tail passes' } },
+      )
+      // Naming the current version is an owner seam without an exported
+      // writer (v1.6a §5); the retire and baseline writes are display facts
+      // the replay never projects, set the way the digest test sets its facts.
+      db.prepare('UPDATE plans SET current_version_id = ? WHERE id = ?').run('plv:solo-plan:v1', 'solo-plan')
+      db.prepare(
+        "UPDATE plan_versions SET status = 'SUPERSEDED', superseded_at_ms = 61_500, baseline_repo_head = 'repo-head-v1' "
+          + "WHERE id = 'plv:solo-plan:v1'",
+      ).run()
+      const expected = [
+        '# Project solo-proj — evidence export',
+        '',
+        '## Plans',
+        '',
+        '- **Solo Proof Plan** (`solo-plan`) — current version `plv:solo-plan:v1`',
+        '  - v1 SUPERSEDED — baseline `repo-head-v1`, superseded 1970-01-01T00:01:01.500Z',
+        '',
+        '## Work items (1)',
+        '',
+        '### AGENT-ONLY — Do the solo work',
+        '',
+        '`READY` · agent · priority 20 · version `plv:solo-plan:v1` · criteria 1/2 passing · last evidence 1970-01-01T00:01:01.000Z',
+        '- `ac:wi:solo-proj:AGENT-ONLY:AC-AGENT-ONLY` (TEST, required) FAILING — FAIL by owner at 1970-01-01T00:01:00.000Z; exit 1',
+        '  - evidence: 1 test failed',
+        '- `ac:wi:solo-proj:AGENT-ONLY:AC-AGENT-ONLY-OPT` (TEST, optional) PASSING — PASS by spec-worker at 1970-01-01T00:01:01.000Z',
+        '  - evidence: optional tail passes',
+        '',
+        '## Replay audit',
+        '',
+        'clean over 4 events (last sequence 4).',
+      ].join('\n')
+      await expect(run(mounted, '/project export')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project export solo-proj')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project export no-such-project')).resolves.toEqual({
+        kind: 'error',
+        text: 'No plan in this ledger records project "no-such-project".',
+      })
+
+      // A backlog row has no plan version and carries an unevaluated optional
+      // criterion; the out-of-band inserts mirror the ledger specs' fixtures.
+      db.prepare(
+        'INSERT INTO work_items '
+          + '(id, project_id, plan_version_id, phase_id, parent_work_item_id, stable_key, work_type, executor_kind, '
+          + 'title, description, priority, status, lock_version, created_at_ms, updated_at_ms) '
+          + "VALUES ('wi:solo-proj:BACKLOG-1', 'solo-proj', NULL, NULL, NULL, 'BACKLOG-1', 'RESEARCH', 'AGENT', "
+          + "'Discovered work', NULL, 0, 'READY', 0, 1, 1)",
+      ).run()
+      db.prepare(
+        'INSERT INTO acceptance_criteria (id, work_item_id, ordinal, criterion_kind, description, required, status) '
+          + "VALUES ('ac:wi:solo-proj:BACKLOG-1:AC-BACKLOG', 'wi:solo-proj:BACKLOG-1', 0, 'TEST', "
+          + "'Some discovered check.', 0, 'PENDING')",
+      ).run()
+      const backlogExport = await run(mounted, '/project export solo-proj')
+      expect(backlogExport).toMatchObject({ kind: 'success' })
+      if (backlogExport.kind !== 'success' || backlogExport.text === undefined) return
+      expect(backlogExport.text).toContain('### BACKLOG-1 — Discovered work')
+      expect(backlogExport.text).toMatch(/`READY` · agent · priority 0 · version `none` · criteria 0\/1 passing\b/u)
+      expect(backlogExport.text).toContain(
+        '- `ac:wi:solo-proj:BACKLOG-1:AC-BACKLOG` (TEST, optional) PENDING — no evaluation yet',
+      )
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
   it('digests a versionless plan, drift findings, and an undecodable timeline', async () => {
     const mounted = await mount((db) => {
       seedActivePlan(db, TINY_PLAN_TEXT)
@@ -522,10 +607,34 @@ describe('/project', () => {
       expect(drifted).toMatchObject({ kind: 'success' })
       if (drifted.kind !== 'success' || drifted.text === undefined) return
       expect(drifted.text).toContain('- OWNER-A (owner, priority 50) DONE — criteria 0/1 passing, verdicts none')
-      expect(drifted.text).toContain('Replay audit: 1 drift findings over 4 events:')
+      expect(drifted.text).toContain('Replay audit: 1 drift finding over 4 events:')
       expect(drifted.text).toContain(
         'work item "wi:tiny-proj:OWNER-A" has materialized status DONE but replays to READY',
       )
+
+      // A second out-of-band write makes the drift list plural.
+      mounted.ctx.projectLedger.db.prepare(
+        "UPDATE acceptance_criteria SET status = 'WAIVED' WHERE id = 'ac:wi:tiny-proj:OWNER-B:AC-OWNER-B'",
+      ).run()
+      const plural = await run(mounted, '/project digest tiny-proj')
+      expect(plural).toMatchObject({ kind: 'success' })
+      if (plural.kind !== 'success' || plural.text === undefined) return
+      expect(plural.text).toContain('2 drift findings over 4 events:')
+
+      // The export renders the drift state as markdown: the versionless plan
+      // line, the per-finding drift list, and the DONE display fact.
+      const driftedExport = await run(mounted, '/project export tiny-proj')
+      expect(driftedExport).toMatchObject({ kind: 'success' })
+      if (driftedExport.kind !== 'success' || driftedExport.text === undefined) return
+      expect(driftedExport.text).toContain('- **Side Plan** (`side-plan`) — current version `none`')
+      expect(driftedExport.text).toContain('  - (no plan versions recorded)')
+      expect(driftedExport.text).toContain('## Replay audit')
+      expect(driftedExport.text).toContain('2 drift findings over 4 events:')
+      expect(driftedExport.text).toContain('has materialized status WAIVED but replays to PENDING')
+      expect(driftedExport.text).toContain(
+        'work item "wi:tiny-proj:OWNER-A" has materialized status DONE but replays to READY',
+      )
+      expect(driftedExport.text).not.toContain('Replay audit: clean')
 
       // A row this build's event format cannot interpret fails the whole
       // fold; the digest reports why instead of a parity verdict.
@@ -540,6 +649,14 @@ describe('/project', () => {
       expect(broken.text).toContain('Replay audit: the timeline cannot be decoded by this build — ')
       expect(broken.text).toContain('carries event format 2; this build reads format 1')
       expect(broken.text).not.toContain('Replay audit: clean')
+
+      // The export's replay section reports the decode failure, not parity.
+      const brokenExport = await run(mounted, '/project export tiny-proj')
+      expect(brokenExport).toMatchObject({ kind: 'success' })
+      if (brokenExport.kind !== 'success' || brokenExport.text === undefined) return
+      expect(brokenExport.text).toContain('the timeline cannot be decoded by this build — ')
+      expect(brokenExport.text).toContain('carries event format 2; this build reads format 1')
+      expect(brokenExport.text).not.toContain('clean over')
     } finally {
       await unmount(mounted)
     }

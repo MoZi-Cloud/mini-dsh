@@ -8,9 +8,9 @@
  * ledger's review read seam, `replay` audits ledger integrity through
  * the replay read seam, folding the project's events and comparing the
  * projection with the materialized rows, and `digest` reads the whole-project
- * evidence summary through the ledger's digest read seam. The project and
- * plan version resolve through the ledger's plan directory when the command
- * names none. The handler never mutates ledger state, never sends anything to
+ * evidence summary through the ledger's digest read seam, which `export`
+ * renders again as one archival markdown block. The project and plan version
+ * resolve through the ledger's plan directory when the command names none. The handler never mutates ledger state, never sends anything to
  * the model, and never executes a verifier command — mutating surfaces stay
  * with their owning writers and later work.
  *
@@ -23,6 +23,7 @@ import { CommandDefinitionId } from '@deepseek-ai/dsh-commands'
 import type { CommandResult } from '@deepseek-ai/dsh-commands'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import {
+  ACCEPTANCE_EVALUATION_RESULTS,
   PlanDoctorError,
   listAgentTodo,
   listOwnerTodo,
@@ -35,6 +36,7 @@ import {
   type PlanVersionId,
   type ProjectDigest,
   type ProjectReplayReport,
+  type ReviewedCriterion,
   type WorkItemReview,
   type WorkTodoView,
 } from '@deepseek-ai/dsh-experimental-project-ledger'
@@ -54,6 +56,7 @@ type ProjectCommand =
   | { readonly kind: 'item'; readonly itemRef: string; readonly projectId: string | undefined }
   | { readonly kind: 'replay'; readonly projectId: string | undefined }
   | { readonly kind: 'digest'; readonly projectId: string | undefined }
+  | { readonly kind: 'export'; readonly projectId: string | undefined }
 
 /* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
@@ -67,6 +70,7 @@ const HELP_TEXT = [
   '/project item <stable-key-or-id> [<project-id>] — review one work item: criteria statuses, latest evaluations, observed evidence',
   '/project replay [<project-id>] — replay the project\'s events and compare the projection with materialized rows',
   '/project digest [<project-id>] — read the whole-project evidence digest: plan versions, item completion, replay verdict',
+  '/project export [<project-id>] — render the whole evidence record as one archival markdown block',
 ].join('\n')
 
 /** The usage hint the command registry shows for /project. */
@@ -76,6 +80,7 @@ const PROJECT_INPUT_HINT = [
   'item <stable-key-or-id> [<project-id>]',
   'replay [<project-id>]',
   'digest [<project-id>]',
+  'export [<project-id>]',
 ].join(' | ')
 
 /**
@@ -116,6 +121,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
   if (tokens[0] === 'digest') {
     return tokens.length <= 2
       ? { kind: 'digest', projectId: tokens[1] }
+      : undefined
+  }
+  if (tokens[0] === 'export') {
+    return tokens.length <= 2
+      ? { kind: 'export', projectId: tokens[1] }
       : undefined
   }
   return undefined
@@ -306,6 +316,19 @@ function renderReplayReport(report: ProjectReplayReport): string {
 }
 
 /**
+ * Count one item's criteria whose latest evaluation records `result`.
+ * @param item - the digest row to count over.
+ * @param result - the evaluation result to count.
+ * @returns how many of the item's criteria carry that latest verdict.
+ */
+function latestResultCount(
+  item: { readonly criteria: readonly ReviewedCriterion[] },
+  result: string,
+): number {
+  return item.criteria.filter(criterion => criterion.latest?.result === result).length
+}
+
+/**
  * Render one evidence digest as command output: every plan with its versions,
  * lifecycle statuses, and pinned baselines, every item with its completion
  * and latest verdict counts, then the replay audit verdict — clean, every
@@ -330,31 +353,107 @@ function renderDigest(digest: ProjectDigest): string {
   }
   lines.push(`Items (${digest.items.length}):`)
   for (const item of digest.items) {
-    const total = Object.values(item.criteriaByStatus).reduce((sum, count) => sum + count, 0)
-    const verdictCounts = Object.entries(item.latestResults)
+    const passing = item.criteria.filter(criterion => criterion.status === 'PASSING').length
+    const verdictCounts = ACCEPTANCE_EVALUATION_RESULTS
+      .map(result => [result, latestResultCount(item, result)] as const)
       .filter(([, count]) => count > 0)
-      .map(([result, count]) => `${result} ${count}`)
+      .map(([result, count]) => `${result} ${String(count)}`)
     const evidence = item.lastEvaluatedAtMs === null
       ? ''
       : `; last evidence ${new Date(item.lastEvaluatedAtMs).toISOString()}`
     lines.push(
       `- ${item.stableKey} (${item.executorKind.toLowerCase()}, priority ${item.priority}) ${item.status} `
-        + `— criteria ${item.criteriaByStatus.PASSING}/${total} passing, `
+        + `— criteria ${passing}/${item.criteria.length} passing, `
         + `verdicts ${verdictCounts.length === 0 ? 'none' : verdictCounts.join(', ')}${evidence}`,
     )
   }
-  const replay = digest.replay
-  if (replay.outcome === 'undecodable') {
-    lines.push(`Replay audit: the timeline cannot be decoded by this build — ${replay.timelineError}`)
-  } else if (replay.drift.length === 0) {
-    lines.push(
-      `Replay audit: clean over ${replay.eventCount} events (last sequence ${replay.lastSequenceNo}).`,
-    )
-  } else {
-    lines.push(`Replay audit: ${replay.drift.length} drift findings over ${replay.eventCount} events:`)
-    for (const finding of replay.drift) lines.push(`- ${finding.message}`)
-  }
+  lines.push(...replayVerdictLines(digest.replay))
   return lines.join('\n')
+}
+
+/**
+ * Render the replay audit verdict lines both digest views share.
+ * @param replay - the digest's embedded replay audit report.
+ * @returns the verdict line, plus one line per drift finding when any exists.
+ */
+function replayVerdictLines(replay: ProjectReplayReport): string[] {
+  if (replay.outcome === 'undecodable') {
+    return [`Replay audit: the timeline cannot be decoded by this build — ${replay.timelineError}`]
+  }
+  if (replay.drift.length === 0) {
+    return [`Replay audit: clean over ${replay.eventCount} events (last sequence ${replay.lastSequenceNo}).`]
+  }
+  const count = replay.drift.length
+  return [
+    `Replay audit: ${count} drift finding${count === 1 ? '' : 's'} over ${replay.eventCount} events:`,
+    ...replay.drift.map(finding => `- ${finding.message}`),
+  ]
+}
+
+/**
+ * Render the whole-project evidence export as one archival markdown block:
+ * every plan with its versions and baselines, every item with per-criterion
+ * status and latest-verdict evidence (observed exit code and output-tail
+ * excerpt included), and the replay audit verdict. Paste-ready for the §33
+ * record or a review; the export only reads.
+ * @param digest - the digest read seam's outcome.
+ * @returns the markdown document text.
+ */
+function renderEvidenceExport(digest: ProjectDigest): string {
+  const lines = [`# Project ${digest.projectId} — evidence export`, '', '## Plans', '']
+  for (const plan of digest.plans) {
+    lines.push(`- **${plan.planName}** (\`${plan.planId}\`) — current version \`${plan.currentVersionId ?? 'none'}\``)
+    if (plan.versions.length === 0) {
+      lines.push('  - (no plan versions recorded)')
+      continue
+    }
+    for (const version of plan.versions) {
+      const retired = version.supersededAtMs === null
+        ? ''
+        : `, superseded ${new Date(version.supersededAtMs).toISOString()}`
+      lines.push(`  - v${version.versionNo} ${version.status} — baseline \`${version.baselineRepoHead ?? 'none'}\`${retired}`)
+    }
+  }
+  lines.push('', `## Work items (${digest.items.length})`, '')
+  for (const item of digest.items) {
+    const passing = item.criteria.filter(criterion => criterion.status === 'PASSING').length
+    const evidence = item.lastEvaluatedAtMs === null
+      ? ''
+      : ` · last evidence ${new Date(item.lastEvaluatedAtMs).toISOString()}`
+    lines.push(`### ${item.stableKey} — ${item.title}`, '')
+    lines.push(
+      `\`${item.status}\` · ${item.executorKind.toLowerCase()} · priority ${item.priority} `
+        + `· version \`${item.planVersionId ?? 'none'}\` · criteria ${passing}/${item.criteria.length} passing${evidence}`,
+    )
+    for (const criterion of item.criteria) {
+      const role = criterion.required ? 'required' : 'optional'
+      if (criterion.latest === null) {
+        lines.push(`- \`${criterion.criterionId}\` (${criterion.kind}, ${role}) ${criterion.status} — no evaluation yet`)
+        continue
+      }
+      const { latest } = criterion
+      const facts = observedReviewFacts(latest.observed)
+      lines.push(
+        `- \`${criterion.criterionId}\` (${criterion.kind}, ${role}) ${criterion.status} — ${latest.result} `
+          + `by ${latest.evaluatedBy} at ${new Date(latest.evaluatedAtMs).toISOString()}`
+          + (facts.exitCode === undefined ? '' : `; exit ${String(facts.exitCode)}`),
+      )
+      if (facts.tailExcerpt !== undefined) lines.push(`  - evidence: ${facts.tailExcerpt}`)
+    }
+    lines.push('')
+  }
+  lines.push('## Replay audit', '', ...replayVerdictLines(digest.replay).map(stripReplayAuditLabel))
+  return lines.join('\n')
+}
+
+/**
+ * Drop the shared verdict line's leading label for the export's prose
+ * section, which names itself.
+ * @param line - one shared replay verdict line.
+ * @returns the line without its `Replay audit: ` prefix.
+ */
+function stripReplayAuditLabel(line: string): string {
+  return line.replace(/^Replay audit: /u, '')
 }
 
 /**
@@ -397,6 +496,10 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
       case 'digest': {
         const projectId = resolveProjectId(listPlans(db), command.projectId)
         return { kind: 'success', text: renderDigest(readProjectDigest(db, projectId)) }
+      }
+      case 'export': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        return { kind: 'success', text: renderEvidenceExport(readProjectDigest(db, projectId)) }
       }
       /* v8 ignore next 2 -- the parse step returns a closed union */
       default: return assertNever(command, 'project command')

@@ -54,7 +54,7 @@ import { assertBuiltBenchmarkRuntime } from '../support/built-worker.ts'
 /** The increment plan this lane drives; the shell entry runs from the repository root. */
 const PLAN_PATH = join(process.cwd(), 'docs/mini/v1.6a/fork-mini-DSH-post-v1.6a.plan.yaml')
 /** The item this run claims; a later increment names its own item. */
-const TARGET_STABLE_KEY = process.env.DSH_REAL_USE_ITEM ?? 'PW-EVIDENCE-DIGEST-001'
+const TARGET_STABLE_KEY = process.env.DSH_REAL_USE_ITEM ?? 'PW-EXPORT-VIEW-001'
 /** A repository suite verifier can legitimately take minutes; the bound keeps a hung one from parking the lane. */
 const VERIFIER_TIMEOUT_MS = 600_000
 /** How much verifier output the failure diagnostics carry. */

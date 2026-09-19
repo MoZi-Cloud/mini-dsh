@@ -84,7 +84,7 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **doctor 是只读巡检**——`planDoctor` 一趟重验已导入版本：验收与 verifier 的存在性、层级与排序环、关系的项目内约束、事件时间线可解码，以及工作项/标准/租约状态的投影对等；全部独立问题连同版本身份、baseline 与行数一并报告。
 - **plan 经由唯一目录解析**——`listPlans` 读取每个 `plans` 行及其 `current_version_id` 指针，按 project、plan id 排序；需要回答"哪个项目""哪个版本是 current"的消费方从这个清单推导，而不是重新拥有 `plans` 表语义。目录只读：行随 import 出现，指针随 supersede 移动。
 - **item review 一次联读作答**——`readWorkItemReview` 按完整 id 或 stable key 解析单个工作项，返回每条验收标准及其投影状态与最新评估（判定、评估者、时间戳、解析后的 observed 载荷）；每条标准的最新行按评估时间选取，同毫秒并列以 append-only 的写入顺序决出。review 只读：评估与状态归各自的写入者所有。
-- **digest 只聚合，不裁决**——`readProjectDigest` 读回每个 plan 的全部版本及其生命周期状态与 baseline、每个条目的标准计数与最新判定计数，并内嵌重放对账结论；owner 无需 SQL 或逐条目命令即可读全量记录。
+- **digest 只聚合，不裁决**——`readProjectDigest` 读回每个 plan 的全部版本及其生命周期状态与 baseline、每个条目逐条标准的投影状态与最新评估（评估者、时间、observed 载荷），并内嵌重放对账结论；owner 无需 SQL 或逐条目命令即可读全量记录。
 - **重放对账双向比对**——`readProjectReplay` 折叠项目的全量事件时间线，把重建投影与物化表逐族比对——plan 版本按身份事实、工作项、标准与租约按状态——物化侧多出的行与重放侧多出的实体同样算 drift。WorkPacket 只计入重放侧（recipe 即持久记录）；本构建无法解码的时间线只报告原因，不做半程比对。对账只读：parity 是事实，不是修复。
 
 <a id="dev-note"></a>

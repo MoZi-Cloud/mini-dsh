@@ -80,7 +80,17 @@ The same lane drove `PW-EVIDENCE-DIGEST-001` against the persistent ledger: a ne
 
 An immediate rerun passed idempotently (`alreadyComplete: true`, `replayDrift: 0`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE), and the complete doc-sync gate stayed green (41/41) with the new seam documented bilingually.
 
+### 2026-09-19 — plan version 4 and PW-EXPORT-VIEW-001 through the shipped tools
+
+The plan document bumped to version 4 with a fresh batch (`PW-EXPORT-VIEW-001`, `PW-ITEM-HISTORY-001`), and the same lane drove the bump against the persistent ledger: version 4 imported, version 3 superseded through the §22 seam, then `PW-EXPORT-VIEW-001` — the `/project export` owner evidence export — completed. The digest read seam now carries per-criterion rows (each criterion's status and latest evaluation, the row assembly shared with the review seam through `reviewedCriterionOf`, replacing the tally records), and `/project export [<project-id>]` renders the whole record as one archival markdown block: plan versions with baselines and supersede stamps, per-item completion with per-criterion verdicts, evaluator, time, observed exit code and output-tail excerpt, and the replay audit verdict. Run against this persistent ledger, the export renders 4 plan versions and 9 work items — the whole §33 record without SQL or per-item commands. Claim by `agent:mini-real-use-lane`, stored verifier `pnpm exec vitest run mini-profile` (exit 0), item DONE, doctor 0 issues, replay audit 0 drift, event replay DONE. First-run report line:
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v4","workItemId":"wi:mini-dsh:PW-EXPORT-VIEW-001","stableKey":"PW-EXPORT-VIEW-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-EXPORT-VIEW-001:AC-PW-EXPORT-VIEW-001","command":"pnpm exec vitest run mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+An immediate rerun passed idempotently (`alreadyComplete: true`, `replayDrift: 0`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE), and the complete doc-sync gate stayed green (41/41) with the reshaped digest documented bilingually. `PW-ITEM-HISTORY-001` stays claimable in version 4 for a later increment.
+
 ## Status toward the gate
 
 
-Items completed through the ledger: 22 (15 golden-plan items by the v1.6a build itself, plus the seven entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.
+Items completed through the ledger: 23 (15 golden-plan items by the v1.6a build itself, plus the eight entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.

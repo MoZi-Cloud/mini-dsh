@@ -12,7 +12,7 @@ Project Ledger 是仓库工作的 Plan-as-Data 事实源：plan 文档经解析�
 
 没有任何表面直接写账本表。[`dsh-experimental-project-ledger`](../../packages/experimental/project-ledger/README.zh.md) 拥有全部接缝：导入 plan 版本、重算工作 readiness、租约生命周期、追加验收评估、supersede 版本、记录 baseline 漂移、构建有界 WorkPacket。两个 profile 表面消费它们：
 
-- `/project` 命令只读：按 executor kind 的 todo 视图、plan doctor、带观察证据的条目审视、把重建投影与物化行双向比对的重放对账、以及聚合 plan 版本、条目完成度（含最新判定）与重放结论的证据摘要。
+- `/project` 命令只读：按 executor kind 的 todo 视图、plan doctor、带观察证据的条目审视、把重建投影与物化行双向比对的重放对账、以及聚合 plan 版本、条目完成度（逐条最新判定）与重放结论的证据摘要——`export` 再把同一记录渲染成单个可归档的 markdown 块。
 - `project_work_next`、`project_work_claim`、`project_work_update` 三个工具让 agent 经每任务一个有界 WorkPacket 处理同样的工作；领取持有的 bearer token 绝不进入模型可见值。
 
 ## 完整性是事实，不是修复

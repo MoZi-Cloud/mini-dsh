@@ -3,9 +3,10 @@
  * evidence the other read seams expose one slice at a time into a
  * whole-project summary — the plans with every version's lifecycle status and
  * pinned baseline, every work item's completion over its acceptance criteria
- * with the latest verdict counts, and the replay audit verdict over the same
- * database. The digest reports recorded facts; it never mutates, never
- * executes a verifier command, and never decides acceptance.
+ * (each criterion with its latest evaluation, the attempts before it
+ * collapsed away), and the replay audit verdict over the same database. The
+ * digest reports recorded facts; it never mutates, never executes a verifier
+ * command, and never decides acceptance.
  *
  * @module @deepseek-ai/dsh-experimental-project-ledger/project-digest
  */
@@ -14,10 +15,15 @@ import type { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { PlanId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
 import type { PlanWorkItemStatus } from './plan-document.js'
-import type { AcceptanceCriterionStatus, AcceptanceEvaluationResult } from './project-events.js'
 import { readProjectReplay, type ProjectReplayReport } from './project-replay.js'
 import type { PlanVersionStatus } from './versioning.js'
-import { latestEvaluationPerCriterion } from './work-item-review.js'
+import {
+  latestEvaluationPerCriterion,
+  reviewedCriterionOf,
+  type CriterionRecord,
+  type EvaluationRecord,
+  type ReviewedCriterion,
+} from './work-item-review.js'
 
 /** One plan version the digest lists, in version order. */
 export interface DigestPlanVersion {
@@ -65,10 +71,8 @@ export interface DigestItem {
   readonly priority: number
   /** Plan version the item belongs to, or `null` for a backlog item. */
   readonly planVersionId: PlanVersionId | null
-  /** Criteria counts by projection status; every status key is present, unrecorded statuses read as zero. */
-  readonly criteriaByStatus: Readonly<Record<AcceptanceCriterionStatus, number>>
-  /** Latest-evaluation counts by result across the item's criteria; every result key is present. */
-  readonly latestResults: Readonly<Record<AcceptanceEvaluationResult, number>>
+  /** The item's acceptance criteria in ordinal order, each over its latest evaluation. */
+  readonly criteria: readonly ReviewedCriterion[]
   /** Wall clock of the item's newest recorded evaluation, or `null` while none was recorded. */
   readonly lastEvaluatedAtMs: number | null
 }
@@ -83,6 +87,16 @@ export interface ProjectDigest {
   readonly items: readonly DigestItem[]
   /** The replay audit verdict over the same database. */
   readonly replay: ProjectReplayReport
+}
+
+/** One `acceptance_criteria` row the digest reads, in select order. */
+interface CriterionRow extends CriterionRecord {
+  readonly work_item_id: string
+}
+
+/** One `acceptance_evaluations` row the digest reads, in select order. */
+interface EvaluationRow extends EvaluationRecord {
+  readonly work_item_id: string
 }
 
 /**
@@ -142,48 +156,38 @@ export function readProjectDigest(db: DatabaseSync, projectId: ProjectId): Proje
     executor_kind: string
     priority: number
   }[]
-  const criteriaByItem = new Map<string, Record<AcceptanceCriterionStatus, number>>()
+  const criteriaByItem = new Map<string, CriterionRow[]>()
   for (const row of db.prepare(
-    'SELECT c.work_item_id, c.status FROM acceptance_criteria c '
-      + 'JOIN work_items w ON w.id = c.work_item_id WHERE w.project_id = ?',
-  ).all(projectId) as unknown as { work_item_id: string; status: AcceptanceCriterionStatus }[]) {
-    entryOf(criteriaByItem, row.work_item_id, emptyCriterionStatusTally)[row.status] += 1
+    'SELECT c.work_item_id, c.id, c.criterion_kind, c.description, c.required, c.status FROM acceptance_criteria c '
+      + 'JOIN work_items w ON w.id = c.work_item_id WHERE w.project_id = ? ORDER BY c.work_item_id, c.ordinal',
+  ).all(projectId) as unknown as CriterionRow[]) {
+    entryOf(criteriaByItem, row.work_item_id, () => [] as CriterionRow[]).push(row)
   }
   const evaluationRows = db.prepare(
-    'SELECT e.criterion_id, e.work_item_id, e.result, e.evaluated_at_ms FROM acceptance_evaluations e '
-      + 'JOIN work_items w ON w.id = e.work_item_id WHERE w.project_id = ? '
+    'SELECT e.criterion_id, e.work_item_id, e.result, e.observed_json, e.evaluated_by, e.evaluated_at_ms '
+      + 'FROM acceptance_evaluations e JOIN work_items w ON w.id = e.work_item_id WHERE w.project_id = ? '
       + 'ORDER BY e.evaluated_at_ms DESC, e.rowid DESC',
-  ).all(projectId) as unknown as {
-    criterion_id: string
-    work_item_id: string
-    result: AcceptanceEvaluationResult
-    evaluated_at_ms: number
-  }[]
-  const verdictsByItem = new Map<string, { results: Record<AcceptanceEvaluationResult, number>; lastAtMs: number }>()
-  for (const evaluation of latestEvaluationPerCriterion(evaluationRows).values()) {
-    const verdict = entryOf(verdictsByItem, evaluation.work_item_id, () => ({
-      results: emptyVerdictTally(),
-      // The newest-first stream makes this row the item's newest evaluation;
-      // every later row of the bucket is an earlier attempt by construction.
-      lastAtMs: evaluation.evaluated_at_ms,
-    }))
-    verdict.results[evaluation.result] += 1
+  ).all(projectId) as unknown as EvaluationRow[]
+  const latestByCriterion = latestEvaluationPerCriterion(evaluationRows)
+  const lastEvidenceByItem = new Map<string, number>()
+  for (const evaluation of latestByCriterion.values()) {
+    // The newest-first stream makes this row the item's newest evaluation;
+    // every later row of the bucket is an earlier attempt by construction.
+    entryOf(lastEvidenceByItem, evaluation.work_item_id, () => evaluation.evaluated_at_ms)
   }
-  const items: DigestItem[] = itemRows.map((row) => {
-    const verdict = verdictsByItem.get(row.id)
-    return {
-      workItemId: brandString<WorkItemId>(row.id),
-      stableKey: row.stable_key,
-      title: row.title,
-      status: row.status,
-      executorKind: row.executor_kind,
-      priority: row.priority,
-      planVersionId: row.plan_version_id === null ? null : brandString<PlanVersionId>(row.plan_version_id),
-      criteriaByStatus: criteriaByItem.get(row.id) ?? emptyCriterionStatusTally(),
-      latestResults: verdict?.results ?? emptyVerdictTally(),
-      lastEvaluatedAtMs: verdict?.lastAtMs ?? null,
-    }
-  })
+  const items: DigestItem[] = itemRows.map(row => ({
+    workItemId: brandString<WorkItemId>(row.id),
+    stableKey: row.stable_key,
+    title: row.title,
+    status: row.status,
+    executorKind: row.executor_kind,
+    priority: row.priority,
+    planVersionId: row.plan_version_id === null ? null : brandString<PlanVersionId>(row.plan_version_id),
+    criteria: (criteriaByItem.get(row.id) ?? []).map(
+      criterion => reviewedCriterionOf(criterion, latestByCriterion),
+    ),
+    lastEvaluatedAtMs: lastEvidenceByItem.get(row.id) ?? null,
+  }))
   return {
     projectId,
     plans,
@@ -192,16 +196,6 @@ export function readProjectDigest(db: DatabaseSync, projectId: ProjectId): Proje
     // reads the same parity facts the replay seam reports.
     replay: readProjectReplay(db, projectId),
   }
-}
-
-/** One zeroed count per criterion projection status. */
-function emptyCriterionStatusTally(): Record<AcceptanceCriterionStatus, number> {
-  return { PENDING: 0, PASSING: 0, FAILING: 0, BLOCKED: 0, WAIVED: 0 }
-}
-
-/** One zeroed count per evaluation result. */
-function emptyVerdictTally(): Record<AcceptanceEvaluationResult, number> {
-  return { PASS: 0, FAIL: 0, BLOCKED: 0, ERROR: 0, WAIVED: 0 }
 }
 
 /**

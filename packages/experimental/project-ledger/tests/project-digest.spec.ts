@@ -214,8 +214,14 @@ describe('readProjectDigest', () => {
         executorKind: 'AGENT',
         priority: 10,
         planVersionId: brandString<PlanVersionId>(v1.id),
-        criteriaByStatus: { PENDING: 0, PASSING: 1, FAILING: 0, BLOCKED: 0, WAIVED: 0 },
-        latestResults: { PASS: 1, FAIL: 0, BLOCKED: 0, ERROR: 0, WAIVED: 0 },
+        criteria: [{
+          criterionId: brandString<AcceptanceCriterionId>('ac:wi:digest-proj:FIRST:AC-FIRST'),
+          kind: 'TEST',
+          description: 'It works.',
+          required: true,
+          status: 'PASSING',
+          latest: { result: 'PASS', evaluatedBy: 'spec-worker', evaluatedAtMs: 1_200, observed: null },
+        }],
         lastEvaluatedAtMs: 1_200,
       },
       {
@@ -226,8 +232,14 @@ describe('readProjectDigest', () => {
         executorKind: 'AGENT',
         priority: 20,
         planVersionId: v2.planVersionId,
-        criteriaByStatus: { PENDING: 1, PASSING: 0, FAILING: 0, BLOCKED: 0, WAIVED: 0 },
-        latestResults: { PASS: 0, FAIL: 0, BLOCKED: 0, ERROR: 0, WAIVED: 0 },
+        criteria: [{
+          criterionId: brandString<AcceptanceCriterionId>('ac:wi:digest-proj:SECOND:AC-SECOND'),
+          kind: 'TEST',
+          description: 'It also works.',
+          required: true,
+          status: 'PENDING',
+          latest: null,
+        }],
         lastEvaluatedAtMs: null,
       },
     ])
@@ -272,24 +284,11 @@ describe('readProjectDigest', () => {
     expect(digest.items.map(item => [
       item.stableKey,
       item.planVersionId,
-      item.criteriaByStatus,
-      item.latestResults,
+      item.criteria.map(criterion => [criterion.status, criterion.latest?.result ?? null]),
       item.lastEvaluatedAtMs,
     ])).toEqual([
-      ['BACKLOG-1', null, { PENDING: 0, PASSING: 0, FAILING: 0, BLOCKED: 0, WAIVED: 0 }, {
-        PASS: 0,
-        FAIL: 0,
-        BLOCKED: 0,
-        ERROR: 0,
-        WAIVED: 0,
-      }, null],
-      ['FIRST', brandString<PlanVersionId>('plv:digest-plan:v1'), { PENDING: 1, PASSING: 0, FAILING: 0, BLOCKED: 0, WAIVED: 0 }, {
-        PASS: 0,
-        FAIL: 0,
-        BLOCKED: 0,
-        ERROR: 0,
-        WAIVED: 0,
-      }, null],
+      ['BACKLOG-1', null, [], null],
+      ['FIRST', brandString<PlanVersionId>('plv:digest-plan:v1'), [['PENDING', null]], null],
     ])
     expect(digest.replay).toMatchObject({ outcome: 'compared' })
     if (digest.replay.outcome !== 'compared') return
@@ -320,8 +319,14 @@ describe('readProjectDigest', () => {
     expect(digest.items).toHaveLength(1)
     const [item] = digest.items
     if (item === undefined) return
-    expect(item.criteriaByStatus).toEqual({ PENDING: 0, PASSING: 1, FAILING: 0, BLOCKED: 1, WAIVED: 0 })
-    expect(item.latestResults).toEqual({ PASS: 1, FAIL: 0, BLOCKED: 1, ERROR: 0, WAIVED: 0 })
+    expect(item.criteria.map(criterion => [
+      criterion.status,
+      criterion.latest?.result,
+      criterion.latest?.evaluatedAtMs,
+    ])).toEqual([
+      ['PASSING', 'PASS', 2_000],
+      ['BLOCKED', 'BLOCKED', 1_500],
+    ])
     expect(item.lastEvaluatedAtMs).toBe(2_000)
   })
 
