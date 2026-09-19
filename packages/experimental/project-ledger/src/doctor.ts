@@ -6,7 +6,8 @@
  * inside one project, no lease row still records ACTIVE past its own expiry,
  * the event timeline is readable by this codec, and the replayed projection
  * agrees with the materialized tables (work items, criteria, leases, the
- * decision, approval, resource, actor/role, and work-assignment domains). The doctor never
+ * decision, approval, resource, actor/role, work-assignment, and handoff
+ * domains). The doctor never
  * mutates and never executes a verifier command; it reports every
  * independent issue it finds, so a caller sees the whole picture in one
  * pass. The database and event format versions ride along as report facts
@@ -23,9 +24,10 @@ import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
 import type { ActorId, ActorRoleId, RoleId } from './actors.js'
 import type { WorkAssignmentId } from './work-assignments.js'
+import type { HandoffId } from './handoffs.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
-import { PROJECT_EVENT_FORMAT_VERSION, replayProjectEvents, type ReplayedProjectProjection } from './project-events.js'
+import { PROJECT_EVENT_FORMAT_VERSION, replayProjectEvents, type ReplayedHandoff, type ReplayedProjectProjection } from './project-events.js'
 import { detectWorkGraphCycles } from './work-readiness.js'
 
 /** Closed set of plan-doctor issue codes. */
@@ -128,6 +130,16 @@ interface CriterionStatusRow {
 interface LeaseStatusRow {
   readonly id: string
   readonly status: string
+}
+
+/** One `handoffs` row the parity check reads, in select order. */
+interface HandoffFactsRow {
+  readonly id: string
+  readonly work_item_id: string
+  readonly from_actor_id: string
+  readonly to_actor_id: string | null
+  readonly to_role_id: string | null
+  readonly handoff_kind: string
 }
 
 /** One `work_leases` row the staleness check reads, in select order. */
@@ -660,4 +672,53 @@ function collectProjectionDrift(
       })
     }
   }
+  const handoffRows = db.prepare(
+    'SELECT h.id, h.work_item_id, h.from_actor_id, h.to_actor_id, h.to_role_id, h.handoff_kind FROM handoffs h '
+    + 'JOIN work_items w ON w.id = h.work_item_id WHERE w.project_id = ? ORDER BY h.id',
+  ).all(projectId) as unknown as HandoffFactsRow[]
+  for (const row of handoffRows) {
+    const replayed = projection.handoffs.get(brandString<HandoffId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `handoff "${row.id}" is materialized but no replayed handoff/recorded event`,
+      })
+      continue
+    }
+    if (replayed.workItemId !== row.work_item_id || replayed.fromActorId !== row.from_actor_id) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `handoff "${row.id}" materializes actor "${row.from_actor_id}" handing item "${row.work_item_id}" `
+          + `but replays actor "${replayed.fromActorId}" handing item "${replayed.workItemId}"`,
+      })
+    }
+    if (!handoffRecipientMatches(replayed, row)) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `handoff "${row.id}" materializes to ${describeHandoffRecipient(row.to_actor_id, row.to_role_id)} `
+          + `but replays to ${describeHandoffRecipient(replayed.toActorId ?? null, replayed.toRoleId ?? null)}`,
+      })
+    }
+    if (replayed.handoffKind !== row.handoff_kind) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `handoff "${row.id}" materializes ${row.handoff_kind} but replays ${replayed.handoffKind}`,
+      })
+    }
+  }
+}
+
+/** Fail the recipient check when the row and the replay hand off to different actors or roles. */
+function handoffRecipientMatches(replayed: ReplayedHandoff, row: HandoffFactsRow): boolean {
+  return replayed.toActorId === (row.to_actor_id ?? undefined)
+    && replayed.toRoleId === (row.to_role_id ?? undefined)
+}
+
+/** Describe one handoff recipient side (an actor id or a role id) for the drift message. */
+function describeHandoffRecipient(actorId: string | null, roleId: string | null): string {
+  return actorId === null ? `role "${roleId}"` : `actor "${actorId}"`
 }

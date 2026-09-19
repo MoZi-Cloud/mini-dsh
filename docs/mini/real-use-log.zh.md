@@ -175,7 +175,17 @@ v1.6b 计划 supersede 了自己的版本 1，本增量完成版本 2 批次的�
 
 运行之后，本域首批行把阶段 A 的职责结构记在 lane 下一个要领取的条目上：`wa:mini-dsh:159`——lane 以 `executor` 角色担 `PRIMARY`——与 `wa:mini-dsh:160`——`owner` 的 `ACCOUNTABLE`——都落在 `PA-HANDOFF-RECORD-001` 上，即事件 159–160，时间线的首批 format-6 戳。持久账本首次打开时就地迁移 schema 5→6，现在把 1/2/3/4/5/6 混合时间线折叠干净（160 事件中 97 + 19 + 2 + 14 + 15 + 13 个戳记）。幂等重跑通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`PA-HANDOFF-RECORD-001`（schema 6→7）与 `PA-CLAIM-VISIBILITY-001` 在版本 1 中保持 READY。
 
+### 2026-09-20 —— PA-HANDOFF-RECORD-001：交接记录 actor 之间的传递
+
+阶段 A 的第二个增量落地交接域（蓝图 §28，循工作指派域的适配——`project_id` 经工作项行派生、蓝图的 `summary_content_id` 间接引用改为内联摘要文本、artifact 与 memory 引用作为接缝序列化的 JSON 对象传递、蓝图未赋值的 `handoff_kind` 收口为 `DELEGATE`/`RETURN`），以一次追加的 6→7 迁移达到 schema 版本 7。一个 required 词表事件（`handoff/recorded`）在相邻读取契约下把事件格式升到 7；`recordHandoff` 原子写入交接及其事件，并要求恰好一个接收方——actor 或 role——由接收方 CHECK、接缝与负载编解码三层共同执法；`readProjectHandoffs` 按最新在前列出项目交接，item、发送方与接收方标签经 join 解析；replay 审计与 doctor 的 parity 在两个 sweep 覆盖该族；只读的 `/project handoffs` 视图负责呈现。`accepted_at_ms` 保持为无写入者的预留状态。由 `agent:mini-real-use-lane` 领取，存储 verifier `pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile`（退出码 0；342 测试，三包 per-file 100% 覆盖率），条目 DONE，doctor 0 issues，replay 审计 0 drift。首跑报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-v16d-collaboration:v1","workItemId":"wi:mini-dsh:PA-HANDOFF-RECORD-001","stableKey":"PA-HANDOFF-RECORD-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PA-HANDOFF-RECORD-001:AC-PA-HANDOFF-RECORD-001","command":"pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+运行之后，本域首行记录了阶段 A 收拢条目此刻等待的传递：`ho:mini-dsh:168`——`PA-CLAIM-VISIBILITY-001` 以 `DELEGATE` 从 lane agent 交给持有 `executor` 角色者，artifact 引用钉住 v1.6d 计划——落在事件 161–168，时间线的首批 format-7 戳。持久账本首次打开时就地迁移 schema 6→7，现在把 1/2/3/4/5/6/7 混合时间线折叠干净（168 事件中 97 + 19 + 2 + 14 + 15 + 13 + 8 个戳记）。幂等重跑通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`PA-CLAIM-VISIBILITY-001`——按 actor 的领取可见性与双 agent 证据运行——收拢阶段 A。
+
 ## 相对门槛的状态
 
 
-经账本完成的工作项：31（15 个黄金计划项由 v1.6a 构建本身完成，加上面十六条 lane 条目——第 17 条是 v1.6d 入场决策，不完成工作项）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入并随其完成报告关闭；**v1.6d 已于 2026-09-20 给出**——决策 `dr:mini-dsh:v1.6d-entry`（选中 `enter-v1.6d-stage-a`）——v1.6d 阶段 A 已进入。
+经账本完成的工作项：32（15 个黄金计划项由 v1.6a 构建本身完成，加上面十七条 lane 条目——第 17 条是 v1.6d 入场决策，不完成工作项）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入并随其完成报告关闭；**v1.6d 已于 2026-09-20 给出**——决策 `dr:mini-dsh:v1.6d-entry`（选中 `enter-v1.6d-stage-a`）——v1.6d 阶段 A 已进入。

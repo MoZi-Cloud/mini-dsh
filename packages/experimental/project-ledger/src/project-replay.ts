@@ -17,6 +17,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import type { ActorId, ActorRoleId, RoleId } from './actors.js'
 import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
+import type { HandoffId } from './handoffs.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
@@ -47,6 +48,7 @@ export interface ProjectReplayEntityCounts {
   readonly roles: number
   readonly actorRoles: number
   readonly workAssignments: number
+  readonly handoffs: number
 }
 
 /** What the fold rebuilt, plus the packet recipes that have no materialized table. */
@@ -193,6 +195,16 @@ interface WorkAssignmentFactsRow {
   readonly status: string
 }
 
+/** One `handoffs` row the audit reads, in select order. */
+interface HandoffFactsRow {
+  readonly id: string
+  readonly work_item_id: string
+  readonly from_actor_id: string
+  readonly to_actor_id: string | null
+  readonly to_role_id: string | null
+  readonly handoff_kind: string
+}
+
 /**
  * Audit one project's ledger integrity read-only: fold the project's event
  * timeline and compare the rebuilt projection with the materialized tables,
@@ -256,6 +268,10 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     'SELECT a.id, a.work_item_id, a.actor_id, a.role_id, a.assignment_kind, a.status FROM work_assignments a '
     + 'JOIN work_items w ON w.id = a.work_item_id WHERE w.project_id = ? ORDER BY a.id',
   ).all(projectId) as unknown as WorkAssignmentFactsRow[]
+  const handoffRows = db.prepare(
+    'SELECT h.id, h.work_item_id, h.from_actor_id, h.to_actor_id, h.to_role_id, h.handoff_kind FROM handoffs h '
+    + 'JOIN work_items w ON w.id = h.work_item_id WHERE w.project_id = ? ORDER BY h.id',
+  ).all(projectId) as unknown as HandoffFactsRow[]
   const materialized: ProjectReplayEntityCounts = {
     planVersions: versionRows.length,
     workItems: itemRows.length,
@@ -271,6 +287,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     roles: roleRows.length,
     actorRoles: assignmentRows.length,
     workAssignments: workAssignmentRows.length,
+    handoffs: handoffRows.length,
   }
   let projection: ReplayedProjectProjection
   try {
@@ -298,6 +315,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
   collectResourceDrift(requirementRows, instanceRows, verificationRows, projection, drift)
   collectActorDrift(actorRows, roleRows, assignmentRows, projection, drift)
   collectWorkAssignmentDrift(workAssignmentRows, projection, drift)
+  collectHandoffDrift(handoffRows, projection, drift)
   return {
     outcome: 'compared',
     projectId,
@@ -319,6 +337,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
       roles: projection.roles.size,
       actorRoles: projection.actorRoles.size,
       workAssignments: projection.workAssignments.size,
+      handoffs: projection.handoffs.size,
     },
     materialized,
     drift,
@@ -794,4 +813,50 @@ function collectWorkAssignmentDrift(
     }
   }
   pushReplayOnlyDrift(replayedIds, drift, refId => `work assignment "${refId}" replays from a work/assigned event but no row is materialized`)
+}
+
+/**
+ * Compare the handoff family, both directions: existence, then item and
+ * sender references, the recipient actor/role pair, and the kind.
+ */
+function collectHandoffDrift(
+  rows: readonly HandoffFactsRow[],
+  projection: ReplayedProjectProjection,
+  drift: ProjectReplayDrift[],
+): void {
+  const replayedIds = new Set(projection.handoffs.keys())
+  for (const row of rows) {
+    const id = brandString<HandoffId>(row.id)
+    const replayed = projection.handoffs.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `handoff "${row.id}" is materialized but no handoff/recorded event replays it`,
+      })
+      continue
+    }
+    replayedIds.delete(id)
+    if (replayed.workItemId !== row.work_item_id || replayed.fromActorId !== row.from_actor_id) {
+      drift.push({
+        refId: row.id,
+        message: `handoff "${row.id}" materializes actor "${row.from_actor_id}" handing item "${row.work_item_id}" `
+          + `but replays actor "${replayed.fromActorId}" handing item "${replayed.workItemId}"`,
+      })
+    }
+    const materializedRecipient = row.to_actor_id === null ? `role "${row.to_role_id}"` : `actor "${row.to_actor_id}"`
+    const replayedRecipient = replayed.toActorId === undefined ? `role "${replayed.toRoleId}"` : `actor "${replayed.toActorId}"`
+    if (replayed.toActorId !== (row.to_actor_id ?? undefined) || replayed.toRoleId !== (row.to_role_id ?? undefined)) {
+      drift.push({
+        refId: row.id,
+        message: `handoff "${row.id}" materializes to ${materializedRecipient} but replays to ${replayedRecipient}`,
+      })
+    }
+    if (replayed.handoffKind !== row.handoff_kind) {
+      drift.push({
+        refId: row.id,
+        message: `handoff "${row.id}" materializes ${row.handoff_kind} but replays ${replayed.handoffKind}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedIds, drift, refId => `handoff "${refId}" replays from a handoff/recorded event but no row is materialized`)
 }

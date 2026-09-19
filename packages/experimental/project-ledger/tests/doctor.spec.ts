@@ -19,6 +19,7 @@ import {
   parsePlanDocument,
   planDoctor,
   recordDecision,
+  recordHandoff,
   openResourceRequirement,
   provideResourceInstance,
   registerActor,
@@ -106,8 +107,8 @@ describe('planDoctor', () => {
         versionNo: 1,
         status: 'DRAFT',
         projectId: 'mini-dsh',
-        databaseUserVersion: 6,
-        eventFormatVersion: 6,
+        databaseUserVersion: 7,
+        eventFormatVersion: 7,
         baselineRepoHead: null,
         baselineWorktreeHash: null,
         counts: { phases: 13, workItems: 15, relations: 14, criteria: 16, events: 16 },
@@ -268,7 +269,7 @@ describe('planDoctor', () => {
       const issues = planDoctor(unreadable, GOLDEN_VERSION).issues
       expect(issues).toHaveLength(1)
       expect(issues[0]?.code).toBe('event-timeline-unreadable')
-      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 6')
+      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 7')
     } finally {
       unreadable.close()
     }
@@ -631,6 +632,80 @@ describe('planDoctor', () => {
       ])
     } finally {
       workAssignmentDrift.close()
+    }
+
+    const handoffDrift = await goldenLedger()
+    try {
+      const lane = registerActor(handoffDrift, brandString<ProjectId>('mini-dsh'), {
+        actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+      }, { nowMs: 40, actorRef: 'doctor/agent' })
+      const second = registerActor(handoffDrift, brandString<ProjectId>('mini-dsh'), {
+        actorKey: 'second', actorKind: 'AGENT', displayName: 'Second',
+      }, { nowMs: 41, actorRef: 'doctor/agent' })
+      const executorRole = defineRole(handoffDrift, brandString<ProjectId>('mini-dsh'), {
+        roleName: 'executor', roleKind: 'EXECUTION',
+      }, { nowMs: 42, actorRef: 'doctor/agent' })
+      const governanceRole = defineRole(handoffDrift, brandString<ProjectId>('mini-dsh'), {
+        roleName: 'governance', roleKind: 'GOVERNANCE',
+      }, { nowMs: 43, actorRef: 'doctor/agent' })
+      const handActor = registerActor(handoffDrift, brandString<ProjectId>('mini-dsh'), {
+        actorKey: 'hand', actorKind: 'SERVICE', displayName: 'Hand row',
+      }, { nowMs: 44, actorRef: 'doctor/agent' })
+      const handoff = recordHandoff(handoffDrift, {
+        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
+        fromActorId: lane.actorId,
+        toActorId: second.actorId,
+        handoffKind: 'DELEGATE',
+        summary: 'first pass',
+      }, { nowMs: 45, actorRef: 'doctor/agent' })
+      const returned = recordHandoff(handoffDrift, {
+        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
+        fromActorId: second.actorId,
+        toRoleId: executorRole.roleId,
+        handoffKind: 'RETURN',
+        summary: 'back to the role',
+      }, { nowMs: 46, actorRef: 'doctor/agent' })
+      handoffDrift.prepare('UPDATE handoffs SET from_actor_id = ?, handoff_kind = ? WHERE id = ?')
+        .run(handActor.actorId, 'RETURN', handoff.handoffId)
+      handoffDrift.prepare('UPDATE handoffs SET to_actor_id = NULL, to_role_id = ? WHERE id = ?')
+        .run(executorRole.roleId, handoff.handoffId)
+      handoffDrift.prepare('UPDATE handoffs SET to_role_id = ? WHERE id = ?').run(governanceRole.roleId, returned.handoffId)
+      handoffDrift.prepare(
+        'INSERT INTO handoffs '
+        + '(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms) '
+        + "VALUES ('ho:mini-dsh:hand', 'wi:mini-dsh:DB-001', ?, NULL, ?, 'DELEGATE', 'ghost row', 47)",
+      ).run(handActor.actorId, executorRole.roleId)
+      const issues = planDoctor(handoffDrift, GOLDEN_VERSION).issues
+      expect(issues).toEqual([
+        {
+          code: 'projection-drift',
+          refId: handoff.handoffId,
+          message: `handoff "${handoff.handoffId}" materializes actor "${handActor.actorId}" handing item "wi:mini-dsh:DB-001" `
+            + `but replays actor "${lane.actorId}" handing item "wi:mini-dsh:DB-001"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: handoff.handoffId,
+          message: `handoff "${handoff.handoffId}" materializes to role "${executorRole.roleId}" but replays to actor "${second.actorId}"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: handoff.handoffId,
+          message: `handoff "${handoff.handoffId}" materializes RETURN but replays DELEGATE`,
+        },
+        {
+          code: 'projection-drift',
+          refId: returned.handoffId,
+          message: `handoff "${returned.handoffId}" materializes to role "${governanceRole.roleId}" but replays to role "${executorRole.roleId}"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: 'ho:mini-dsh:hand',
+          message: 'handoff "ho:mini-dsh:hand" is materialized but no replayed handoff/recorded event',
+        },
+      ])
+    } finally {
+      handoffDrift.close()
     }
 
     const rawCriterion = await goldenLedger()

@@ -21,6 +21,7 @@ import {
   openResourceRequirement,
   provideResourceInstance,
   registerActor,
+  recordHandoff,
   releaseWorkLease,
   requestApproval,
   validatePlanSchema,
@@ -103,13 +104,13 @@ describe('readProjectReplay', () => {
         planVersions: 1, workItems: 1, criteria: 1, leases: 1, workPackets: 0,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0,
+        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0,
       },
       materialized: {
         planVersions: 1, workItems: 1, criteria: 1, leases: 1,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0,
+        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0,
       },
       drift: [],
     })
@@ -187,13 +188,13 @@ describe('readProjectReplay', () => {
       planVersions: 2, workItems: 2, criteria: 2, leases: 1,
       workPackets: 0, decisionRequests: 0, decisions: 0, approvals: 0,
       resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-      actors: 0, roles: 0, actorRoles: 0, workAssignments: 0,
+      actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0,
     })
     expect(report.materialized).toEqual({
       planVersions: 1, workItems: 1, criteria: 1, leases: 0,
       decisionRequests: 0, decisions: 0, approvals: 0,
       resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-      actors: 0, roles: 0, actorRoles: 0, workAssignments: 0,
+      actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0,
     })
     expect(report.drift.map(finding => finding.message)).toEqual([
       'plan version "plv:replay-plan:v9" replays from a plan/imported event but no row is materialized',
@@ -565,12 +566,82 @@ describe('readProjectReplay', () => {
     ])
   })
 
+  it('flags materialized handoffs no event replays, and disagreeing handoff facts', async () => {
+    const db = await ledgerOf(REPLAY_PLAN_TEXT)
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'spec-owner' })
+    const second = registerActor(db, PROJECT, {
+      actorKey: 'second', actorKind: 'AGENT', displayName: 'Second',
+    }, { nowMs: 11, actorRef: 'spec-owner' })
+    const executorRole = defineRole(db, PROJECT, {
+      roleName: 'executor', roleKind: 'EXECUTION',
+    }, { nowMs: 12, actorRef: 'spec-owner' })
+    const governanceRole = defineRole(db, PROJECT, {
+      roleName: 'governance', roleKind: 'GOVERNANCE',
+    }, { nowMs: 13, actorRef: 'spec-owner' })
+    const handoff = recordHandoff(db, {
+      workItemId: brandString<WorkItemId>(WORK_ITEM),
+      fromActorId: lane.actorId,
+      toActorId: second.actorId,
+      handoffKind: 'DELEGATE',
+      summary: 'first pass',
+    }, { nowMs: 14, actorRef: 'spec-owner' })
+    const returned = recordHandoff(db, {
+      workItemId: brandString<WorkItemId>(WORK_ITEM),
+      fromActorId: second.actorId,
+      toRoleId: executorRole.roleId,
+      handoffKind: 'RETURN',
+      summary: 'back to the role',
+    }, { nowMs: 15, actorRef: 'spec-owner' })
+    // Tampered facts in both directions, plus materialized- and replayed-only
+    // ghosts; the retargets point at the hand row because the foreign keys
+    // require real rows.
+    db.prepare(
+      'INSERT INTO actors '
+      + '(id, project_id, actor_key, actor_kind, display_name, external_identity, metadata_json, status, created_at_ms) '
+      + "VALUES ('actor:replay-proj:hand', 'replay-proj', 'hand', 'SERVICE', 'Hand row', NULL, NULL, 'ACTIVE', 5)",
+    ).run()
+    db.prepare('UPDATE handoffs SET from_actor_id = ?, handoff_kind = ? WHERE id = ?')
+      .run('actor:replay-proj:hand', 'RETURN', handoff.handoffId)
+    db.prepare('UPDATE handoffs SET to_actor_id = NULL, to_role_id = ? WHERE id = ?')
+      .run(executorRole.roleId, handoff.handoffId)
+    db.prepare('UPDATE handoffs SET to_role_id = ? WHERE id = ?').run(governanceRole.roleId, returned.handoffId)
+    db.prepare(
+      'INSERT INTO handoffs '
+      + '(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms) '
+      + "VALUES ('ho:replay-proj:hand', ?, 'actor:replay-proj:hand', NULL, ?, 'DELEGATE', 'ghost row', 6)",
+    ).run(WORK_ITEM, executorRole.roleId)
+    appendProjectEvent(db, PROJECT, 'handoff/recorded', {
+      handoffId: 'ho:replay-proj:event-only',
+      workItemId: WORK_ITEM,
+      fromActorId: lane.actorId,
+      toActorId: second.actorId,
+      handoffKind: 'DELEGATE',
+      summary: 'timeline only',
+    }, { entityType: 'handoff', entityId: 'ho:replay-proj:event-only', nowMs: 16, actorRef: 'spec-owner' })
+
+    const report = readProjectReplay(db, PROJECT)
+    expect(report.outcome).toBe('compared')
+    if (report.outcome !== 'compared') return
+    expect(report.drift.map(finding => finding.message)).toEqual([
+      'actor "actor:replay-proj:hand" is materialized but no actor/registered event replays it',
+      `handoff "${handoff.handoffId}" materializes actor "actor:replay-proj:hand" handing item "${WORK_ITEM}" `
+        + `but replays actor "${lane.actorId}" handing item "${WORK_ITEM}"`,
+      `handoff "${handoff.handoffId}" materializes to role "${executorRole.roleId}" but replays to actor "${second.actorId}"`,
+      `handoff "${handoff.handoffId}" materializes RETURN but replays DELEGATE`,
+      `handoff "${returned.handoffId}" materializes to role "${governanceRole.roleId}" but replays to role "${executorRole.roleId}"`,
+      'handoff "ho:replay-proj:hand" is materialized but no handoff/recorded event replays it',
+      'handoff "ho:replay-proj:event-only" replays from a handoff/recorded event but no row is materialized',
+    ])
+  })
+
   it('reports an undecodable timeline without comparing parity', async () => {
     const db = await ledgerOf(REPLAY_PLAN_TEXT)
     db.prepare(
       'INSERT INTO project_events '
         + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-        + "VALUES (?, 99, 7, 'plan/imported', 0, '{}', 1)",
+        + "VALUES (?, 99, 8, 'plan/imported', 0, '{}', 1)",
     ).run(PROJECT)
     const report = readProjectReplay(db, PROJECT)
     expect(report).toMatchObject({
@@ -582,11 +653,11 @@ describe('readProjectReplay', () => {
         planVersions: 1, workItems: 1, criteria: 1, leases: 0,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0,
+        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0,
       },
     })
     expect(report.outcome).toBe('undecodable')
     if (report.outcome !== 'undecodable') return
-    expect(report.timelineError).toMatch(/carries event format 7; this build reads up to format 6/u)
+    expect(report.timelineError).toMatch(/carries event format 8; this build reads up to format 7/u)
   })
 })

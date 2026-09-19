@@ -335,7 +335,7 @@ describe('readProjectDigest', () => {
     db.prepare(
       'INSERT INTO project_events '
         + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-        + "VALUES (?, 99, 7, 'plan/imported', 0, '{}', 1)",
+        + "VALUES (?, 99, 8, 'plan/imported', 0, '{}', 1)",
     ).run(PROJECT)
 
     const digest = readProjectDigest(db, PROJECT)
@@ -344,6 +344,6 @@ describe('readProjectDigest', () => {
     expect(digest.replay).toMatchObject({ outcome: 'undecodable' })
     expect(digest.replay.outcome).toBe('undecodable')
     if (digest.replay.outcome !== 'undecodable') return
-    expect(digest.replay.timelineError).toMatch(/carries event format 7; this build reads up to format 6/u)
+    expect(digest.replay.timelineError).toMatch(/carries event format 8; this build reads up to format 7/u)
   })
 })

@@ -47,6 +47,7 @@ import {
   type ReplayedCriterion,
   type ReplayedDecision,
   type ReplayedDecisionRequest,
+  type ReplayedHandoff,
   type ReplayedResourceInstance,
   type ReplayedResourceRequirement,
   type ReplayedResourceVerification,
@@ -63,6 +64,7 @@ import {
   type ResourceVerificationResult,
   type RoleId,
   type SourceDocumentHash,
+  type HandoffId,
   type WorkAssignmentId,
   type WorkItemId,
   type WorkLeaseId,
@@ -337,6 +339,23 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
     })
   }
   // No test in this file prepares work packets; the rebuild seam owns packet parity.
+  const handoffs = new Map<HandoffId, ReplayedHandoff>()
+  for (const row of db.prepare('SELECT id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind FROM handoffs').all() as {
+    id: string
+    work_item_id: string
+    from_actor_id: string
+    to_actor_id: string | null
+    to_role_id: string | null
+    handoff_kind: string
+  }[]) {
+    handoffs.set(brandString<HandoffId>(row.id), {
+      workItemId: brandString<WorkItemId>(row.work_item_id),
+      fromActorId: brandString<ActorId>(row.from_actor_id),
+      toActorId: row.to_actor_id === null ? undefined : brandString<ActorId>(row.to_actor_id),
+      toRoleId: row.to_role_id === null ? undefined : brandString<RoleId>(row.to_role_id),
+      handoffKind: row.handoff_kind as ReplayedHandoff['handoffKind'],
+    })
+  }
   return {
     planVersions,
     workItems,
@@ -352,6 +371,7 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
     roles,
     actorRoles,
     workAssignments,
+    handoffs,
   }
 }
 
@@ -682,6 +702,7 @@ describe('replayProjectEvents', () => {
       roles: new Map(),
       actorRoles: new Map(),
       workAssignments: new Map(),
+      handoffs: new Map(),
     })
     db.close()
   })
@@ -1408,6 +1429,119 @@ describe('replayProjectEvents', () => {
     expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
       .toContain('payload field "assignmentKind" is not a work-assignment kind: "LEAD"')
     setPayload(assigned.sequenceNo, baseAssigned)
+    db.close()
+  })
+
+  it('replays handoff/recorded events with the sender and recipient resolved', async () => {
+    const db = await goldenLedger()
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const second = registerActor(db, PROJECT, {
+      actorKey: 'second', actorKind: 'AGENT', displayName: 'Second',
+    }, { nowMs: 11, actorRef: 'tester' })
+    const role = defineRole(db, PROJECT, { roleName: 'executor', roleKind: 'EXECUTION' }, { nowMs: 12, actorRef: 'tester' })
+    const item = brandString<WorkItemId>('wi:mini-dsh:IMPORT-001')
+    appendProjectEvent(db, PROJECT, 'handoff/recorded', {
+      handoffId: 'ho:mini-dsh:19',
+      workItemId: item,
+      fromActorId: lane.actorId,
+      toActorId: second.actorId,
+      handoffKind: 'DELEGATE',
+      summary: 'first pass',
+      artifactRefsJson: '{"pr":4193}',
+    }, { entityType: 'handoff', entityId: 'ho:mini-dsh:19', nowMs: 4 })
+    const replayed = replayProjectEvents(db, PROJECT)
+    expect(replayed.handoffs.get(brandString<HandoffId>('ho:mini-dsh:19'))).toEqual({
+      workItemId: item,
+      fromActorId: lane.actorId,
+      toActorId: second.actorId,
+      toRoleId: undefined,
+      handoffKind: 'DELEGATE',
+    })
+    appendProjectEvent(db, PROJECT, 'handoff/recorded', {
+      handoffId: 'ho:mini-dsh:20',
+      workItemId: item,
+      fromActorId: second.actorId,
+      toRoleId: role.roleId,
+      handoffKind: 'RETURN',
+      summary: 'back to the role',
+    }, { entityType: 'handoff', entityId: 'ho:mini-dsh:20', nowMs: 5 })
+    expect(replayProjectEvents(db, PROJECT).handoffs.get(brandString<HandoffId>('ho:mini-dsh:20'))).toEqual({
+      workItemId: item,
+      fromActorId: second.actorId,
+      toActorId: undefined,
+      toRoleId: role.roleId,
+      handoffKind: 'RETURN',
+    })
+    db.close()
+  })
+
+  it('fails replay on handoff/recorded events naming unreplayed entities', async () => {
+    const db = await goldenLedger()
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const append = (payload: Record<string, unknown>): ProjectEventEnvelope =>
+      appendProjectEvent(db, PROJECT, 'handoff/recorded', payload, {
+        entityType: 'handoff', entityId: 'ho:mini-dsh:ghost', nowMs: 2,
+      })
+    const base: Record<string, unknown> = {
+      handoffId: 'ho:mini-dsh:ghost', workItemId: 'wi:mini-dsh:IMPORT-001',
+      fromActorId: lane.actorId, toActorId: lane.actorId,
+      handoffKind: 'DELEGATE', summary: 's',
+    }
+    append({ ...base, workItemId: 'wi:mini-dsh:ghost' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "workItemId" names no replayed work item (wi:mini-dsh:ghost)')
+    db.prepare('DELETE FROM project_events WHERE sequence_no = 18').run()
+    append({ ...base, fromActorId: 'actor:mini-dsh:ghost' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "actorId" names no replayed actor (actor:mini-dsh:ghost)')
+    db.prepare('DELETE FROM project_events WHERE sequence_no = 18').run()
+    append({ ...base, toActorId: undefined, toRoleId: 'role:mini-dsh:ghost' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "roleId" names no replayed role (role:mini-dsh:ghost)')
+    db.close()
+  })
+
+  it('fails replay on handoff payloads with missing, mistyped, or ambiguous recipients', async () => {
+    const db = await goldenLedger()
+    const setPayload = (sequenceNo: number, payload: unknown): void => {
+      db.prepare('UPDATE project_events SET payload_json = ? WHERE project_id = ? AND sequence_no = ?')
+        .run(JSON.stringify(payload), PROJECT, sequenceNo)
+    }
+    const baseHandoff: Record<string, unknown> = {
+      handoffId: 'ho:mini-dsh:17',
+      workItemId: 'wi:mini-dsh:IMPORT-001',
+      fromActorId: 'actor:mini-dsh:payload',
+      toActorId: 'actor:mini-dsh:recipient',
+      handoffKind: 'DELEGATE',
+      summary: 'pass it on',
+    }
+    const handoff = appendProjectEvent(db, PROJECT, 'handoff/recorded', baseHandoff, {
+      entityType: 'handoff',
+      entityId: 'ho:mini-dsh:17',
+      nowMs: 2,
+    })
+    for (const field of ['handoffId', 'workItemId', 'fromActorId', 'handoffKind', 'summary']) {
+      const payload = Object.fromEntries(Object.entries(baseHandoff).filter(([key]) => key !== field))
+      setPayload(handoff.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(handoff.sequenceNo, { ...baseHandoff, toActorId: 7 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "toActorId" must be a string')
+    setPayload(handoff.sequenceNo, { ...baseHandoff, handoffKind: 'ESCALATE' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "handoffKind" is not a handoff kind: "ESCALATE"')
+    setPayload(handoff.sequenceNo, { ...baseHandoff, toRoleId: 'role:mini-dsh:executor' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('must name exactly one handoff recipient')
+    setPayload(handoff.sequenceNo, { ...baseHandoff, toActorId: undefined, toRoleId: undefined })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('must name exactly one handoff recipient')
+    setPayload(handoff.sequenceNo, baseHandoff)
     db.close()
   })
 })

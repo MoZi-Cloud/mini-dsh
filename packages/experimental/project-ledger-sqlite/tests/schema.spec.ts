@@ -49,6 +49,7 @@ const LEDGER_TABLES = [
   'decision_options',
   'decision_requests',
   'decisions',
+  'handoffs',
   'phases',
   'plan_compile_diagnostics',
   'plan_imports',
@@ -75,6 +76,7 @@ const LEDGER_INDEXES = [
   'idx_approvals_subject',
   'idx_decision_requests_project',
   'idx_external_blockers_work',
+  'idx_handoffs_item',
   'idx_lease_expiry',
   'idx_plan_diag_import',
   'idx_plan_versions_plan_status',
@@ -406,6 +408,41 @@ describe('adjacent migration fixture', () => {
     reopened.close()
   })
 
+  it('upgrades a v6 database through the shipped 6→7 step without losing rows', async () => {
+    const path = tmpFile('v6-to-v7.sqlite')
+    // A real v6 database: the shipped steps' own layout, stamped as v6 and
+    // carrying one work-assignment row.
+    const [coreStep, decisionStep, approvalStep, resourceStep, actorStep, workAssignmentStep] = PROJECT_LEDGER_MIGRATIONS
+    if (coreStep === undefined || decisionStep === undefined || approvalStep === undefined
+      || resourceStep === undefined || actorStep === undefined || workAssignmentStep === undefined) {
+      throw new Error('test setup: the registry ships a missing step')
+    }
+    const raw = new DatabaseSync(path)
+    coreStep.apply(raw)
+    decisionStep.apply(raw)
+    approvalStep.apply(raw)
+    resourceStep.apply(raw)
+    actorStep.apply(raw)
+    workAssignmentStep.apply(raw)
+    raw.exec(
+      'INSERT INTO actors '
+      + '(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) '
+      + "VALUES ('actor:p:1', 'p', 'k', 'AGENT', 'A', 'ACTIVE', 1)",
+    )
+    raw.exec('PRAGMA user_version = 6')
+    raw.close()
+
+    const reopened = await openProjectLedgerDatabase(path)
+    expect(userVersionOf(reopened)).toBe(PROJECT_LEDGER_SCHEMA_VERSION)
+    expect(tableNames(reopened)).toEqual(LEDGER_TABLES)
+    expect(indexNames(reopened)).toEqual(LEDGER_INDEXES)
+    const assignments = reopened.prepare('SELECT COUNT(*) AS n FROM work_assignments').get() as { n: number }
+    expect(assignments.n).toBe(0)
+    const handoffs = reopened.prepare('SELECT COUNT(*) AS n FROM handoffs').get() as { n: number }
+    expect(handoffs.n).toBe(0)
+    reopened.close()
+  })
+
   it('upgrades the committed v1 fixture databases through the same steps', async () => {
     const fixtureRoot = resolve(REPO_ROOT, 'fixtures/project-ledger')
     for (const name of ['v1.6a-empty.db', 'v1.6a-populated.db']) {
@@ -498,6 +535,10 @@ describe('Ledger Core schema contract', () => {
       ['work_assignments.work_item_id', "INSERT INTO work_assignments(id, work_item_id, actor_id, role_id, assignment_kind, status, assigned_at_ms) VALUES('wa_x','missing','actor_x',NULL,'PRIMARY','ACTIVE',1)"],
       ['work_assignments.actor_id', "INSERT INTO work_assignments(id, work_item_id, actor_id, role_id, assignment_kind, status, assigned_at_ms) VALUES('wa_x','work_1','actor_x',NULL,'PRIMARY','ACTIVE',1)"],
       ['work_assignments.role_id', "INSERT INTO actors(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) VALUES('actor_1','proj_1','a','AGENT','A','ACTIVE',1); INSERT INTO work_assignments(id, work_item_id, actor_id, role_id, assignment_kind, status, assigned_at_ms) VALUES('wa_x','work_1','actor_1','role_x','PRIMARY','ACTIVE',1)"],
+      ['handoffs.work_item_id', "INSERT INTO handoffs(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms) VALUES('ho_x','missing','actor_x','actor_1',NULL,'DELEGATE','s',1)"],
+      ['handoffs.from_actor_id', "INSERT INTO handoffs(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms) VALUES('ho_x','work_1','actor_x','actor_1',NULL,'DELEGATE','s',1)"],
+      ['handoffs.to_actor_id', "INSERT INTO handoffs(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms) VALUES('ho_x','work_1','actor_1','actor_x',NULL,'DELEGATE','s',1)"],
+      ['handoffs.to_role_id', "INSERT INTO handoffs(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms) VALUES('ho_x','work_1','actor_1',NULL,'role_x','DELEGATE','s',1)"],
     ]
     for (const [edge, sql] of orphanInserts) {
       try {
@@ -644,6 +685,31 @@ describe('Ledger Core schema contract', () => {
       "SELECT COUNT(*) AS n FROM work_assignments WHERE work_item_id = 'work_1' AND status = 'ACTIVE' AND assignment_kind = 'PRIMARY'",
     ).get() as { n: number }
     expect(livePrimaryOnWork1.n).toBe(1)
+    db.close()
+  })
+
+  it('keeps exactly one handoff recipient and rejects bad kinds', async () => {
+    const db = await openProjectLedgerDatabase(':memory:')
+    insertFixtureChain(db)
+    db.exec("INSERT INTO actors(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) VALUES('actor_1','proj_1','a','AGENT','A','ACTIVE',1)")
+    db.exec("INSERT INTO roles(id, project_id, role_name, role_kind, created_at_ms) VALUES('role_1','proj_1','executor','EXECUTION',1)")
+    const insert = (id: string, toActorId: string | null, toRoleId: string | null, kind = 'DELEGATE'): void => {
+      db.exec(`INSERT INTO handoffs(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms)
+        VALUES('${id}','work_1','actor_1',${toActorId === null ? 'NULL' : `'${toActorId}'`},${toRoleId === null ? 'NULL' : `'${toRoleId}'`},'${kind}','pass it on',1)`)
+    }
+    insert('ho_1', 'actor_1', null)
+    insert('ho_2', null, 'role_1', 'RETURN')
+    expect(() => { insert('ho_e1', null, null) }).toThrow()
+    expect(() => { insert('ho_e2', 'actor_1', 'role_1') }).toThrow()
+    expect(() => { insert('ho_e3', 'actor_1', null, 'ESCALATE') }).toThrow()
+    const recipients = db.prepare('SELECT to_actor_id, to_role_id FROM handoffs ORDER BY id').all() as {
+      to_actor_id: string | null
+      to_role_id: string | null
+    }[]
+    expect(recipients).toEqual([
+      { to_actor_id: 'actor_1', to_role_id: null },
+      { to_actor_id: null, to_role_id: 'role_1' },
+    ])
     db.close()
   })
 })

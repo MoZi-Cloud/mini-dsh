@@ -10,8 +10,9 @@
  * kept separate from decisions), its resource layout (blueprint
  * §25/§26/§27: requirements, instances, verifications), its actor/role
  * layout (blueprint §3/§4: actors, roles, and the assignments between them),
- * and the v1.6d work-assignment layout (blueprint §18: an actor's duty on
- * one work item).
+ * the v1.6d work-assignment layout (blueprint §18: an actor's duty on
+ * one work item), and the v1.6d handoff layout (blueprint §28: one recorded
+ * pass of a work item between actors).
  *
  * The database is a source of truth, not a rebuildable index: a stamped
  * `user_version` newer than this build rejects, upgrades advance one
@@ -108,6 +109,12 @@ export const PROJECT_LEDGER_MIGRATIONS: readonly ProjectLedgerMigration[] = [
     toVersion: 6,
     description: 'v1.6d work-assignment domain (work assignments)',
     apply: createWorkAssignmentTables,
+  },
+  {
+    fromVersion: 6,
+    toVersion: 7,
+    description: 'v1.6d handoff domain (handoffs)',
+    apply: createHandoffTables,
   },
 ]
 
@@ -698,5 +705,37 @@ function createWorkAssignmentTables(db: DatabaseSync): void {
       ON work_assignments(work_item_id, status);
     CREATE INDEX IF NOT EXISTS idx_work_assignments_actor
       ON work_assignments(actor_id, status);
+  `)
+}
+
+/**
+ * Materialize the v1.6d handoff table (blueprint §28, adapted like the
+ * earlier domains: `project_id` derives through the work item row, the
+ * blueprint's `summary_content_id` indirection becomes inline summary text,
+ * the unvalued `handoff_kind` closes uppercase to the ledger convention,
+ * and `accepted_at_ms` is reserved with no writer yet). A handoff names
+ * exactly one recipient — an actor or a role — enforced by the recipient
+ * check. Idempotent by design.
+ */
+function createHandoffTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS handoffs (
+      id                 TEXT PRIMARY KEY,
+      work_item_id       TEXT NOT NULL REFERENCES work_items(id),
+      from_actor_id      TEXT NOT NULL REFERENCES actors(id),
+      to_actor_id        TEXT REFERENCES actors(id),
+      to_role_id         TEXT REFERENCES roles(id),
+      handoff_kind       TEXT NOT NULL CHECK(handoff_kind IN (
+        'DELEGATE','RETURN'
+      )),
+      summary            TEXT NOT NULL,
+      artifact_refs_json TEXT,
+      memory_refs_json   TEXT,
+      recorded_at_ms     INTEGER NOT NULL,
+      accepted_at_ms     INTEGER,
+      CHECK((to_actor_id IS NULL) <> (to_role_id IS NULL))
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_handoffs_item
+      ON handoffs(work_item_id, recorded_at_ms);
   `)
 }

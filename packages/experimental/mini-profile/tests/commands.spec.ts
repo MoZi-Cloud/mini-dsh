@@ -21,7 +21,9 @@ import {
   importPlanVersion,
   openDecisionRequest,
   readProjectActors,
+  readProjectHandoffs,
   recordDecision,
+  recordHandoff,
   registerActor,
   requestApproval,
   openResourceRequirement,
@@ -77,7 +79,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project')).resolves.toMatchObject({
         kind: 'success',
         text: expect.stringMatching(
-          /todo \[--agent\][\s\S]*doctor[\s\S]*history[\s\S]*export[\s\S]*actors[\s\S]*assignments/u,
+          /todo \[--agent\][\s\S]*doctor[\s\S]*history[\s\S]*export[\s\S]*actors[\s\S]*assignments[\s\S]*handoffs/u,
         ) as string,
       })
     } finally {
@@ -105,6 +107,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project resources a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project actors a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project assignments a b')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project handoffs a b')).resolves.toEqual(usage)
     } finally {
       await unmount(mounted)
     }
@@ -490,7 +493,7 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 7, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 8, 'plan/imported', 0, '{}', 1)",
       ).run()
       const result = await run(mounted, '/project replay')
       expect(result).toMatchObject({ kind: 'success' })
@@ -984,6 +987,60 @@ describe('/project', () => {
     }
   })
 
+  it('lists recorded handoffs with their item, sender, and recipient labels', async () => {
+    const mounted = await mount()
+    try {
+      const db = mounted.ctx.projectLedger.db
+      seedActivePlan(db, SOLO_PLAN_TEXT)
+      await expect(run(mounted, '/project handoffs')).resolves.toEqual({
+        kind: 'success',
+        text: 'No handoffs in project solo-proj.',
+      })
+
+      const lane = registerActor(db, brandString<ProjectId>('solo-proj'), {
+        actorKey: 'ci-lane', actorKind: 'AGENT', displayName: 'Lane',
+      }, { nowMs: 90_000, actorRef: 'spec-owner' })
+      const owner = registerActor(db, brandString<ProjectId>('solo-proj'), {
+        actorKey: 'owner', actorKind: 'HUMAN', displayName: 'Owner',
+      }, { nowMs: 90_500, actorRef: 'spec-owner' })
+      const executorRole = defineRole(db, brandString<ProjectId>('solo-proj'), {
+        roleName: 'executor', roleKind: 'EXECUTION',
+      }, { nowMs: 91_000, actorRef: 'spec-owner' })
+      recordHandoff(db, {
+        workItemId: brandString<WorkItemId>('wi:solo-proj:AGENT-ONLY'),
+        fromActorId: lane.actorId,
+        toActorId: owner.actorId,
+        handoffKind: 'DELEGATE',
+        summary: 'owner takes the review pass',
+      }, { nowMs: 92_000, actorRef: 'spec-owner' })
+      recordHandoff(db, {
+        workItemId: brandString<WorkItemId>('wi:solo-proj:AGENT-ONLY'),
+        fromActorId: owner.actorId,
+        toRoleId: executorRole.roleId,
+        handoffKind: 'RETURN',
+        summary: 'back to whoever holds executor',
+        memoryRefs: { note: 'ho:solo-proj:17' },
+      }, { nowMs: 93_000, actorRef: 'spec-owner' })
+
+      const expected = [
+        'Project solo-proj — handoffs, 2:',
+        '- owner handed to role executor (RETURN) on AGENT-ONLY '
+          + '— back to whoever holds executor at 1970-01-01T00:01:33.000Z',
+        '- ci-lane handed to owner (DELEGATE) on AGENT-ONLY '
+          + '— owner takes the review pass at 1970-01-01T00:01:32.000Z',
+      ].join('\n')
+      await expect(run(mounted, '/project handoffs')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project handoffs solo-proj')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project handoffs no-such-project')).resolves.toEqual({
+        kind: 'error',
+        text: 'No plan in this ledger records project "no-such-project".',
+      })
+      expect(readProjectHandoffs(db, brandString<ProjectId>('solo-proj'))[0]?.memoryRefsJson).toBe('{"note":"ho:solo-proj:17"}')
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
   it('digests a versionless plan, drift findings, and an undecodable timeline', async () => {
     const mounted = await mount((db) => {
       seedActivePlan(db, TINY_PLAN_TEXT)
@@ -1048,13 +1105,13 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 7, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 8, 'plan/imported', 0, '{}', 1)",
       ).run()
       const broken = await run(mounted, '/project digest tiny-proj')
       expect(broken).toMatchObject({ kind: 'success' })
       if (broken.kind !== 'success' || broken.text === undefined) return
       expect(broken.text).toContain('Replay audit: the timeline cannot be decoded by this build — ')
-      expect(broken.text).toContain('carries event format 7; this build reads up to format 6')
+      expect(broken.text).toContain('carries event format 8; this build reads up to format 7')
       expect(broken.text).not.toContain('Replay audit: clean')
 
       // The export's replay section reports the decode failure, not parity.
@@ -1062,7 +1119,7 @@ describe('/project', () => {
       expect(brokenExport).toMatchObject({ kind: 'success' })
       if (brokenExport.kind !== 'success' || brokenExport.text === undefined) return
       expect(brokenExport.text).toContain('the timeline cannot be decoded by this build — ')
-      expect(brokenExport.text).toContain('carries event format 7; this build reads up to format 6')
+      expect(brokenExport.text).toContain('carries event format 8; this build reads up to format 7')
       expect(brokenExport.text).not.toContain('clean over')
     } finally {
       await unmount(mounted)

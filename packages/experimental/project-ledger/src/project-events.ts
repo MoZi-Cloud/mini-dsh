@@ -20,6 +20,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import type { ActorId, ActorRoleId, RoleId } from './actors.js'
 import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
+import type { HandoffId } from './handoffs.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
 import type { WorkAssignmentId } from './work-assignments.js'
 import type { WorkExternalBlockerId } from './versioning.js'
@@ -208,6 +209,20 @@ export type WorkAssignmentKind = (typeof WORK_ASSIGNMENT_KINDS)[number]
 const WORK_ASSIGNMENT_KIND_SET: ReadonlySet<string> = new Set<string>(WORK_ASSIGNMENT_KINDS)
 
 /**
+ * The passes a `handoff/recorded` payload may record (blueprint §28's
+ * handoff kinds, uppercased to the ledger convention). The blueprint leaves
+ * `handoff_kind` unvalued; this build closes it to these two. Owned here
+ * (not in the handoffs module) because the payload codec validates it on
+ * read.
+ */
+export const HANDOFF_KINDS = ['DELEGATE', 'RETURN'] as const
+
+/** A kind of one recorded handoff. */
+export type HandoffKind = (typeof HANDOFF_KINDS)[number]
+
+const HANDOFF_KIND_SET: ReadonlySet<string> = new Set<string>(HANDOFF_KINDS)
+
+/**
  * The event envelope version recorded in the `event_format_version` column of
  * every `project_events` row — the single home of this constant. Adding a
  * required vocabulary entry bumps it together with the codec; purely
@@ -216,7 +231,7 @@ const WORK_ASSIGNMENT_KIND_SET: ReadonlySet<string> = new Set<string>(WORK_ASSIG
  * (the vocabulary is cumulative), and only a row stamped newer than this
  * build rejects.
  */
-export const PROJECT_EVENT_FORMAT_VERSION = 6
+export const PROJECT_EVENT_FORMAT_VERSION = 7
 
 /**
  * The event vocabulary. Every listed type is required: rows carry
@@ -227,8 +242,8 @@ export const PROJECT_EVENT_FORMAT_VERSION = 6
  * `project/work-packet-prepared`, `decision/requested`,
  * `decision/recorded`, `approval/requested`, `approval/decided`,
  * `resource/required`, `resource/provided`, `resource/verified`,
- * `actor/registered`, `role/defined`, `role/assigned`, and
- * `work/assigned`), and a
+ * `actor/registered`, `role/defined`, `role/assigned`, `work/assigned`, and
+ * `handoff/recorded`), and a
  * reader that does not know the type
  * fails closed. `plan/version-superseded` and `baseline/drift-detected` are
  * validated without state change: their writers own lifecycle columns and
@@ -260,6 +275,7 @@ export const PROJECT_EVENT_TYPES = [
   'role/defined',
   'role/assigned',
   'work/assigned',
+  'handoff/recorded',
 ] as const
 
 /** A vocabulary type of the v1 event format. */
@@ -648,6 +664,21 @@ export interface ReplayedWorkAssignment {
   readonly status: 'ACTIVE'
 }
 
+/**
+ * Handoff facts the `handoff/recorded` event replays; the handoff's
+ * `recorded_at_ms` is the event's `createdAtMs` and its inline summary and
+ * reference texts are not projection facts (the materialized row owns
+ * them, like the decision domain's decision text). `accepted_at_ms` is
+ * reserved with no writer yet.
+ */
+export interface ReplayedHandoff {
+  readonly workItemId: WorkItemId
+  readonly fromActorId: ActorId
+  readonly toActorId: ActorId | undefined
+  readonly toRoleId: RoleId | undefined
+  readonly handoffKind: HandoffKind
+}
+
 /** The projection replaying a project's events rebuilds. */
 export interface ReplayedProjectProjection {
   readonly planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>
@@ -671,6 +702,8 @@ export interface ReplayedProjectProjection {
   readonly actorRoles: ReadonlyMap<ActorRoleId, ReplayedActorRole>
   /** The work-assignment domain, rebuilt from the `work/assigned` event. */
   readonly workAssignments: ReadonlyMap<WorkAssignmentId, ReplayedWorkAssignment>
+  /** The handoff domain, rebuilt from the `handoff/recorded` event. */
+  readonly handoffs: ReadonlyMap<HandoffId, ReplayedHandoff>
 }
 
 /**
@@ -699,6 +732,7 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
   const roles = new Map<RoleId, ReplayedRole>()
   const actorRoles = new Map<ActorRoleId, ReplayedActorRole>()
   const workAssignments = new Map<WorkAssignmentId, ReplayedWorkAssignment>()
+  const handoffs = new Map<HandoffId, ReplayedHandoff>()
   // Validation state for the supersede applier: a version retires once.
   const supersededPlanVersionIds = new Set<PlanVersionId>()
   for (const event of readProjectEvents(db, projectId)) {
@@ -1060,6 +1094,21 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         })
         break
       }
+      case 'handoff/recorded': {
+        const payload = decodeHandoffRecordedPayload(event)
+        requireReplayedWorkItem(workItems, payload.workItemId, event)
+        requireReplayedActor(actors, payload.fromActorId, event)
+        if (payload.toActorId !== undefined) requireReplayedActor(actors, payload.toActorId, event)
+        if (payload.toRoleId !== undefined) requireReplayedRole(roles, payload.toRoleId, event)
+        handoffs.set(payload.handoffId, {
+          workItemId: payload.workItemId,
+          fromActorId: payload.fromActorId,
+          toActorId: payload.toActorId,
+          toRoleId: payload.toRoleId,
+          handoffKind: payload.handoffKind,
+        })
+        break
+      }
       default:
         break
     }
@@ -1079,6 +1128,7 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
     roles,
     actorRoles,
     workAssignments,
+    handoffs,
   }
 }
 
@@ -1486,6 +1536,19 @@ interface WorkAssignedPayload {
   readonly actorId: ActorId
   readonly roleId: RoleId | undefined
   readonly assignmentKind: WorkAssignmentKind
+}
+
+/** Payload facts of one `handoff/recorded` event; the handoff stamp is the envelope's `createdAtMs`. */
+interface HandoffRecordedPayload {
+  readonly handoffId: HandoffId
+  readonly workItemId: WorkItemId
+  readonly fromActorId: ActorId
+  readonly toActorId: ActorId | undefined
+  readonly toRoleId: RoleId | undefined
+  readonly handoffKind: HandoffKind
+  readonly summary: string
+  readonly artifactRefsJson: string | undefined
+  readonly memoryRefsJson: string | undefined
 }
 
 /** The event payload must be a JSON object for appliers to read fields from. */
@@ -2273,5 +2336,47 @@ function decodeWorkAssignedPayload(event: ProjectEventEnvelope): WorkAssignedPay
     actorId: requiredString(fields, event, 'actorId') as ActorId,
     roleId: optionalString(fields, event, 'roleId') as RoleId | undefined,
     assignmentKind: requiredWorkAssignmentKind(fields, event, 'assignmentKind'),
+  }
+}
+
+/** Read one required handoff-kind payload field. */
+function requiredHandoffKind(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+): HandoffKind {
+  const value = requiredString(fields, event, field)
+  if (!HANDOFF_KIND_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not a handoff kind: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as HandoffKind
+}
+
+/** Decode one `handoff/recorded` payload, failing closed on missing or mistyped fields. */
+function decodeHandoffRecordedPayload(event: ProjectEventEnvelope): HandoffRecordedPayload {
+  const fields = payloadFields(event)
+  const toActorId = optionalString(fields, event, 'toActorId') as ActorId | undefined
+  const toRoleId = optionalString(fields, event, 'toRoleId') as RoleId | undefined
+  if ((toActorId === undefined) === (toRoleId === undefined)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" must name exactly one handoff `
+        + 'recipient: toActorId or toRoleId',
+    )
+  }
+  return {
+    handoffId: requiredString(fields, event, 'handoffId') as HandoffId,
+    workItemId: requiredString(fields, event, 'workItemId') as WorkItemId,
+    fromActorId: requiredString(fields, event, 'fromActorId') as ActorId,
+    toActorId,
+    toRoleId,
+    handoffKind: requiredHandoffKind(fields, event, 'handoffKind'),
+    summary: requiredString(fields, event, 'summary'),
+    artifactRefsJson: optionalString(fields, event, 'artifactRefsJson'),
+    memoryRefsJson: optionalString(fields, event, 'memoryRefsJson'),
   }
 }
