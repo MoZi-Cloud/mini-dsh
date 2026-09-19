@@ -17,7 +17,7 @@ Nothing writes to the ledger tables directly. [`dsh-experimental-project-ledger`
 
 ## Integrity is a fact, not a repair
 
-Evaluations are append-only history and statuses are the projection; acceptance is the only completion authority, so no session todo or plan edit can shortcut work to done. The doctor re-verifies an imported version in one pass, the replay audit reports any divergence between events and rows, and neither mutates or executes a verifier command. Work packets carry only their recorded recipe; a rebuild recomposes the packet from current rows and names what drifted.
+Evaluations are append-only history and statuses are the projection; acceptance is the only completion authority, so no session todo or plan edit can shortcut work to done. The doctor re-verifies an imported version in one pass — flagging even lease rows that still record ACTIVE past their own expiry, the rows a behind reaper owes recovery — the replay audit reports any divergence between events and rows, and neither mutates or executes a verifier command. Work packets carry only their recorded recipe; a rebuild recomposes the packet from current rows and names what drifted.
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 

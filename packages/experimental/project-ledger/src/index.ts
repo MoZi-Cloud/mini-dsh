@@ -33,7 +33,16 @@ export { DEFAULT_LEASE_ACTOR_REF, DEFAULT_LEASE_CONFIG, DEFAULT_READINESS_ACTOR_
 export { DEFAULT_PACKET_ACTOR_REF, WORK_PACKET_BUILDER_VERSION, WORK_PACKET_FORMAT_VERSION, WORK_PACKET_MAX_SERIALIZED_BYTES, WorkPacketError, buildWorkPacket, rebuildWorkPacket, serializeWorkPacket, type BuildWorkPacketOptions, type WorkPacket, type WorkPacketCriterion, type WorkPacketDocument, type WorkPacketErrorCode, type WorkPacketId, type WorkPacketObjective, type WorkPacketPhaseSummary, type WorkPacketPlanIdentity, type WorkPacketReference, type WorkPacketRelationReceipt, type WorkPacketRebuild, type WorkPacketRepoSnapshot, type WorkPacketVerifierSpec } from './work-packet.js'
 export { AGENT_TODO_EXECUTOR_KINDS, OWNER_TODO_EXECUTOR_KINDS, TODO_VIEW_STATUSES, WorkTodoError, listAgentTodo, listOwnerTodo, listWorkTodo, resolveWorkTodoSpec, type WorkTodoEntry, type WorkTodoErrorCode, type WorkTodoLeaseRef, type WorkTodoRequest, type WorkTodoSpec, type WorkTodoView } from './todo-views.js'
 export { DEFAULT_DRIFT_ACTOR_REF, DEFAULT_SUPERSEDE_ACTOR_REF, PLAN_VERSION_STATUSES, BaselineDriftError, PlanSupersedeError, recordBaselineDrift, supersedePlanVersion, type BaselineDrift, type BaselineDriftErrorCode, type ObservedBaseline, type PlanSupersedeErrorCode, type PlanVersionStatus, type PlanVersionSupersede, type RecordBaselineDriftOptions, type SupersededAttempt, type SupersedePlanVersionOptions, type WorkExternalBlockerId } from './versioning.js'
-export { PLAN_DOCTOR_ISSUE_CODES, PlanDoctorError, planDoctor, type PlanDoctorCounts, type PlanDoctorErrorCode, type PlanDoctorIssue, type PlanDoctorReport } from './doctor.js'
+export {
+  PLAN_DOCTOR_ISSUE_CODES,
+  PlanDoctorError,
+  planDoctor,
+  type PlanDoctorCounts,
+  type PlanDoctorErrorCode,
+  type PlanDoctorIssue,
+  type PlanDoctorOptions,
+  type PlanDoctorReport,
+} from './doctor.js'
 export { listPlans, type PlanDirectoryEntry } from './plan-directory.js'
 export { readWorkItemReview, type LatestEvaluation, type ReviewedCriterion, type WorkItemReview } from './work-item-review.js'
 export { readProjectReplay, type ProjectReplayCompared, type ProjectReplayDrift, type ProjectReplayEntityCounts, type ProjectReplayReport, type ProjectReplayUndecodable, type ReplayedEntityCounts } from './project-replay.js'

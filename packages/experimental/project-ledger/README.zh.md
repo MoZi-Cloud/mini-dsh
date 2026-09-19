@@ -81,7 +81,7 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **Owner 与 Agent todo 是按执行者分离的视图**——`listOwnerTodo` 与 `listAgentTodo` 对 `executor_kind`（§11）跑一条只读查询，覆盖全部非终态状态，按种类、优先级降序、年龄与 id 排序；每个条目携带重算的 readiness 与活跃租约，阻塞原因与持有者随任务一并呈现。视图绝不变更：完成权威仍在验收接缝，没有稳定 item id、没有项目身份的 session todo 在账本中没有入口。
 - **supersede 退役版本，绝不改写历史**——`supersedePlanVersion` 在单个 `BEGIN IMMEDIATE` 内只移动生命周期列（`SUPERSEDED`、`superseded_at_ms`）与 `plans.current_version_id` 指针，并随 `plan/version-superseded` 事件落库；readiness 随即以 `plan-version-not-active` 拒绝该版本的每个新认领，活跃尝试保留租约、放弃租约后落 `BLOCKED`，事件载荷记录 review 队列。工作项、plan 事实与评估逐字节不变。
 - **drift 封堵认领，绝不改写 baseline 钉**——`recordBaselineDrift` 把调用方观测的仓库事实与版本钉住的 baseline 比较，追加 `baseline/drift-detected`，并在工作项上打开 `BASELINE_DRIFT` 外部阻塞，下一次认领被拒，直到 owner 解决、豁免或 supersede；baseline 列本身绝不移动（§21）。
-- **doctor 是只读巡检**——`planDoctor` 一趟重验已导入版本：验收与 verifier 的存在性、层级与排序环、关系的项目内约束、事件时间线可解码，以及工作项/标准/租约状态的投影对等；全部独立问题连同版本身份、baseline 与行数一并报告。
+- **doctor 是只读巡检**——`planDoctor` 一趟重验已导入版本：验收与 verifier 的存在性、层级与排序环、关系的项目内约束、过了自身有效期仍记 ACTIVE 的租约行（即 reaper 自己的判定谓词，读时钟由调用方给定）、事件时间线可解码，以及工作项/标准/租约状态的投影对等；全部独立问题连同版本身份、baseline 与行数一并报告。
 - **plan 经由唯一目录解析**——`listPlans` 读取每个 `plans` 行及其 `current_version_id` 指针，按 project、plan id 排序；需要回答"哪个项目""哪个版本是 current"的消费方从这个清单推导，而不是重新拥有 `plans` 表语义。目录只读：行随 import 出现，指针随 supersede 移动。
 - **item review 一次联读作答**——`readWorkItemReview` 按完整 id 或 stable key 解析单个工作项，返回每条验收标准及其投影状态与最新评估（判定、评估者、时间戳、解析后的 observed 载荷）；每条标准的最新行按评估时间选取，同毫秒并列以 append-only 的写入顺序决出。review 只读：评估与状态归各自的写入者所有。
 - **历史按时间线作答**——`readWorkItemHistory` 按最新在前列出单个条目的全部已记录评估（与最新选取共享同一 rowid 决胜），latest-only 评审折叠掉的尝试依然可读；history 只读。

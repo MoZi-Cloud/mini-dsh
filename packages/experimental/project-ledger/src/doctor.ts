@@ -3,8 +3,9 @@
  * pass over an imported plan version that re-verifies the rows against the
  * invariants import promised — every work item carries acceptance, every
  * criterion carries its verifier, the work graph is acyclic, relations stay
- * inside one project, the event timeline is readable by this codec, and the
- * replayed projection agrees with the materialized tables. The doctor never
+ * inside one project, no lease row still records ACTIVE past its own expiry,
+ * the event timeline is readable by this codec, and the replayed projection
+ * agrees with the materialized tables. The doctor never
  * mutates and never executes a verifier command; it reports every
  * independent issue it finds, so a caller sees the whole picture in one
  * pass. The database and event format versions ride along as report facts
@@ -28,6 +29,7 @@ export const PLAN_DOCTOR_ISSUE_CODES = [
   'hierarchy-cycle',
   'ordering-cycle',
   'relation-crosses-projects',
+  'stale-active-lease',
   'event-timeline-unreadable',
   'projection-drift',
 ] as const
@@ -71,6 +73,15 @@ export interface PlanDoctorReport {
 /** Closed set of doctor rejection reasons. */
 export type PlanDoctorErrorCode = 'unknown-plan-version'
 
+/** Options for {@link planDoctor}. */
+export interface PlanDoctorOptions {
+  /**
+   * Wall clock the lease-staleness check reads; defaults to `Date.now()`.
+   * Every other check is clock-free.
+   */
+  readonly nowMs?: number | undefined
+}
+
 /** Thrown when the doctor is asked about a version the ledger does not record. */
 export class PlanDoctorError extends Error {
   /** Stable failure kind for programmatic handling. */
@@ -103,18 +114,29 @@ interface LeaseStatusRow {
   readonly status: string
 }
 
+/** One `work_leases` row the staleness check reads, in select order. */
+interface LeaseExpiryRow {
+  readonly id: string
+  readonly expires_at_ms: number
+}
+
 /**
  * Run one doctor pass over an imported plan version (F05): reference,
- * cycle, acceptance, relation-scope, event-readability, and replay-parity
- * checks in one read-only sweep, plus the version's identity, baseline, and
- * row counts as report facts.
+ * cycle, acceptance, relation-scope, lease-staleness, event-readability,
+ * and replay-parity checks in one read-only sweep, plus the version's
+ * identity, baseline, and row counts as report facts.
  * @param db - open ledger database.
  * @param planVersionId - the imported version to check.
+ * @param options - the wall clock the lease-staleness check reads.
  * @returns the report with every independent issue; `issues` empty exactly
  * when the version passes.
  * @throws {PlanDoctorError} on `unknown-plan-version`.
  */
-export function planDoctor(db: DatabaseSync, planVersionId: PlanVersionId): PlanDoctorReport {
+export function planDoctor(
+  db: DatabaseSync,
+  planVersionId: PlanVersionId,
+  options: PlanDoctorOptions = {},
+): PlanDoctorReport {
   const version = db.prepare(
     'SELECT v.plan_id AS plan_id, v.version_no AS version_no, v.status AS status, '
     + 'v.baseline_repo_head AS baseline_repo_head, v.baseline_worktree_hash AS baseline_worktree_hash, '
@@ -189,6 +211,22 @@ export function planDoctor(db: DatabaseSync, planVersionId: PlanVersionId): Plan
       code: 'relation-crosses-projects',
       refId: row.id,
       message: `relation "${row.id}" crosses projects (${row.from_project} -> ${row.to_project}); the work graph is per project`,
+    })
+  }
+
+  // The staleness predicate equals reapExpiredLeases': a row the reaper would
+  // reap is a row the doctor reports. The reaper is caller-driven and batched,
+  // so a behind or unmounted reaper leaves these rows; replay parity cannot
+  // see them, because the fold projects the same ACTIVE status.
+  for (const row of db.prepare(
+    'SELECT l.id AS id, l.expires_at_ms AS expires_at_ms FROM work_leases l '
+    + 'JOIN work_items w ON w.id = l.work_item_id '
+    + "WHERE w.project_id = ? AND l.status = 'ACTIVE' AND l.expires_at_ms <= ? ORDER BY l.id",
+  ).all(projectId, options.nowMs ?? Date.now()) as unknown as LeaseExpiryRow[]) {
+    issues.push({
+      code: 'stale-active-lease',
+      refId: row.id,
+      message: `work lease "${row.id}" is still ACTIVE past its expiry at ${row.expires_at_ms}; the reaper owns its recovery`,
     })
   }
 

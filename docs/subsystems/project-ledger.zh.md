@@ -17,7 +17,7 @@ Project Ledger 是仓库工作的 Plan-as-Data 事实源：plan 文档经解析�
 
 ## 完整性是事实，不是修复
 
-评估是 append-only 历史，状态是投影；验收是唯一的完成权威，会话 todo 或 plan 编辑都无法把工作抄近路到 done。doctor 一次扫描复验已导入版本，重放对账报告事件与行的任何分道——两者都不变更、不执行 verifier 命令。WorkPacket 只携带记录在案的 recipe；重建从当前行重组 packet 并指名漂移之处。
+评估是 append-only 历史，状态是投影；验收是唯一的完成权威，会话 todo 或 plan 编辑都无法把工作抄近路到 done。doctor 一次扫描复验已导入版本——连过了自身有效期仍记 ACTIVE 的租约行（reaper 落后时欠着恢复的行）也会点名——重放对账报告事件与行的任何分道，两者都不变更、不执行 verifier 命令。WorkPacket 只携带记录在案的 recipe；重建从当前行重组 packet 并指名漂移之处。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 

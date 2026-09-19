@@ -5,7 +5,7 @@ project:
 plan:
   id: mini-dsh-post-v16a-increments
   name: Post-v1.6a Real-Use Increments
-  version: 4
+  version: 5
 phases:
   - id: INC1
     title: Post-v1.6a increments
@@ -15,58 +15,57 @@ phases:
       Real repository work claimed, verified, and completed through the mounted
       Project Ledger, accumulating the §33 real-use record one increment at a
       time. Items land in the order priority names; each carries a stored
-      verifier command the real-use lane executes. Version 4 supersedes the
-      completed version-3 items (PW-DOCSYNC-GREEN-001, PW-EVIDENCE-DIGEST-001)
+      verifier command the real-use lane executes. Version 5 supersedes the
+      completed version-4 items (PW-EXPORT-VIEW-001, PW-ITEM-HISTORY-001)
       with a fresh batch.
 workItems:
-  - id: PW-EXPORT-VIEW-001
+  - id: PW-LEASE-DOCTOR-001
     phaseId: INC1
     type: IMPLEMENTATION
     executorKind: AGENT
-    title: Owner evidence export view in /project
+    title: Stale active leases surfaced by the plan doctor
     description: >
-      Give /project an export subcommand that renders the whole-project
-      evidence record as one archival markdown block the owner can paste into
-      the §33 record or a review: plan versions with their baselines and
-      supersede stamps, per-item completion with every acceptance criterion's
-      status and latest verdict (evaluator, time, observed exit code and
-      output-tail excerpt), and the replay audit verdict. The digest read seam
-      carries per-criterion rows for this; the view only reads, and the Owner
-      domain stays v1.6b scope.
+      The plan doctor's read-only pass gains a lease-staleness check: a
+      work_leases row that still records ACTIVE past its own expiry — exactly
+      the rows the caller-driven, batched reaper would reap — becomes a
+      reported issue, with the reading clock as the check's only input. A
+      cold or behind reaper leaves such rows, and replay parity cannot see
+      them because the fold projects the same ACTIVE status; the doctor
+      names them instead, so the operator knows recovery is owed.
     priority: 10
     status: READY
     acceptance:
-      - id: AC-PW-EXPORT-VIEW-001
+      - id: AC-PW-LEASE-DOCTOR-001
         kind: TEST
-        description: The mini-profile package suite passes with the export view path covered.
+        description: The project-ledger and mini-profile package suites pass with the staleness check covered.
         required: true
         verifier:
           kind: TEST
-          command: pnpm exec vitest run mini-profile
+          command: pnpm exec vitest run project-ledger mini-profile
           expectedExitCode: 0
           sandboxRequired: true
           approvalRequired: false
-  - id: PW-ITEM-HISTORY-001
+  - id: PW-4K-GATE-001
     phaseId: INC1
     type: IMPLEMENTATION
     executorKind: AGENT
-    title: Per-item evaluation history view in /project
+    title: 4K no-regression gate recorded through the ledger
     description: >
-      Give /project a history subcommand that lists one work item's full
-      evaluation timeline — every recorded attempt newest-first with its
-      verdict, evaluator, time, and observed evidence — the attempts the
-      review's latest-only view hides, so the owner reads why an item passed
-      or failed at each point in time. The view only reads.
+      The §33 BOOT/4K no-regression bar enters the ledger record itself:
+      this item's stored verifier runs the pinned 4K context-light real-use
+      slice as a real subprocess, so completing it records the gate's
+      outcome as ledger data beside the prose log — entry evidence of the
+      kind §33 asks for, not a design claim.
     priority: 20
     status: READY
     acceptance:
-      - id: AC-PW-ITEM-HISTORY-001
+      - id: AC-PW-4K-GATE-001
         kind: TEST
-        description: The mini-profile package suite passes with the history view path covered.
+        description: The pinned 4K context-light lane passes as the item's stored verifier.
         required: true
         verifier:
           kind: TEST
-          command: pnpm exec vitest run mini-profile
+          command: sh benchmarks/context-light/run-4k.sh
           expectedExitCode: 0
           sandboxRequired: true
           approvalRequired: false

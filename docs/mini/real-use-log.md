@@ -100,7 +100,17 @@ The same lane drove `PW-ITEM-HISTORY-001` against the persistent ledger: a new `
 
 An immediate rerun passed idempotently (`alreadyComplete: true`, `replayDrift: 0`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE). All nine real-use items across four plan versions are now DONE; later real-use items require a version 5 batch.
 
+### 2026-09-19 — plan version 5 and PW-LEASE-DOCTOR-001 through the shipped tools
+
+The plan document bumped to version 5 with a fresh batch (`PW-LEASE-DOCTOR-001`, `PW-4K-GATE-001`), and the same lane drove the bump against the persistent ledger: version 5 imported, version 4 superseded through the §22 seam (every prior item stays DONE and byte-identical), then `PW-LEASE-DOCTOR-001` — the doctor's lease-staleness check — completed. `planDoctor` now takes the reading clock (`options.nowMs`, defaulting to `Date.now()`) and reports every `work_leases` row that still records ACTIVE past its own expiry, under exactly the reaper's own predicate: the reaper is caller-driven and batched, so a cold or behind reaper leaves those rows, and replay parity cannot see them because the fold projects the same ACTIVE status. The doctor names them instead, so the operator knows recovery is owed; `/project doctor` prints them with no command change, since it renders issues generically. Claim by `agent:mini-real-use-lane`, stored verifier `pnpm exec vitest run project-ledger mini-profile` (exit 0, both package suites), item DONE, doctor 0 issues, replay audit 0 drift, event replay DONE; the project timeline now holds 90 events. First-run report line:
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-post-v16a-increments:v5","workItemId":"wi:mini-dsh:PW-LEASE-DOCTOR-001","stableKey":"PW-LEASE-DOCTOR-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PW-LEASE-DOCTOR-001:AC-PW-LEASE-DOCTOR-001","command":"pnpm exec vitest run project-ledger mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+An immediate rerun passed idempotently (`alreadyComplete: true`, `replayDrift: 0`, no writes). The 4K slice rerun stayed green (6 requests, max 2,444/4,096 estimated tokens, DONE). `PW-4K-GATE-001` — the §33 BOOT/4K no-regression bar as a stored verifier running the pinned 4K lane itself — stays claimable in version 5 for a later increment.
+
 ## Status toward the gate
 
 
-Items completed through the ledger: 24 (15 golden-plan items by the v1.6a build itself, plus the nine entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.
+Items completed through the ledger: 25 (15 golden-plan items by the v1.6a build itself, plus the ten entries above). BOOT/4K regression: none recorded; `run-4k.sh` and the BOOT acceptance suites stay green. Owner confirmation of value: pending — the entry decision stays with the owner per §33.

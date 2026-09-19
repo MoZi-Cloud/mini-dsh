@@ -13,11 +13,13 @@ import {
   importPlanVersion,
   parsePlanDocument,
   planDoctor,
+  releaseWorkLease,
   validatePlanSchema,
   type AcceptanceCriterionId,
   type CompiledPlan,
   type PlanVersionId,
   type WorkItemId,
+  type WorkLeaseClaim,
 } from '../src/index.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -38,6 +40,34 @@ async function goldenLedger(): Promise<DatabaseSync> {
   const db = await openProjectLedgerDatabase(':memory:')
   importPlanVersion(db, compileGolden())
   return db
+}
+
+/**
+ * Open the golden ledger, drive its W01 entry items DONE through the real
+ * writers — releasing each claim, as the shipped tools do around delivery —
+ * and claim SCHEMA-001, the item their completion readies.
+ */
+async function claimGoldenSchemaItem(): Promise<{ db: DatabaseSync; claim: WorkLeaseClaim }> {
+  const db = await goldenLedger()
+  // Activation and phase state have no writers; the DONE moves go
+  // through the real writers so replay parity holds.
+  db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
+  db.prepare('UPDATE phases SET status = ? WHERE stable_key = ?').run('ACTIVE', 'W01')
+  for (const [stableKey, criterion] of [['OWNER-REVIEW-001', 'AC-OWNER-001'], ['PRE-001', 'AC-PRE-001']] as const) {
+    const id = brandString<WorkItemId>(`wi:mini-dsh:${stableKey}`)
+    const claim = claimWorkItem(db, id, 'doctor/agent', { nowMs: 30 })
+    changeWorkStatus(db, id, 'VERIFYING', { nowMs: 32, actorRef: 'doctor/agent' })
+    releaseWorkLease(db, claim.leaseId, claim.leaseToken, { nowMs: 33, actorRef: 'doctor/agent' })
+    evaluateAcceptanceCriterion(
+      db,
+      brandString<AcceptanceCriterionId>(`ac:wi:mini-dsh:${stableKey}:${criterion}`),
+      'WAIVED',
+      { nowMs: 34, evaluatedBy: 'doctor/agent' },
+    )
+    changeWorkStatus(db, id, 'DONE', { nowMs: 36, actorRef: 'doctor/agent' })
+  }
+  const claim = claimWorkItem(db, brandString<WorkItemId>('wi:mini-dsh:SCHEMA-001'), 'doctor/agent', { nowMs: 40 })
+  return { db, claim }
 }
 
 /**
@@ -80,41 +110,47 @@ describe('planDoctor', () => {
   })
 
   it('stays clean across a full real work loop and fails loud on an unknown version', async () => {
-    const db = await goldenLedger()
+    const { db, claim } = await claimGoldenSchemaItem()
     try {
-      // Activation and phase state have no writers; the DONE moves go
-      // through the real writers so replay parity holds.
-      db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
-      db.prepare('UPDATE phases SET status = ? WHERE stable_key = ?').run('ACTIVE', 'W01')
-      for (const [stableKey, criterion] of [['OWNER-REVIEW-001', 'AC-OWNER-001'], ['PRE-001', 'AC-PRE-001']] as const) {
-        claimWorkItem(db, brandString<WorkItemId>(`wi:mini-dsh:${stableKey}`), 'doctor/agent', { nowMs: 30 })
-        changeWorkStatus(db, brandString<WorkItemId>(`wi:mini-dsh:${stableKey}`), 'VERIFYING', { nowMs: 32, actorRef: 'doctor/agent' })
-        evaluateAcceptanceCriterion(
-          db,
-          brandString<AcceptanceCriterionId>(`ac:wi:mini-dsh:${stableKey}:${criterion}`),
-          'WAIVED',
-          { nowMs: 34, evaluatedBy: 'doctor/agent' },
-        )
-        changeWorkStatus(db, brandString<WorkItemId>(`wi:mini-dsh:${stableKey}`), 'DONE', { nowMs: 36, actorRef: 'doctor/agent' })
-      }
-      claimWorkItem(db, brandString<WorkItemId>('wi:mini-dsh:SCHEMA-001'), 'doctor/agent', { nowMs: 40 })
-      changeWorkStatus(db, brandString<WorkItemId>('wi:mini-dsh:SCHEMA-001'), 'VERIFYING', { nowMs: 45 })
+      const id = brandString<WorkItemId>('wi:mini-dsh:SCHEMA-001')
+      changeWorkStatus(db, id, 'VERIFYING', { nowMs: 45, actorRef: 'doctor/agent' })
+      releaseWorkLease(db, claim.leaseId, claim.leaseToken, { nowMs: 46, actorRef: 'doctor/agent' })
       evaluateAcceptanceCriterion(
         db,
         brandString<AcceptanceCriterionId>('ac:wi:mini-dsh:SCHEMA-001:AC-SCHEMA-001'),
         'PASS',
         { nowMs: 50, evaluatedBy: 'doctor/agent' },
       )
-      changeWorkStatus(db, brandString<WorkItemId>('wi:mini-dsh:SCHEMA-001'), 'DONE', { nowMs: 55 })
+      changeWorkStatus(db, id, 'DONE', { nowMs: 55, actorRef: 'doctor/agent' })
       const report = planDoctor(db, GOLDEN_VERSION)
       expect(report.issues).toEqual([])
-      expect(report.counts).toEqual({ phases: 13, workItems: 15, relations: 14, criteria: 16, events: 28 })
+      expect(report.counts).toEqual({ phases: 13, workItems: 15, relations: 14, criteria: 16, events: 31 })
       expect(report.status).toBe('ACTIVE')
 
       const error = thrownError(PlanDoctorError, () =>
         planDoctor(db, brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v9')))
       expect(error.code).toBe('unknown-plan-version')
       expect(error.message).toContain('is not recorded in this ledger')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('flags leases still ACTIVE past their expiry on the reading clock', async () => {
+    const { db, claim } = await claimGoldenSchemaItem()
+    try {
+      // Before the horizon the pass stays clean; the reading clock is the
+      // check's only input, and the released predecessor leases prove a
+      // row past its old expiry never trips it once it is no longer ACTIVE.
+      expect(planDoctor(db, GOLDEN_VERSION, { nowMs: claim.expiresAtMs - 1 }).issues).toEqual([])
+      expect(planDoctor(db, GOLDEN_VERSION, { nowMs: claim.expiresAtMs }).issues).toEqual([
+        {
+          code: 'stale-active-lease',
+          refId: claim.leaseId,
+          message: `work lease "${claim.leaseId}" is still ACTIVE past its expiry at ${claim.expiresAtMs}; `
+            + 'the reaper owns its recovery',
+        },
+      ])
     } finally {
       db.close()
     }
@@ -255,7 +291,9 @@ describe('planDoctor', () => {
       revoked.prepare('UPDATE work_items SET status = ? WHERE stable_key IN (?, ?)').run('DONE', 'OWNER-REVIEW-001', 'PRE-001')
       const claim = claimWorkItem(revoked, brandString<WorkItemId>('wi:mini-dsh:SCHEMA-001'), 'doctor/agent', { nowMs: 40 })
       revoked.prepare("UPDATE work_leases SET status = 'REVOKED' WHERE work_item_id = 'wi:mini-dsh:SCHEMA-001'").run()
-      const issues = planDoctor(revoked, GOLDEN_VERSION).issues
+      // The pinned clock keeps this scenario about the revoked row: the claim
+      // expired in 1970, so the default wall clock would also flag it stale.
+      const issues = planDoctor(revoked, GOLDEN_VERSION, { nowMs: 41 }).issues
       expect(issues.filter(issue => issue.code === 'projection-drift').map(issue => issue.message)).toContain(
         `work lease "${claim.leaseId}" has materialized status REVOKED but replays to ACTIVE`,
       )
