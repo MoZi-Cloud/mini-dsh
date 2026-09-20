@@ -46,6 +46,7 @@ const LEDGER_TABLES = [
   'actor_roles',
   'actors',
   'approvals',
+  'collaboration_conflicts',
   'decision_options',
   'decision_requests',
   'decisions',
@@ -75,6 +76,7 @@ const LEDGER_INDEXES = [
   'idx_actors_project_kind',
   'idx_approvals_project',
   'idx_approvals_subject',
+  'idx_conflicts_item_a',
   'idx_decision_requests_project',
   'idx_external_blockers_work',
   'idx_handoffs_item',
@@ -483,6 +485,43 @@ describe('adjacent migration fixture', () => {
     reopened.close()
   })
 
+  it('upgrades a v8 database through the shipped 8→9 step without losing rows', async () => {
+    const path = tmpFile('v8-to-v9.sqlite')
+    // A real v8 database: the shipped steps' own layout, stamped as v8 and
+    // carrying one actor row.
+    const [coreStep, decisionStep, approvalStep, resourceStep, actorStep, workAssignmentStep, handoffStep,
+      scopeReservationStep] = PROJECT_LEDGER_MIGRATIONS
+    if (coreStep === undefined || decisionStep === undefined || approvalStep === undefined
+      || resourceStep === undefined || actorStep === undefined || workAssignmentStep === undefined
+      || handoffStep === undefined || scopeReservationStep === undefined) {
+      throw new Error('test setup: the registry ships a missing step')
+    }
+    const raw = new DatabaseSync(path)
+    coreStep.apply(raw)
+    decisionStep.apply(raw)
+    approvalStep.apply(raw)
+    resourceStep.apply(raw)
+    actorStep.apply(raw)
+    workAssignmentStep.apply(raw)
+    handoffStep.apply(raw)
+    scopeReservationStep.apply(raw)
+    raw.exec(
+      'INSERT INTO actors '
+      + '(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) '
+      + "VALUES ('actor:p:1', 'p', 'k', 'AGENT', 'A', 'ACTIVE', 1)",
+    )
+    raw.exec('PRAGMA user_version = 8')
+    raw.close()
+
+    const reopened = await openProjectLedgerDatabase(path)
+    expect(userVersionOf(reopened)).toBe(PROJECT_LEDGER_SCHEMA_VERSION)
+    expect(tableNames(reopened)).toEqual(LEDGER_TABLES)
+    expect(indexNames(reopened)).toEqual(LEDGER_INDEXES)
+    const conflicts = reopened.prepare('SELECT COUNT(*) AS n FROM collaboration_conflicts').get() as { n: number }
+    expect(conflicts.n).toBe(0)
+    reopened.close()
+  })
+
   it('upgrades the committed v1 fixture databases through the same steps', async () => {
     const fixtureRoot = resolve(REPO_ROOT, 'fixtures/project-ledger')
     for (const name of ['v1.6a-empty.db', 'v1.6a-populated.db']) {
@@ -581,6 +620,10 @@ describe('Ledger Core schema contract', () => {
       ['handoffs.to_role_id', "INSERT INTO handoffs(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms) VALUES('ho_x','work_1','actor_1',NULL,'role_x','DELEGATE','s',1)"],
       ['scope_reservations.work_item_id', "INSERT INTO scope_reservations(id, project_id, work_item_id, actor_id, scope_kind, scope_value, acquired_at_ms, expires_at_ms, status) VALUES('sr_x','proj_1','missing','actor_1','PATH','src/x.ts',1,2,'ACTIVE')"],
       ['scope_reservations.actor_id', "INSERT INTO scope_reservations(id, project_id, work_item_id, actor_id, scope_kind, scope_value, acquired_at_ms, expires_at_ms, status) VALUES('sr_x','proj_1','work_1','actor_x','PATH','src/x.ts',1,2,'ACTIVE')"],
+      ['collaboration_conflicts.work_item_a', "INSERT INTO actors(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) VALUES('actor_cf','proj_1','cf','AGENT','CF','ACTIVE',1); INSERT INTO collaboration_conflicts(id, work_item_a, work_item_b, raised_by_actor_id, conflict_kind, description, status, created_at_ms) VALUES('cf_x','missing','work_1','actor_cf','SCOPE_OVERLAP','d','OPEN',1)"],
+      ['collaboration_conflicts.work_item_b', "INSERT INTO actors(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) VALUES('actor_cg','proj_1','cg','AGENT','CG','ACTIVE',1); INSERT INTO collaboration_conflicts(id, work_item_a, work_item_b, raised_by_actor_id, conflict_kind, description, status, created_at_ms) VALUES('cf_x','work_1','missing','actor_cg','SCOPE_OVERLAP','d','OPEN',1)"],
+      ['collaboration_conflicts.raised_by_actor_id', "INSERT INTO collaboration_conflicts(id, work_item_a, work_item_b, raised_by_actor_id, conflict_kind, description, status, created_at_ms) VALUES('cf_x','work_1','work_1','actor_x','SCOPE_OVERLAP','d','OPEN',1)"],
+      ['collaboration_conflicts.resolution_decision_id', "INSERT INTO actors(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) VALUES('actor_ch','proj_1','ch','AGENT','CH','ACTIVE',1); INSERT INTO collaboration_conflicts(id, work_item_a, work_item_b, raised_by_actor_id, conflict_kind, description, status, resolution_decision_id, created_at_ms, resolved_at_ms) VALUES('cf_x','work_1','work_1','actor_ch','SCOPE_OVERLAP','d','RESOLVED','dc_missing',1,2)"],
     ]
     for (const [edge, sql] of orphanInserts) {
       try {
@@ -610,6 +653,8 @@ describe('Ledger Core schema contract', () => {
       ['acceptance_evaluations.result', "INSERT INTO acceptance_evaluations(id, criterion_id, work_item_id, result, evaluated_by, evaluated_at_ms) VALUES('ev_e','ac_1','work_1','SO_PASS','fixture',1)"],
       ['plan_compile_diagnostics.severity', "INSERT INTO plan_compile_diagnostics(id, plan_import_id, severity, code, message) VALUES('diag_e','imp_1','FATAL','C','m')"],
       ['work_leases.status', "INSERT INTO work_leases(id, work_item_id, worker_identity, lease_token_hash, status, acquired_at_ms, heartbeat_at_ms, expires_at_ms) VALUES('lease_e','work_1','worker','token','LOST',1,1,2)"],
+      ['collaboration_conflicts.conflict_kind', "INSERT INTO actors(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) VALUES('actor_e','proj_1','e','AGENT','E','ACTIVE',1); INSERT INTO collaboration_conflicts(id, work_item_a, work_item_b, raised_by_actor_id, conflict_kind, description, status, created_at_ms) VALUES('cf_e','work_1','work_b','actor_e','PATH_OVERLAP','d','OPEN',1)"],
+      ['collaboration_conflicts.status', "INSERT INTO collaboration_conflicts(id, work_item_a, work_item_b, raised_by_actor_id, conflict_kind, description, status, created_at_ms) VALUES('cf_e2','work_1','work_b','actor_e','SCOPE_OVERLAP','d','REOPENED',1)"],
     ]
     for (const [column, sql] of badEnums) {
       try {

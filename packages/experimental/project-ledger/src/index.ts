@@ -27,7 +27,7 @@ export { validatePlanSemantics } from './plan-semantics.js'
 export { ORDERING_RELATION_KINDS, findChainCycles, findOrderingCycles } from './relation-graph.js'
 export { PLAN_COMPILER_VERSION, planVersionRowId, compilePlan, type AcceptanceCriterionId, type CompiledCriterion, type CompiledIrHash, type CompiledPlan, type CompiledRelation, type CompiledWorkItem, type CompilePlanOptions, type PhaseId, type PlanId, type PlanVersionId, type ProjectId, type SourceDocumentHash, type VerifierSpecId, type WorkItemId, type WorkItemRelationId } from './plan-compile.js'
 export { PLAN_PARSER_VERSION, DEFAULT_IMPORT_ACTOR_REF, PlanImportError, importPlanVersion, type ImportPlanVersionOptions, type PlanImportErrorCode, type PlanImportResult } from './plan-import.js'
-export { ACCEPTANCE_CRITERION_STATUSES, ACCEPTANCE_EVALUATION_RESULTS, ACTOR_KINDS, APPROVAL_OUTCOMES, APPROVAL_SUBJECT_TYPES, RESOURCE_VERIFICATION_RESULTS, RESOURCE_VERIFIER_KINDS, ROLE_KINDS, DECISION_BLOCKING_LEVELS, HANDOFF_KINDS, PROJECT_EVENT_FORMAT_VERSION, PROJECT_EVENT_TYPES, SCOPE_RESERVATION_KINDS, SUPERSEDE_POLICY, WORK_ASSIGNMENT_KINDS, WORK_PACKET_REFERENCE_KINDS, ProjectEventError, appendProjectEvent, decodeWorkPacketPreparedPayload, nextProjectEventSequence, readProjectEvents, readWorkPacketEvent, replayProjectEvents, type AcceptanceCriterionStatus, type AcceptanceEvaluationResult, type ActorKind, type AppendProjectEventOptions, type ApprovalDecisionOutcome, type ApprovalSubjectType, type ResourceVerificationResult, type ResourceVerifierKind, type RoleKind, type DecisionBlockingLevel, type HandoffKind, type ProjectEventEnvelope, type ProjectEventErrorCode, type ProjectEventType, type ReplayedActor, type ReplayedActorRole, type ReplayedApproval, type ReplayedCriterion, type ReplayedDecision, type ReplayedDecisionRequest, type ReplayedHandoff, type ReplayedLease, type ReplayedLeaseStatus, type ReplayedPlanVersion, type ReplayedProjectProjection, type ReplayedResourceInstance, type ReplayedResourceRequirement, type ReplayedResourceVerification, type ReplayedRole, type ReplayedScopeReservation, type ReplayedWorkAssignment, type ReplayedWorkItem, type ReplayedWorkPacket, type ReplayedWorkPacketReference, type ScopeReservationKind, type WorkAssignmentKind, type WorkPacketReferenceKind } from './project-events.js'
+export { ACCEPTANCE_CRITERION_STATUSES, ACCEPTANCE_EVALUATION_RESULTS, ACTOR_KINDS, APPROVAL_OUTCOMES, APPROVAL_SUBJECT_TYPES, RESOURCE_VERIFICATION_RESULTS, RESOURCE_VERIFIER_KINDS, ROLE_KINDS, CONFLICT_KINDS, DECISION_BLOCKING_LEVELS, HANDOFF_KINDS, PROJECT_EVENT_FORMAT_VERSION, PROJECT_EVENT_TYPES, SCOPE_RESERVATION_KINDS, SUPERSEDE_POLICY, WORK_ASSIGNMENT_KINDS, WORK_PACKET_REFERENCE_KINDS, ProjectEventError, appendProjectEvent, decodeWorkPacketPreparedPayload, nextProjectEventSequence, readProjectEvents, readWorkPacketEvent, replayProjectEvents, type AcceptanceCriterionStatus, type AcceptanceEvaluationResult, type ActorKind, type AppendProjectEventOptions, type ApprovalDecisionOutcome, type ApprovalSubjectType, type ConflictKind, type ResourceVerificationResult, type ResourceVerifierKind, type RoleKind, type DecisionBlockingLevel, type HandoffKind, type ProjectEventEnvelope, type ProjectEventErrorCode, type ProjectEventType, type ReplayedActor, type ReplayedActorRole, type ReplayedApproval, type ReplayedConflict, type ReplayedCriterion, type ReplayedDecision, type ReplayedDecisionRequest, type ReplayedHandoff, type ReplayedLease, type ReplayedLeaseStatus, type ReplayedPlanVersion, type ReplayedProjectProjection, type ReplayedResourceInstance, type ReplayedResourceRequirement, type ReplayedResourceVerification, type ReplayedRole, type ReplayedScopeReservation, type ReplayedWorkAssignment, type ReplayedWorkItem, type ReplayedWorkPacket, type ReplayedWorkPacketReference, type ScopeReservationKind, type WorkAssignmentKind, type WorkPacketReferenceKind } from './project-events.js'
 export { WORK_READINESS_BLOCKER_KINDS, WorkReadinessError, computeWorkReadiness, detectWorkGraphCycles, type ComputeWorkReadinessOptions, type WorkGraphCycles, type WorkReadiness, type WorkReadinessBlockerKind, type WorkReadinessErrorCode, type WorkReadinessReason } from './work-readiness.js'
 export { DEFAULT_STATUS_ACTOR_REF, WORK_STATUS_TRANSITIONS, WorkStatusError, changeWorkStatus, type ChangeWorkStatusOptions, type WorkStatusChange, type WorkStatusErrorCode } from './work-status.js'
 export { DEFAULT_EVALUATION_ACTOR_REF, AcceptanceEvaluationError, evaluateAcceptanceCriterion, type AcceptanceEvaluation, type AcceptanceEvaluationErrorCode, type AcceptanceEvaluationId, type EvaluateAcceptanceCriterionOptions } from './acceptance.js'
@@ -166,3 +166,18 @@ export {
   type ScopeReservationStatus,
   type ScopeReservationWriteOptions,
 } from './scope-reservations.js'
+
+export {
+  DEFAULT_CONFLICT_ACTOR_REF,
+  ConflictError,
+  readProjectConflicts,
+  recordConflict,
+  resolveConflict,
+  type Conflict,
+  type ConflictErrorCode,
+  type ConflictId,
+  type ConflictStatus,
+  type ConflictWriteOptions,
+  type RecordConflictInput,
+  type ResolvedConflict,
+} from './collaboration-conflicts.js'

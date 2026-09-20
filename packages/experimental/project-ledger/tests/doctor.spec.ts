@@ -18,6 +18,7 @@ import {
   openDecisionRequest,
   parsePlanDocument,
   planDoctor,
+  recordConflict,
   recordDecision,
   recordHandoff,
   reserveScope,
@@ -26,6 +27,7 @@ import {
   registerActor,
   releaseWorkLease,
   requestApproval,
+  resolveConflict,
   validatePlanSchema,
   verifyResourceInstance,
   type AcceptanceCriterionId,
@@ -108,8 +110,8 @@ describe('planDoctor', () => {
         versionNo: 1,
         status: 'DRAFT',
         projectId: 'mini-dsh',
-        databaseUserVersion: 8,
-        eventFormatVersion: 8,
+        databaseUserVersion: 9,
+        eventFormatVersion: 9,
         baselineRepoHead: null,
         baselineWorktreeHash: null,
         counts: { phases: 13, workItems: 15, relations: 14, criteria: 16, events: 16 },
@@ -270,7 +272,7 @@ describe('planDoctor', () => {
       const issues = planDoctor(unreadable, GOLDEN_VERSION).issues
       expect(issues).toHaveLength(1)
       expect(issues[0]?.code).toBe('event-timeline-unreadable')
-      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 8')
+      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 9')
     } finally {
       unreadable.close()
     }
@@ -772,6 +774,112 @@ describe('planDoctor', () => {
       ])
     } finally {
       scopeDrift.close()
+    }
+
+    const conflictDrift = await goldenLedger()
+    try {
+      const lane = registerActor(conflictDrift, brandString<ProjectId>('mini-dsh'), {
+        actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+      }, { nowMs: 40, actorRef: 'doctor/agent' })
+      const handActor = registerActor(conflictDrift, brandString<ProjectId>('mini-dsh'), {
+        actorKey: 'hand', actorKind: 'SERVICE', displayName: 'Hand row',
+      }, { nowMs: 41, actorRef: 'doctor/agent' })
+      const request = openDecisionRequest(conflictDrift, brandString<ProjectId>('mini-dsh'), {
+        decisionKey: 'doctor-ruling',
+        title: 'Doctor ruling',
+        question: 'Who keeps the path?',
+        blockingLevel: 'ADVISORY',
+        raisedBy: 'doctor/agent',
+      }, { nowMs: 42, actorRef: 'doctor/agent' })
+      const decision = recordDecision(conflictDrift, request.requestId, {
+        decidedBy: 'owner',
+        decisionText: 'Lane keeps the path.',
+      }, { nowMs: 43, actorRef: 'doctor/agent' })
+      const held = recordConflict(conflictDrift, {
+        workItemAId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
+        workItemBId: brandString<WorkItemId>('wi:mini-dsh:SCHEMA-001'),
+        raisedByActorId: lane.actorId,
+        conflictKind: 'SCOPE_OVERLAP',
+        description: 'doctor-recorded overlap',
+      }, { nowMs: 44, actorRef: 'doctor/agent' })
+      const second = recordConflict(conflictDrift, {
+        workItemAId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
+        workItemBId: brandString<WorkItemId>('wi:mini-dsh:PRE-002'),
+        raisedByActorId: lane.actorId,
+        conflictKind: 'SCOPE_OVERLAP',
+        description: 'second overlap',
+      }, { nowMs: 45, actorRef: 'doctor/agent' })
+      conflictDrift.prepare(
+        'UPDATE collaboration_conflicts SET raised_by_actor_id = ?, description = ?, status = ?, '
+        + 'resolution_decision_id = ?, resolved_at_ms = 46 WHERE id = ?',
+      ).run(handActor.actorId, 'tampered account', 'RESOLVED', decision.decisionId, held.conflictId)
+      resolveConflict(conflictDrift, second.conflictId, decision.decisionId, {
+        nowMs: 46,
+        actorRef: 'doctor/agent',
+      })
+      conflictDrift.prepare(
+        'UPDATE collaboration_conflicts SET work_item_b = ?, status = ?, resolution_decision_id = NULL, '
+        + 'resolved_at_ms = NULL WHERE id = ?',
+      ).run('wi:mini-dsh:SCHEMA-001', 'OPEN', second.conflictId)
+      conflictDrift.prepare(
+        'INSERT INTO collaboration_conflicts '
+        + '(id, work_item_a, work_item_b, raised_by_actor_id, conflict_kind, description, status, created_at_ms) '
+        + "VALUES ('cf:mini-dsh:hand', 'wi:mini-dsh:DB-001', 'wi:mini-dsh:SCHEMA-001', ?, "
+        + "'SCOPE_OVERLAP', 'ghost row', 'OPEN', 47)",
+      ).run(lane.actorId)
+      const issues = planDoctor(conflictDrift, GOLDEN_VERSION).issues
+      expect(issues).toEqual([
+        {
+          code: 'projection-drift',
+          refId: held.conflictId,
+          message: `collaboration conflict "${held.conflictId}" materializes actor "${handActor.actorId}" `
+            + 'between items "wi:mini-dsh:DB-001" and "wi:mini-dsh:SCHEMA-001" but replays actor '
+            + `"${lane.actorId}" between items "wi:mini-dsh:DB-001" and "wi:mini-dsh:SCHEMA-001"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: held.conflictId,
+          message: `collaboration conflict "${held.conflictId}" materializes description "tampered account" `
+            + 'but the timeline replays "doctor-recorded overlap"',
+        },
+        {
+          code: 'projection-drift',
+          refId: held.conflictId,
+          message: `collaboration conflict "${held.conflictId}" has materialized status RESOLVED but replays to OPEN`,
+        },
+        {
+          code: 'projection-drift',
+          refId: held.conflictId,
+          message: `collaboration conflict "${held.conflictId}" materializes resolution decision `
+            + `${decision.decisionId} but replays none`,
+        },
+        {
+          code: 'projection-drift',
+          refId: second.conflictId,
+          message: `collaboration conflict "${second.conflictId}" materializes actor "${lane.actorId}" `
+            + 'between items "wi:mini-dsh:DB-001" and "wi:mini-dsh:SCHEMA-001" but replays actor '
+            + `"${lane.actorId}" between items "wi:mini-dsh:DB-001" and "wi:mini-dsh:PRE-002"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: second.conflictId,
+          message: `collaboration conflict "${second.conflictId}" has materialized status OPEN `
+            + 'but replays to RESOLVED',
+        },
+        {
+          code: 'projection-drift',
+          refId: second.conflictId,
+          message: `collaboration conflict "${second.conflictId}" materializes resolution decision none `
+            + `but replays ${decision.decisionId}`,
+        },
+        {
+          code: 'projection-drift',
+          refId: 'cf:mini-dsh:hand',
+          message: 'collaboration conflict "cf:mini-dsh:hand" is materialized but no replayed conflict/recorded event',
+        },
+      ])
+    } finally {
+      conflictDrift.close()
     }
 
     const rawCriterion = await goldenLedger()

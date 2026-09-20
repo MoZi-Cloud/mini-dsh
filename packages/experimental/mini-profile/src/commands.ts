@@ -19,8 +19,10 @@
  * registered actors, defined roles, and live assignments, `assignments`
  * lists the project's work assignments with their item, actor, and role
  * labels, `handoffs` lists the project's recorded handoffs with their
- * item, sender, and recipient labels, and `reservations` lists the
- * project's scope reservations with their item, actor, and scope. The
+ * item, sender, and recipient labels, `reservations` lists the
+ * project's scope reservations with their item, actor, and scope, and
+ * `conflicts` lists the project's recorded collaboration conflicts with
+ * their items, raiser, and resolution. The
  * project and plan version
  * resolve through the ledger's plan directory when the command names none. The handler never mutates ledger state, never sends anything to
  * the model, and never executes a verifier command — mutating surfaces stay
@@ -43,6 +45,7 @@ import {
   planDoctor,
   readProjectActors,
   readProjectApprovals,
+  readProjectConflicts,
   readProjectDecisions,
   readProjectResources,
   readProjectDigest,
@@ -62,6 +65,7 @@ import {
   type ProjectReplayReport,
   type ResourceRequirement,
   type ReviewedCriterion,
+  type Conflict,
   type Handoff,
   type ScopeReservation,
   type WorkAssignment,
@@ -94,6 +98,7 @@ type ProjectCommand =
   | { readonly kind: 'assignments'; readonly projectId: string | undefined }
   | { readonly kind: 'handoffs'; readonly projectId: string | undefined }
   | { readonly kind: 'reservations'; readonly projectId: string | undefined }
+  | { readonly kind: 'conflicts'; readonly projectId: string | undefined }
 
 /* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
@@ -116,6 +121,7 @@ const HELP_TEXT = [
   '/project assignments [<project-id>] — list work assignments with their item, actor, and role labels',
   '/project handoffs [<project-id>] — list recorded handoffs with their item, sender, and recipient labels',
   '/project reservations [<project-id>] — list scope reservations with their item, actor, and scope',
+  '/project conflicts [<project-id>] — list recorded collaboration conflicts with their items, raiser, and resolution',
 ].join('\n')
 
 /** The usage hint the command registry shows for /project. */
@@ -134,6 +140,7 @@ const PROJECT_INPUT_HINT = [
   'assignments [<project-id>]',
   'handoffs [<project-id>]',
   'reservations [<project-id>]',
+  'conflicts [<project-id>]',
 ].join(' | ')
 
 /**
@@ -219,6 +226,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
   if (tokens[0] === 'reservations') {
     return tokens.length <= 2
       ? { kind: 'reservations', projectId: tokens[1] }
+      : undefined
+  }
+  if (tokens[0] === 'conflicts') {
+    return tokens.length <= 2
+      ? { kind: 'conflicts', projectId: tokens[1] }
       : undefined
   }
   return undefined
@@ -782,6 +794,30 @@ function renderReservations(projectId: ProjectId, reservations: readonly ScopeRe
 }
 
 /**
+ * Render the project's collaboration conflicts as command output: one line
+ * per conflict with its raiser, kind, items, account, and resolution.
+ * @param projectId - the project whose conflicts are listed.
+ * @param conflicts - the listed conflicts, newest-first.
+ * @returns the multi-line command text.
+ */
+function renderConflicts(projectId: ProjectId, conflicts: readonly Conflict[]): string {
+  if (conflicts.length === 0) {
+    return `No collaboration conflicts in project ${projectId}.`
+  }
+  const lines = [
+    `Project ${projectId} — collaboration conflicts, ${conflicts.length}:`,
+    ...conflicts.map((conflict) => {
+      const resolution = conflict.resolvedAtMs === undefined
+        ? 'open'
+        : `resolved by ${conflict.resolutionDecisionId} at ${new Date(conflict.resolvedAtMs).toISOString()}`
+      return `- ${conflict.raisedByKey} raised ${conflict.conflictKind} between ${conflict.stableKeyA} `
+        + `and ${conflict.stableKeyB} — ${conflict.description} — ${resolution}`
+    }),
+  ]
+  return lines.join('\n')
+}
+
+/**
  * Execute one parsed `/project` invocation against the mounted ledger.
  * @param ctx - context whose `projectLedger` service owns the opened database.
  * @param rawInput - exact text after the command name.
@@ -863,6 +899,10 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
       case 'reservations': {
         const projectId = resolveProjectId(listPlans(db), command.projectId)
         return { kind: 'success', text: renderReservations(projectId, readProjectScopeReservations(db, projectId)) }
+      }
+      case 'conflicts': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        return { kind: 'success', text: renderConflicts(projectId, readProjectConflicts(db, projectId)) }
       }
       /* v8 ignore next 2 -- the parse step returns a closed union */
       default: return assertNever(command, 'project command')

@@ -16,6 +16,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { ActorId, ActorRoleId, RoleId } from './actors.js'
 import type { ApprovalId } from './approvals.js'
+import type { ConflictId } from './collaboration-conflicts.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { HandoffId } from './handoffs.js'
 import type { WorkLeaseId } from './lease.js'
@@ -51,6 +52,7 @@ export interface ProjectReplayEntityCounts {
   readonly workAssignments: number
   readonly handoffs: number
   readonly scopeReservations: number
+  readonly conflicts: number
 }
 
 /** What the fold rebuilt, plus the packet recipes that have no materialized table. */
@@ -217,6 +219,18 @@ interface ScopeReservationFactsRow {
   readonly status: string
 }
 
+/** One `collaboration_conflicts` row the audit reads, in select order. */
+interface ConflictFactsRow {
+  readonly id: string
+  readonly work_item_a: string
+  readonly work_item_b: string
+  readonly raised_by_actor_id: string
+  readonly conflict_kind: string
+  readonly description: string
+  readonly status: string
+  readonly resolution_decision_id: string | null
+}
+
 /**
  * Audit one project's ledger integrity read-only: fold the project's event
  * timeline and compare the rebuilt projection with the materialized tables,
@@ -288,6 +302,11 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     'SELECT r.id, r.work_item_id, r.actor_id, r.scope_kind, r.scope_value, r.status FROM scope_reservations r '
     + 'WHERE r.project_id = ? ORDER BY r.id',
   ).all(projectId) as unknown as ScopeReservationFactsRow[]
+  const conflictRows = db.prepare(
+    'SELECT c.id, c.work_item_a, c.work_item_b, c.raised_by_actor_id, c.conflict_kind, c.description, '
+    + 'c.status, c.resolution_decision_id FROM collaboration_conflicts c '
+    + 'JOIN work_items w ON w.id = c.work_item_a WHERE w.project_id = ? ORDER BY c.id',
+  ).all(projectId) as unknown as ConflictFactsRow[]
   const materialized: ProjectReplayEntityCounts = {
     planVersions: versionRows.length,
     workItems: itemRows.length,
@@ -305,6 +324,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     workAssignments: workAssignmentRows.length,
     handoffs: handoffRows.length,
     scopeReservations: scopeReservationRows.length,
+    conflicts: conflictRows.length,
   }
   let projection: ReplayedProjectProjection
   try {
@@ -334,6 +354,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
   collectWorkAssignmentDrift(workAssignmentRows, projection, drift)
   collectHandoffDrift(handoffRows, projection, drift)
   collectScopeReservationDrift(scopeReservationRows, projection, drift)
+  collectConflictDrift(conflictRows, projection, drift)
   return {
     outcome: 'compared',
     projectId,
@@ -357,6 +378,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
       workAssignments: projection.workAssignments.size,
       handoffs: projection.handoffs.size,
       scopeReservations: projection.scopeReservations.size,
+      conflicts: projection.conflicts.size,
     },
     materialized,
     drift,
@@ -923,4 +945,68 @@ function collectScopeReservationDrift(
     }
   }
   pushReplayOnlyDrift(replayedIds, drift, refId => `scope reservation "${refId}" replays from a scope/reserved event but no row is materialized`)
+}
+
+/**
+ * Compare the collaboration-conflict family, both directions: existence, then
+ * the raiser and the two item references, the kind, the description text, and
+ * the lifecycle status with its resolution decision.
+ */
+function collectConflictDrift(
+  rows: readonly ConflictFactsRow[],
+  projection: ReplayedProjectProjection,
+  drift: ProjectReplayDrift[],
+): void {
+  const replayedIds = new Set(projection.conflicts.keys())
+  for (const row of rows) {
+    const id = brandString<ConflictId>(row.id)
+    const replayed = projection.conflicts.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" is materialized but no conflict/recorded event replays it`,
+      })
+      continue
+    }
+    replayedIds.delete(id)
+    if (replayed.raisedByActorId !== row.raised_by_actor_id || replayed.workItemAId !== row.work_item_a
+      || replayed.workItemBId !== row.work_item_b) {
+      drift.push({
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" materializes actor "${row.raised_by_actor_id}" `
+          + `over items "${row.work_item_a}"/"${row.work_item_b}" but replays actor "${replayed.raisedByActorId}" `
+          + `over items "${replayed.workItemAId}"/"${replayed.workItemBId}"`,
+      })
+    }
+    /* v8 ignore next 7 -- conflict_kind is CHECK-closed to one value, so no writer this build accepts can diverge it */
+    if (replayed.conflictKind !== row.conflict_kind) {
+      drift.push({
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" materializes kind ${row.conflict_kind} `
+          + `but replays ${replayed.conflictKind}`,
+      })
+    }
+    if (replayed.description !== row.description) {
+      drift.push({
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" materializes description "${row.description}" `
+          + `but replays "${replayed.description}"`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      drift.push({
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" has materialized status ${row.status} `
+          + `but replays to ${replayed.status}`,
+      })
+    }
+    if (replayed.resolutionDecisionId !== (row.resolution_decision_id ?? undefined)) {
+      drift.push({
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" materializes resolution decision `
+          + `${row.resolution_decision_id ?? 'none'} but replays ${replayed.resolutionDecisionId ?? 'none'}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedIds, drift, refId => `collaboration conflict "${refId}" replays from a conflict/recorded event but no row is materialized`)
 }

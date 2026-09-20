@@ -12,4 +12,4 @@
  * versions upgrade through the shipped adjacent migration steps, and any
  * version newer than this build rejects.
  */
-export const PROJECT_LEDGER_SCHEMA_VERSION = 8
+export const PROJECT_LEDGER_SCHEMA_VERSION = 9

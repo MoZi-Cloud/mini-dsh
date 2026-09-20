@@ -17,6 +17,7 @@ import {
   openDecisionRequest,
   parsePlanDocument,
   readProjectReplay,
+  recordConflict,
   recordDecision,
   openResourceRequirement,
   provideResourceInstance,
@@ -25,6 +26,7 @@ import {
   reserveScope,
   releaseWorkLease,
   requestApproval,
+  resolveConflict,
   validatePlanSchema,
   verifyResourceInstance,
   type AcceptanceCriterionId,
@@ -105,13 +107,13 @@ describe('readProjectReplay', () => {
         planVersions: 1, workItems: 1, criteria: 1, leases: 1, workPackets: 0,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0, scopeReservations: 0,
+        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0, scopeReservations: 0, conflicts: 0,
       },
       materialized: {
         planVersions: 1, workItems: 1, criteria: 1, leases: 1,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0, scopeReservations: 0,
+        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0, scopeReservations: 0, conflicts: 0,
       },
       drift: [],
     })
@@ -189,13 +191,13 @@ describe('readProjectReplay', () => {
       planVersions: 2, workItems: 2, criteria: 2, leases: 1,
       workPackets: 0, decisionRequests: 0, decisions: 0, approvals: 0,
       resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-      actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0, scopeReservations: 0,
+      actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0, scopeReservations: 0, conflicts: 0,
     })
     expect(report.materialized).toEqual({
       planVersions: 1, workItems: 1, criteria: 1, leases: 0,
       decisionRequests: 0, decisions: 0, approvals: 0,
       resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-      actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0, scopeReservations: 0,
+      actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0, scopeReservations: 0, conflicts: 0,
     })
     expect(report.drift.map(finding => finding.message)).toEqual([
       'plan version "plv:replay-plan:v9" replays from a plan/imported event but no row is materialized',
@@ -707,12 +709,112 @@ describe('readProjectReplay', () => {
     ])
   })
 
+  it('flags materialized conflicts no event replays, and disagreeing conflict facts', async () => {
+    const db = await ledgerOf(REPLAY_PLAN_TEXT)
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'spec-owner' })
+    const version = db.prepare('SELECT id FROM plan_versions').get() as { id: string }
+    const phase = db.prepare('SELECT id FROM phases').get() as { id: string }
+    db.prepare(
+      'INSERT INTO work_items (id, project_id, plan_version_id, phase_id, parent_work_item_id, stable_key, '
+      + 'work_type, executor_kind, title, description, priority, status, lock_version, created_at_ms, updated_at_ms) '
+      + "VALUES ('wi:replay-proj:SECOND', 'replay-proj', ?, ?, NULL, 'SECOND', 'IMPLEMENTATION', 'AGENT', 'Second', "
+      + "NULL, 0, 'PROPOSED', 0, 5, 5)",
+    ).run(version.id, phase.id)
+    // The fold only accepts conflicts whose items the timeline replayed, so the
+    // second item carries its own work/created event with matching facts.
+    appendProjectEvent(db, PROJECT, 'work/created', {
+      workItemId: 'wi:replay-proj:SECOND',
+      stableKey: 'SECOND',
+      title: 'Second',
+      planVersionId: version.id,
+      status: 'PROPOSED',
+      criteria: [],
+    }, { entityType: 'work_item', entityId: 'wi:replay-proj:SECOND', nowMs: 6, actorRef: 'spec-owner' })
+    const request = openDecisionRequest(db, PROJECT, {
+      decisionKey: 'replay-ruling',
+      title: 'Replay ruling',
+      question: 'Who keeps the path?',
+      blockingLevel: 'ADVISORY',
+      raisedBy: 'spec-owner',
+    }, { nowMs: 11, actorRef: 'spec-owner' })
+    const decision = recordDecision(db, request.requestId, {
+      decidedBy: 'owner',
+      decisionText: 'Lane keeps it.',
+    }, { nowMs: 12, actorRef: 'spec-owner' })
+    const held = recordConflict(db, {
+      workItemAId: brandString<WorkItemId>(WORK_ITEM),
+      workItemBId: brandString<WorkItemId>('wi:replay-proj:SECOND'),
+      raisedByActorId: lane.actorId,
+      conflictKind: 'SCOPE_OVERLAP',
+      description: 'first overlap',
+    }, { nowMs: 14, actorRef: 'spec-owner' })
+    const second = recordConflict(db, {
+      workItemAId: brandString<WorkItemId>(WORK_ITEM),
+      workItemBId: brandString<WorkItemId>('wi:replay-proj:SECOND'),
+      raisedByActorId: lane.actorId,
+      conflictKind: 'SCOPE_OVERLAP',
+      description: 'second overlap',
+    }, { nowMs: 15, actorRef: 'spec-owner' })
+    resolveConflict(db, second.conflictId, decision.decisionId, { nowMs: 16, actorRef: 'spec-owner' })
+    // Tampered facts on both rows, plus a materialized-only ghost and a
+    // replay-only ghost; the retarget points at the hand actor because the
+    // foreign keys require real rows. `held` carries a row-only resolution
+    // (decision materialized, none replayed) and `second` a replay-only one,
+    // so the resolution comparison sees both directions.
+    db.prepare(
+      'INSERT INTO actors '
+      + '(id, project_id, actor_key, actor_kind, display_name, external_identity, metadata_json, status, created_at_ms) '
+      + "VALUES ('actor:replay-proj:hand', 'replay-proj', 'hand', 'SERVICE', 'Hand row', NULL, NULL, 'ACTIVE', 5)",
+    ).run()
+    db.prepare(
+      'UPDATE collaboration_conflicts SET raised_by_actor_id = ?, description = ?, status = ?, '
+      + 'resolution_decision_id = ?, resolved_at_ms = 16 WHERE id = ?',
+    ).run('actor:replay-proj:hand', 'tampered account', 'RESOLVED', decision.decisionId, held.conflictId)
+    db.prepare(
+      'UPDATE collaboration_conflicts SET status = ?, resolution_decision_id = NULL, resolved_at_ms = NULL WHERE id = ?',
+    ).run('OPEN', second.conflictId)
+    db.prepare(
+      'INSERT INTO collaboration_conflicts '
+      + '(id, work_item_a, work_item_b, raised_by_actor_id, conflict_kind, description, status, created_at_ms) '
+      + "VALUES ('cf:replay-proj:hand', ?, ?, 'actor:replay-proj:hand', 'SCOPE_OVERLAP', 'ghost row', 'OPEN', 6)",
+    ).run(WORK_ITEM, 'wi:replay-proj:SECOND')
+    appendProjectEvent(db, PROJECT, 'conflict/recorded', {
+      conflictId: 'cf:replay-proj:event-only',
+      workItemAId: WORK_ITEM,
+      workItemBId: 'wi:replay-proj:SECOND',
+      raisedByActorId: lane.actorId,
+      conflictKind: 'SCOPE_OVERLAP',
+      description: 'timeline-only conflict',
+    }, { entityType: 'collaboration_conflict', entityId: 'cf:replay-proj:event-only', nowMs: 17, actorRef: 'spec-owner' })
+
+    const report = readProjectReplay(db, PROJECT)
+    expect(report.outcome).toBe('compared')
+    if (report.outcome !== 'compared') return
+    expect(report.drift.map(finding => finding.message)).toEqual([
+      'actor "actor:replay-proj:hand" is materialized but no actor/registered event replays it',
+      `collaboration conflict "${held.conflictId}" materializes actor "actor:replay-proj:hand" `
+        + `over items "${WORK_ITEM}"/"wi:replay-proj:SECOND" but replays actor "${lane.actorId}" `
+        + `over items "${WORK_ITEM}"/"wi:replay-proj:SECOND"`,
+      `collaboration conflict "${held.conflictId}" materializes description "tampered account" but replays "first overlap"`,
+      `collaboration conflict "${held.conflictId}" has materialized status RESOLVED but replays to OPEN`,
+      `collaboration conflict "${held.conflictId}" materializes resolution decision ${decision.decisionId} `
+        + 'but replays none',
+      `collaboration conflict "${second.conflictId}" has materialized status OPEN but replays to RESOLVED`,
+      `collaboration conflict "${second.conflictId}" materializes resolution decision none `
+        + `but replays ${decision.decisionId}`,
+      'collaboration conflict "cf:replay-proj:hand" is materialized but no conflict/recorded event replays it',
+      'collaboration conflict "cf:replay-proj:event-only" replays from a conflict/recorded event but no row is materialized',
+    ])
+  })
+
   it('reports an undecodable timeline without comparing parity', async () => {
     const db = await ledgerOf(REPLAY_PLAN_TEXT)
     db.prepare(
       'INSERT INTO project_events '
         + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-        + "VALUES (?, 99, 9, 'plan/imported', 0, '{}', 1)",
+        + "VALUES (?, 99, 10, 'plan/imported', 0, '{}', 1)",
     ).run(PROJECT)
     const report = readProjectReplay(db, PROJECT)
     expect(report).toMatchObject({
@@ -724,11 +826,11 @@ describe('readProjectReplay', () => {
         planVersions: 1, workItems: 1, criteria: 1, leases: 0,
         decisionRequests: 0, decisions: 0, approvals: 0,
         resourceRequirements: 0, resourceInstances: 0, resourceVerifications: 0,
-        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0, scopeReservations: 0,
+        actors: 0, roles: 0, actorRoles: 0, workAssignments: 0, handoffs: 0, scopeReservations: 0, conflicts: 0,
       },
     })
     expect(report.outcome).toBe('undecodable')
     if (report.outcome !== 'undecodable') return
-    expect(report.timelineError).toMatch(/carries event format 9; this build reads up to format 8/u)
+    expect(report.timelineError).toMatch(/carries event format 10; this build reads up to format 9/u)
   })
 })

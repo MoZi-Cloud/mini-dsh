@@ -20,6 +20,7 @@ import {
   readProjectEvents,
   openResourceRequirement,
   provideResourceInstance,
+  recordConflict,
   recordDecision,
   registerActor,
   releaseScopeReservation,
@@ -27,6 +28,7 @@ import {
   replayProjectEvents,
   requestApproval,
   reserveScope,
+  resolveConflict,
   validatePlanSchema,
   verifyResourceInstance,
   type AcceptanceCriterionId,
@@ -48,6 +50,7 @@ import {
   type ReplayedActor,
   type ReplayedActorRole,
   type ReplayedCriterion,
+  type ReplayedConflict,
   type ReplayedDecision,
   type ReplayedDecisionRequest,
   type ReplayedHandoff,
@@ -60,6 +63,7 @@ import {
   type ReplayedProjectProjection,
   type ReplayedRole,
   type ReplayedScopeReservation,
+  type ConflictId,
   type ScopeReservationId,
   type ReplayedWorkAssignment,
   type ReplayedWorkItem,
@@ -382,6 +386,32 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       status: row.status as ReplayedScopeReservation['status'],
     })
   }
+  const conflicts = new Map<ConflictId, ReplayedConflict>()
+  for (const row of db.prepare(
+    'SELECT id, work_item_a, work_item_b, raised_by_actor_id, conflict_kind, description, status, '
+    + 'resolution_decision_id FROM collaboration_conflicts',
+  ).all() as {
+    id: string
+    work_item_a: string
+    work_item_b: string
+    raised_by_actor_id: string
+    conflict_kind: string
+    description: string
+    status: string
+    resolution_decision_id: string | null
+  }[]) {
+    conflicts.set(brandString<ConflictId>(row.id), {
+      workItemAId: brandString<WorkItemId>(row.work_item_a),
+      workItemBId: brandString<WorkItemId>(row.work_item_b),
+      raisedByActorId: brandString<ActorId>(row.raised_by_actor_id),
+      conflictKind: row.conflict_kind as ReplayedConflict['conflictKind'],
+      description: row.description,
+      status: row.status as ReplayedConflict['status'],
+      resolutionDecisionId: row.resolution_decision_id === null
+        ? undefined
+        : brandString<DecisionId>(row.resolution_decision_id),
+    })
+  }
   return {
     planVersions,
     workItems,
@@ -399,6 +429,7 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
     workAssignments,
     handoffs,
     scopeReservations,
+    conflicts,
   }
 }
 
@@ -731,6 +762,7 @@ describe('replayProjectEvents', () => {
       workAssignments: new Map(),
       handoffs: new Map(),
       scopeReservations: new Map(),
+      conflicts: new Map(),
     })
     db.close()
   })
@@ -1784,6 +1816,227 @@ describe('replayProjectEvents', () => {
     expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
       .toContain('payload field "expiresAtMs" must be a number')
     setPayload(reserved.sequenceNo, base)
+    db.close()
+  })
+
+  it('replays the collaboration-conflict domain to the materialized projection', async () => {
+    const db = await goldenLedger()
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 20, actorRef: 'tester' })
+    const itemA = brandString<WorkItemId>('wi:mini-dsh:IMPORT-001')
+    const itemB = brandString<WorkItemId>('wi:mini-dsh:SCHEMA-001')
+    const request = openDecisionRequest(db, PROJECT, {
+      decisionKey: 'overlap-ruling',
+      title: 'Overlap ruling',
+      question: 'Who keeps the overlapping path?',
+      blockingLevel: 'BLOCKING',
+      raisedBy: 'owner',
+    }, { nowMs: 21, actorRef: 'tester' })
+    const decision = recordDecision(db, request.requestId, {
+      decidedBy: 'owner',
+      decisionText: 'Lane keeps the path; Second takes the sibling directory.',
+    }, { nowMs: 22, actorRef: 'tester' })
+    const conflict = recordConflict(db, {
+      workItemAId: itemA,
+      workItemBId: itemB,
+      raisedByActorId: lane.actorId,
+      conflictKind: 'SCOPE_OVERLAP',
+      description: 'src/one.ts sits inside the reserved src/ tree; the equal-value check did not judge it.',
+    }, { nowMs: 30, actorRef: 'tester' })
+    const resolved = resolveConflict(db, conflict.conflictId, decision.decisionId, { nowMs: 31, actorRef: 'tester' })
+
+    const replayed = replayProjectEvents(db, PROJECT)
+    expect(replayed).toEqual(materializedProjection(db))
+    expect(replayed.conflicts.get(conflict.conflictId)).toEqual({
+      workItemAId: itemA,
+      workItemBId: itemB,
+      raisedByActorId: lane.actorId,
+      conflictKind: 'SCOPE_OVERLAP',
+      description: 'src/one.ts sits inside the reserved src/ tree; the equal-value check did not judge it.',
+      status: 'RESOLVED',
+      resolutionDecisionId: decision.decisionId,
+    })
+    expect(resolved.resolvedAtMs).toBe(31)
+    db.close()
+  })
+
+  it('replays conflict events through their lifecycle', async () => {
+    const db = await goldenLedger()
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const request = openDecisionRequest(db, PROJECT, {
+      decisionKey: 'raw-ruling',
+      title: 'Raw ruling',
+      question: 'Which stream yields?',
+      blockingLevel: 'ADVISORY',
+      raisedBy: 'owner',
+    }, { nowMs: 11, actorRef: 'tester' })
+    const decision = recordDecision(db, request.requestId, {
+      decidedBy: 'owner',
+      decisionText: 'The first stream yields.',
+    }, { nowMs: 12, actorRef: 'tester' })
+    const itemA = brandString<WorkItemId>('wi:mini-dsh:IMPORT-001')
+    const itemB = brandString<WorkItemId>('wi:mini-dsh:DB-001')
+    appendProjectEvent(db, PROJECT, 'conflict/recorded', {
+      conflictId: 'cf:mini-dsh:raw',
+      workItemAId: itemA,
+      workItemBId: itemB,
+      raisedByActorId: lane.actorId,
+      conflictKind: 'SCOPE_OVERLAP',
+      description: 'raw lifecycle',
+    }, { entityType: 'collaboration_conflict', entityId: 'cf:mini-dsh:raw', nowMs: 4 })
+    expect(replayProjectEvents(db, PROJECT).conflicts.get(brandString<ConflictId>('cf:mini-dsh:raw')))
+      .toEqual({
+        workItemAId: itemA,
+        workItemBId: itemB,
+        raisedByActorId: lane.actorId,
+        conflictKind: 'SCOPE_OVERLAP',
+        description: 'raw lifecycle',
+        status: 'OPEN',
+        resolutionDecisionId: undefined,
+      })
+    appendProjectEvent(db, PROJECT, 'conflict/resolved', {
+      conflictId: 'cf:mini-dsh:raw',
+      resolutionDecisionId: decision.decisionId,
+    }, { entityType: 'collaboration_conflict', entityId: 'cf:mini-dsh:raw', nowMs: 6 })
+    expect(replayProjectEvents(db, PROJECT).conflicts.get(brandString<ConflictId>('cf:mini-dsh:raw')))
+      .toEqual({
+        workItemAId: itemA,
+        workItemBId: itemB,
+        raisedByActorId: lane.actorId,
+        conflictKind: 'SCOPE_OVERLAP',
+        description: 'raw lifecycle',
+        status: 'RESOLVED',
+        resolutionDecisionId: decision.decisionId,
+      })
+    db.close()
+  })
+
+  it('fails replay on conflict/recorded events naming unreplayed entities', async () => {
+    const db = await goldenLedger()
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const base: Record<string, unknown> = {
+      conflictId: 'cf:mini-dsh:ghost',
+      workItemAId: 'wi:mini-dsh:IMPORT-001',
+      workItemBId: 'wi:mini-dsh:DB-001',
+      raisedByActorId: lane.actorId,
+      conflictKind: 'SCOPE_OVERLAP',
+      description: 'ghost hunt',
+    }
+    const append = (payload: Record<string, unknown>): ProjectEventEnvelope =>
+      appendProjectEvent(db, PROJECT, 'conflict/recorded', payload, {
+        entityType: 'collaboration_conflict', entityId: 'cf:mini-dsh:ghost', nowMs: 2,
+      })
+    const deleteLast = (): void => {
+      db.prepare('DELETE FROM project_events WHERE sequence_no = (SELECT MAX(sequence_no) FROM project_events)').run()
+    }
+    append({ ...base, workItemAId: 'wi:mini-dsh:ghost' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "workItemId" names no replayed work item (wi:mini-dsh:ghost)')
+    deleteLast()
+    append({ ...base, workItemBId: 'wi:mini-dsh:ghost' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "workItemId" names no replayed work item (wi:mini-dsh:ghost)')
+    deleteLast()
+    append({ ...base, raisedByActorId: 'actor:mini-dsh:ghost' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "actorId" names no replayed actor (actor:mini-dsh:ghost)')
+    db.close()
+  })
+
+  it('fails replay on resolution events naming unknown referents or finished conflicts', async () => {
+    const db = await goldenLedger()
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const request = openDecisionRequest(db, PROJECT, {
+      decisionKey: 'twice-ruling',
+      title: 'Twice ruling',
+      question: 'Who yields?',
+      blockingLevel: 'ADVISORY',
+      raisedBy: 'owner',
+    }, { nowMs: 11, actorRef: 'tester' })
+    const decision = recordDecision(db, request.requestId, {
+      decidedBy: 'owner',
+      decisionText: 'The second stream yields.',
+    }, { nowMs: 12, actorRef: 'tester' })
+    appendProjectEvent(db, PROJECT, 'conflict/recorded', {
+      conflictId: 'cf:mini-dsh:twice',
+      workItemAId: 'wi:mini-dsh:IMPORT-001',
+      workItemBId: 'wi:mini-dsh:DB-001',
+      raisedByActorId: lane.actorId,
+      conflictKind: 'SCOPE_OVERLAP',
+      description: 'resolved once only',
+    }, { entityType: 'collaboration_conflict', entityId: 'cf:mini-dsh:twice', nowMs: 2 })
+    const appendResolved = (payload: Record<string, unknown>): ProjectEventEnvelope =>
+      appendProjectEvent(db, PROJECT, 'conflict/resolved', payload, {
+        entityType: 'collaboration_conflict', entityId: 'cf:mini-dsh:twice', nowMs: 3,
+      })
+    const deleteLast = (): void => {
+      db.prepare('DELETE FROM project_events WHERE sequence_no = (SELECT MAX(sequence_no) FROM project_events)').run()
+    }
+    appendResolved({ conflictId: 'cf:mini-dsh:ghost', resolutionDecisionId: decision.decisionId })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "conflictId" names no replayed collaboration conflict (cf:mini-dsh:ghost)')
+    deleteLast()
+    appendResolved({ conflictId: 'cf:mini-dsh:twice', resolutionDecisionId: 'dc:mini-dsh:ghost' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "resolutionDecisionId" names no replayed decision (dc:mini-dsh:ghost)')
+    deleteLast()
+    appendResolved({ conflictId: 'cf:mini-dsh:twice', resolutionDecisionId: decision.decisionId })
+    appendResolved({ conflictId: 'cf:mini-dsh:twice', resolutionDecisionId: decision.decisionId })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('resolves conflict "cf:mini-dsh:twice" that is no longer open')
+    db.close()
+  })
+
+  it('fails replay on conflict payloads with missing or mistyped fields', async () => {
+    const db = await goldenLedger()
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const setPayload = (sequenceNo: number, payload: unknown): void => {
+      db.prepare('UPDATE project_events SET payload_json = ? WHERE project_id = ? AND sequence_no = ?')
+        .run(JSON.stringify(payload), PROJECT, sequenceNo)
+    }
+    const base: Record<string, unknown> = {
+      conflictId: 'cf:mini-dsh:17',
+      workItemAId: 'wi:mini-dsh:IMPORT-001',
+      workItemBId: 'wi:mini-dsh:DB-001',
+      raisedByActorId: lane.actorId,
+      conflictKind: 'SCOPE_OVERLAP',
+      description: 'payload check',
+    }
+    const recorded = appendProjectEvent(db, PROJECT, 'conflict/recorded', base, {
+      entityType: 'collaboration_conflict', entityId: 'cf:mini-dsh:17', nowMs: 2,
+    })
+    for (const field of ['conflictId', 'workItemAId', 'workItemBId', 'raisedByActorId', 'conflictKind', 'description']) {
+      const payload = Object.fromEntries(Object.entries(base).filter(([key]) => key !== field))
+      setPayload(recorded.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(recorded.sequenceNo, { ...base, conflictKind: 'ITEM_OVERLAP' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "conflictKind" is not a conflict kind: "ITEM_OVERLAP"')
+    setPayload(recorded.sequenceNo, base)
+
+    const resolvedBase: Record<string, unknown> = {
+      conflictId: 'cf:mini-dsh:17',
+      resolutionDecisionId: 'dc:dr:mini-dsh:pinned:2',
+    }
+    const resolved = appendProjectEvent(db, PROJECT, 'conflict/resolved', resolvedBase, {
+      entityType: 'collaboration_conflict', entityId: 'cf:mini-dsh:17', nowMs: 3,
+    })
+    for (const field of ['conflictId', 'resolutionDecisionId']) {
+      const payload = Object.fromEntries(Object.entries(resolvedBase).filter(([key]) => key !== field))
+      setPayload(resolved.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(resolved.sequenceNo, resolvedBase)
     db.close()
   })
 })

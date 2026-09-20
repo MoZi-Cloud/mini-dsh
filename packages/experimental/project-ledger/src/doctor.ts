@@ -6,8 +6,8 @@
  * inside one project, no lease row still records ACTIVE past its own expiry,
  * the event timeline is readable by this codec, and the replayed projection
  * agrees with the materialized tables (work items, criteria, leases, the
- * decision, approval, resource, actor/role, work-assignment, handoff, and
- * scope-reservation
+ * decision, approval, resource, actor/role, work-assignment, handoff,
+ * scope-reservation, and collaboration-conflict
  * domains). The doctor never
  * mutates and never executes a verifier command; it reports every
  * independent issue it finds, so a caller sees the whole picture in one
@@ -21,6 +21,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { ApprovalId } from './approvals.js'
+import type { ConflictId } from './collaboration-conflicts.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
 import type { ActorId, ActorRoleId, RoleId } from './actors.js'
@@ -142,6 +143,18 @@ interface HandoffFactsRow {
   readonly to_actor_id: string | null
   readonly to_role_id: string | null
   readonly handoff_kind: string
+}
+
+/** One `collaboration_conflicts` row the parity check reads, in select order. */
+interface ConflictFactsRow {
+  readonly id: string
+  readonly work_item_a: string
+  readonly work_item_b: string
+  readonly raised_by_actor_id: string
+  readonly conflict_kind: string
+  readonly description: string
+  readonly status: string
+  readonly resolution_decision_id: string | null
 }
 
 /** One `work_leases` row the staleness check reads, in select order. */
@@ -757,6 +770,65 @@ function collectProjectionDrift(
         code: 'projection-drift',
         refId: row.id,
         message: `scope reservation "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  const conflictRows = db.prepare(
+    'SELECT c.id, c.work_item_a, c.work_item_b, c.raised_by_actor_id, c.conflict_kind, c.description, '
+    + 'c.status, c.resolution_decision_id FROM collaboration_conflicts c '
+    + 'JOIN work_items w ON w.id = c.work_item_a WHERE w.project_id = ? ORDER BY c.id',
+  ).all(projectId) as unknown as ConflictFactsRow[]
+  for (const row of conflictRows) {
+    const replayed = projection.conflicts.get(brandString<ConflictId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" is materialized but no replayed conflict/recorded event`,
+      })
+      continue
+    }
+    if (replayed.raisedByActorId !== row.raised_by_actor_id || replayed.workItemAId !== row.work_item_a
+      || replayed.workItemBId !== row.work_item_b) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" materializes actor "${row.raised_by_actor_id}" `
+          + `between items "${row.work_item_a}" and "${row.work_item_b}" but replays actor `
+          + `"${replayed.raisedByActorId}" between items "${replayed.workItemAId}" and "${replayed.workItemBId}"`,
+      })
+    }
+    /* v8 ignore next 9 -- conflict_kind is CHECK-closed to one value, so no writer this build accepts can diverge it */
+    if (replayed.conflictKind !== row.conflict_kind) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" materializes kind ${row.conflict_kind} `
+          + `but replays kind ${replayed.conflictKind}`,
+      })
+    }
+    if (replayed.description !== row.description) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" materializes description "${row.description}" `
+          + `but the timeline replays "${replayed.description}"`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" has materialized status ${row.status} `
+          + `but replays to ${replayed.status}`,
+      })
+    }
+    if (replayed.resolutionDecisionId !== (row.resolution_decision_id ?? undefined)) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `collaboration conflict "${row.id}" materializes resolution decision `
+          + `${row.resolution_decision_id ?? 'none'} but replays ${replayed.resolutionDecisionId ?? 'none'}`,
       })
     }
   }

@@ -14,7 +14,9 @@
  * one work item), the v1.6d handoff layout (blueprint §28: one recorded
  * pass of a work item between actors), and the v1.6d stage-B scope
  * reservation layout (blueprint §21: an actor's exclusive claim on one
- * project scope).
+ * project scope), and the v1.6d stage-B collaboration-conflict layout
+ * (blueprint §29: one recorded overlap that slipped through the
+ * reservations, resolved through a v1.6b decision).
  *
  * The database is a source of truth, not a rebuildable index: a stamped
  * `user_version` newer than this build rejects, upgrades advance one
@@ -123,6 +125,12 @@ export const PROJECT_LEDGER_MIGRATIONS: readonly ProjectLedgerMigration[] = [
     toVersion: 8,
     description: 'v1.6d stage-B scope-reservation domain (scope reservations)',
     apply: createScopeReservationTables,
+  },
+  {
+    fromVersion: 8,
+    toVersion: 9,
+    description: 'v1.6d stage-B collaboration-conflict domain (collaboration conflicts)',
+    apply: createCollaborationConflictTables,
   },
 ]
 
@@ -780,5 +788,34 @@ function createScopeReservationTables(db: DatabaseSync): void {
       WHERE status = 'ACTIVE';
     CREATE INDEX IF NOT EXISTS idx_scope_reservation_expiry
       ON scope_reservations(status, expires_at_ms);
+  `)
+}
+
+/**
+ * Materialize the v1.6d stage-B collaboration-conflict table (blueprint §29,
+ * adapted like the earlier domains: `project_id` derives through the first
+ * work item row, the blueprint's `description_content_id` indirection becomes
+ * inline description text, the blueprint's nullable raiser and work-item
+ * columns close to required, the unvalued `conflict_kind` closes uppercase to
+ * the ledger convention, and the resolution references the v1.6b decisions
+ * rows directly). The item index serves the per-project read and the open
+ * rows a resolver scans. Idempotent by design.
+ */
+function createCollaborationConflictTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS collaboration_conflicts (
+      id                     TEXT PRIMARY KEY,
+      work_item_a            TEXT NOT NULL REFERENCES work_items(id),
+      work_item_b            TEXT NOT NULL REFERENCES work_items(id),
+      raised_by_actor_id     TEXT NOT NULL REFERENCES actors(id),
+      conflict_kind          TEXT NOT NULL CHECK(conflict_kind IN ('SCOPE_OVERLAP')),
+      description            TEXT NOT NULL,
+      status                 TEXT NOT NULL CHECK(status IN ('OPEN','RESOLVED')),
+      resolution_decision_id TEXT REFERENCES decisions(id),
+      created_at_ms          INTEGER NOT NULL,
+      resolved_at_ms         INTEGER
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_conflicts_item_a
+      ON collaboration_conflicts(work_item_a, status);
   `)
 }

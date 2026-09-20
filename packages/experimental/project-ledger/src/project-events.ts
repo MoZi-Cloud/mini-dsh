@@ -19,6 +19,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { ActorId, ActorRoleId, RoleId } from './actors.js'
 import type { ApprovalId } from './approvals.js'
+import type { ConflictId } from './collaboration-conflicts.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { HandoffId } from './handoffs.js'
 import type { ScopeReservationId } from './scope-reservations.js'
@@ -240,6 +241,22 @@ export type ScopeReservationKind = (typeof SCOPE_RESERVATION_KINDS)[number]
 const SCOPE_RESERVATION_KIND_SET: ReadonlySet<string> = new Set<string>(SCOPE_RESERVATION_KINDS)
 
 /**
+ * The overlaps a `conflict/recorded` payload may name (blueprint §29's
+ * `conflict_kind`, uppercased to the ledger convention). The blueprint
+ * leaves `conflict_kind` unvalued; this build closes it to the one overlap
+ * the scope reservations cannot prevent — two reserved repository paths that
+ * overlap by containment, which the equal-value uniqueness check does not
+ * judge. Owned here (not in the collaboration-conflicts module) because the
+ * payload codec validates it on read.
+ */
+export const CONFLICT_KINDS = ['SCOPE_OVERLAP'] as const
+
+/** A kind of one recorded collaboration conflict. */
+export type ConflictKind = (typeof CONFLICT_KINDS)[number]
+
+const CONFLICT_KIND_SET: ReadonlySet<string> = new Set<string>(CONFLICT_KINDS)
+
+/**
  * The event envelope version recorded in the `event_format_version` column of
  * every `project_events` row — the single home of this constant. Adding a
  * required vocabulary entry bumps it together with the codec; purely
@@ -248,7 +265,7 @@ const SCOPE_RESERVATION_KIND_SET: ReadonlySet<string> = new Set<string>(SCOPE_RE
  * (the vocabulary is cumulative), and only a row stamped newer than this
  * build rejects.
  */
-export const PROJECT_EVENT_FORMAT_VERSION = 8
+export const PROJECT_EVENT_FORMAT_VERSION = 9
 
 /**
  * The event vocabulary. Every listed type is required: rows carry
@@ -260,8 +277,8 @@ export const PROJECT_EVENT_FORMAT_VERSION = 8
  * `decision/recorded`, `approval/requested`, `approval/decided`,
  * `resource/required`, `resource/provided`, `resource/verified`,
  * `actor/registered`, `role/defined`, `role/assigned`, `work/assigned`,
- * `handoff/recorded`, `scope/reserved`, `scope/released`, and
- * `scope/expired`), and a
+ * `handoff/recorded`, `scope/reserved`, `scope/released`, `scope/expired`,
+ * `conflict/recorded`, and `conflict/resolved`), and a
  * reader that does not know the type
  * fails closed. `plan/version-superseded` and `baseline/drift-detected` are
  * validated without state change: their writers own lifecycle columns and
@@ -297,6 +314,8 @@ export const PROJECT_EVENT_TYPES = [
   'scope/reserved',
   'scope/released',
   'scope/expired',
+  'conflict/recorded',
+  'conflict/resolved',
 ] as const
 
 /** A vocabulary type of the v1 event format. */
@@ -716,6 +735,25 @@ export interface ReplayedScopeReservation {
   readonly status: 'ACTIVE' | 'RELEASED' | 'EXPIRED'
 }
 
+/**
+ * Collaboration-conflict facts the `conflict/*` events replay; the created
+ * stamp is the `conflict/recorded` event's `createdAtMs` and the resolution
+ * stamp is the `conflict/resolved` event's — both stay with the materialized
+ * row, like the decision domain's decision text. The status and the
+ * resolution's decision fold from the events; the materialized row owns no
+ * derived columns for them beyond `status` itself.
+ */
+export interface ReplayedConflict {
+  readonly workItemAId: WorkItemId
+  readonly workItemBId: WorkItemId
+  readonly raisedByActorId: ActorId
+  readonly conflictKind: ConflictKind
+  readonly description: string
+  readonly status: 'OPEN' | 'RESOLVED'
+  /** The v1.6b decision the resolution recorded, once a `conflict/resolved` event answered it. */
+  readonly resolutionDecisionId: DecisionId | undefined
+}
+
 /** The projection replaying a project's events rebuilds. */
 export interface ReplayedProjectProjection {
   readonly planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>
@@ -743,6 +781,8 @@ export interface ReplayedProjectProjection {
   readonly handoffs: ReadonlyMap<HandoffId, ReplayedHandoff>
   /** The scope-reservation domain, rebuilt from the `scope/*` events. */
   readonly scopeReservations: ReadonlyMap<ScopeReservationId, ReplayedScopeReservation>
+  /** The collaboration-conflict domain, rebuilt from the `conflict/*` events. */
+  readonly conflicts: ReadonlyMap<ConflictId, ReplayedConflict>
 }
 
 /**
@@ -773,6 +813,7 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
   const workAssignments = new Map<WorkAssignmentId, ReplayedWorkAssignment>()
   const handoffs = new Map<HandoffId, ReplayedHandoff>()
   const scopeReservations = new Map<ScopeReservationId, ReplayedScopeReservation>()
+  const conflicts = new Map<ConflictId, ReplayedConflict>()
   // Validation state for the supersede applier: a version retires once.
   const supersededPlanVersionIds = new Set<PlanVersionId>()
   for (const event of readProjectEvents(db, projectId)) {
@@ -1205,6 +1246,40 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         scopeReservations.set(payload.reservationId, { ...replayed, status: 'EXPIRED' })
         break
       }
+      case 'conflict/recorded': {
+        const payload = decodeConflictRecordedPayload(event)
+        requireReplayedWorkItem(workItems, payload.workItemAId, event)
+        requireReplayedWorkItem(workItems, payload.workItemBId, event)
+        requireReplayedActor(actors, payload.raisedByActorId, event)
+        conflicts.set(payload.conflictId, {
+          workItemAId: payload.workItemAId,
+          workItemBId: payload.workItemBId,
+          raisedByActorId: payload.raisedByActorId,
+          conflictKind: payload.conflictKind,
+          description: payload.description,
+          status: 'OPEN',
+          resolutionDecisionId: undefined,
+        })
+        break
+      }
+      case 'conflict/resolved': {
+        const payload = decodeConflictResolvedPayload(event)
+        const replayed = requireReplayedConflict(conflicts, payload.conflictId, event)
+        requireReplayedDecision(decisions, payload.resolutionDecisionId, event)
+        if (replayed.status !== 'OPEN') {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" resolves conflict `
+              + `"${payload.conflictId}" that is no longer open`,
+          )
+        }
+        conflicts.set(payload.conflictId, {
+          ...replayed,
+          status: 'RESOLVED',
+          resolutionDecisionId: payload.resolutionDecisionId,
+        })
+        break
+      }
       default:
         break
     }
@@ -1226,6 +1301,7 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
     workAssignments,
     handoffs,
     scopeReservations,
+    conflicts,
   }
 }
 
@@ -1402,6 +1478,40 @@ function requireReplayedScopeReservation(
       'malformed-event-payload',
       `project event ${event.sequenceNo} of "${event.projectId}" payload field "reservationId" `
         + `names no replayed scope reservation (${reservationId})`,
+    )
+  }
+  return replayed
+}
+
+/** Fail closed when a payload names a collaboration conflict the fold has not replayed. */
+function requireReplayedConflict(
+  conflicts: ReadonlyMap<ConflictId, ReplayedConflict>,
+  conflictId: ConflictId,
+  event: ProjectEventEnvelope,
+): ReplayedConflict {
+  const replayed = conflicts.get(conflictId)
+  if (replayed === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "conflictId" `
+        + `names no replayed collaboration conflict (${conflictId})`,
+    )
+  }
+  return replayed
+}
+
+/** Fail closed when a payload names a recorded decision the fold has not replayed. */
+function requireReplayedDecision(
+  decisions: ReadonlyMap<DecisionId, ReplayedDecision>,
+  decisionId: DecisionId,
+  event: ProjectEventEnvelope,
+): ReplayedDecision {
+  const replayed = decisions.get(decisionId)
+  if (replayed === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "resolutionDecisionId" `
+        + `names no replayed decision (${decisionId})`,
     )
   }
   return replayed
@@ -1678,6 +1788,22 @@ interface ScopeReservedPayload {
 /** Payload facts of one `scope/released` or `scope/expired` event; the stamp is the envelope's `createdAtMs`. */
 interface ScopeEndedPayload {
   readonly reservationId: ScopeReservationId
+}
+
+/** Payload facts of one `conflict/recorded` event; the created stamp is the envelope's `createdAtMs`. */
+interface ConflictRecordedPayload {
+  readonly conflictId: ConflictId
+  readonly workItemAId: WorkItemId
+  readonly workItemBId: WorkItemId
+  readonly raisedByActorId: ActorId
+  readonly conflictKind: ConflictKind
+  readonly description: string
+}
+
+/** Payload facts of one `conflict/resolved` event; the resolved stamp is the envelope's `createdAtMs`. */
+interface ConflictResolvedPayload {
+  readonly conflictId: ConflictId
+  readonly resolutionDecisionId: DecisionId
 }
 
 /** The event payload must be a JSON object for appliers to read fields from. */
@@ -2545,5 +2671,44 @@ function decodeScopeEndedPayload(event: ProjectEventEnvelope): ScopeEndedPayload
   const fields = payloadFields(event)
   return {
     reservationId: requiredString(fields, event, 'reservationId') as ScopeReservationId,
+  }
+}
+
+/** Read one required conflict-kind payload field. */
+function requiredConflictKind(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+): ConflictKind {
+  const value = requiredString(fields, event, field)
+  if (!CONFLICT_KIND_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not a conflict kind: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as ConflictKind
+}
+
+/** Decode one `conflict/recorded` payload, failing closed on missing or mistyped fields. */
+function decodeConflictRecordedPayload(event: ProjectEventEnvelope): ConflictRecordedPayload {
+  const fields = payloadFields(event)
+  return {
+    conflictId: requiredString(fields, event, 'conflictId') as ConflictId,
+    workItemAId: requiredString(fields, event, 'workItemAId') as WorkItemId,
+    workItemBId: requiredString(fields, event, 'workItemBId') as WorkItemId,
+    raisedByActorId: requiredString(fields, event, 'raisedByActorId') as ActorId,
+    conflictKind: requiredConflictKind(fields, event, 'conflictKind'),
+    description: requiredString(fields, event, 'description'),
+  }
+}
+
+/** Decode one `conflict/resolved` payload, failing closed on missing or mistyped fields. */
+function decodeConflictResolvedPayload(event: ProjectEventEnvelope): ConflictResolvedPayload {
+  const fields = payloadFields(event)
+  return {
+    conflictId: requiredString(fields, event, 'conflictId') as ConflictId,
+    resolutionDecisionId: requiredString(fields, event, 'resolutionDecisionId') as DecisionId,
   }
 }

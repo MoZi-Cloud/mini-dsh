@@ -209,7 +209,17 @@ v1.6b 计划 supersede 了自己的版本 1，本增量完成版本 2 批次的�
 
 运行之后，本域首批行把两个 agent 接下来要做的阶段 B 工作做了分区，都落在 `SB-CONFLICT-RECORD-001` 上：`sr:mini-dsh:194`——lane 预留 `packages/experimental/project-ledger`——与 `sr:mini-dsh:195`——第二个 agent 预留 `packages/experimental/mini-profile`——而对 lane 范围的第三次预留被拒（`duplicate-reservation` 并指名持有行），预防机制对即将测试冲突域的同一阵容生效。持久账本首次打开时就地迁移 schema 7→8，现在把 1/2/3/4/5/6/7/8 混合时间线折叠干净（195 事件中 97 + 19 + 2 + 14 + 15 + 13 + 22 + 13 个戳记）。幂等重跑通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`SB-CONFLICT-RECORD-001`（schema 8→9、format 9）在版本 2 中保持 READY。
 
+### 2026-09-20 — SB-CONFLICT-RECORD-001：协作冲突记录从预留漏掉的撞界
+
+阶段 B 的收拢条目是冲突域（蓝图 §29，适配——`project_id` 如工作指派与交接两表一样经第一个工作条目行派生，蓝图的 `description_content_id` 间接引用改为内联描述文本，可空的提出者与工作条目列收口为必填，其 `conflict_kind` 收口为 `SCOPE_OVERLAP`：等值唯一性检查判不到的包含型撞界）以 schema 版本 9 经一条追加的 8→9 迁移落地。两个必需词表事件（`conflict/recorded`、`conflict/resolved`）把事件格式推到 9；`recordConflict` 写入一次已记录的撞界，挂在同一项目两个不同工作条目旁、由在册 actor 提出；`resolveConflict` 经同项目一条已记录的 v1.6b 决议收拢开启的冲突——该决议即账本记录在案的答案，因 `decisions` 表不带项目列而经 `decision_requests` 联查校验——已解决的冲突不再二次解决；`readProjectConflicts` 按最新在前列出项目，两个条目、提出者与解决决议经联查解析；重放对账与 doctor parity 在两套巡检中覆盖该族；只读的 `/project conflicts` 视图渲染每行的生命周期。经 `agent:mini-real-use-lane` 认领，存储 verifier `pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile`（退出码 0；376 个测试，三包逐文件 100% 覆盖率），条目 DONE，doctor 0 issues，重放对账 0 drift。首跑报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-v16d-collaboration:v2","workItemId":"wi:mini-dsh:SB-CONFLICT-RECORD-001","stableKey":"SB-CONFLICT-RECORD-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:SB-CONFLICT-RECORD-001:AC-SB-CONFLICT-RECORD-001","command":"pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+运行之后，本域首行把阶段 B 的擦边记录为它如今有家可归的事实：`cf:mini-dsh:203`——`SCOPE_OVERLAP`，介于 `SB-SCOPE-RESERVATION-001` 与本条目之间，由第二个 agent 提出，OPEN——描述原样陈述了发生的事：阶段 B 的两条预留（`sr:mini-dsh:194`、`sr:mini-dsh:195`）在握，对已持有范围的第三次尝试被以 duplicate 拒绝，而任一预留之下的嵌套路径本会从等值检查漏过。计划文档本身不变，故运行内导入幂等、版本 2 仍是活跃版本。持久账本首次打开时就地迁移 schema 8→9，现在把 1/2/3/4/5/6/7/8/9 混合时间线折叠干净（203 事件中 97 + 19 + 2 + 14 + 15 + 13 + 22 + 13 + 8 个戳记）。幂等重跑通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。v1.6d 全部五个条目——阶段 A 三个、阶段 B 两个——在版本 2 中 DONE；阶段 B 收拢，v1.6d 完成报告可作为独立门步骤跟进。
+
 ## 相对门槛的状态
 
 
-经账本完成的工作项：34（15 个黄金计划项由 v1.6a 构建本身完成，加上面十九条 lane 条目——第 17 条是 v1.6d 入场决策，不完成工作项）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入并随其完成报告关闭；**v1.6d 已于 2026-09-20 给出**——决策 `dr:mini-dsh:v1.6d-entry`（选中 `enter-v1.6d-stage-a`）——v1.6d 阶段 A 已进入。
+经账本完成的工作项：35（15 个黄金计划项由 v1.6a 构建本身完成，加上面二十条 lane 条目——第 17、20 条是 v1.6d 入场与阶段 B 入场决策，不完成工作项）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入并随其完成报告关闭；**v1.6d 已于 2026-09-20 给出**——决策 `dr:mini-dsh:v1.6d-entry`（选中 `enter-v1.6d-stage-a`）——阶段 A 已进入并关闭；**阶段 B 已于 2026-09-20 给出**——决策 `dr:mini-dsh:v1.6d-stage-b`（选中 `enter-v1.6d-stage-b`）——阶段 B 已进入并关闭，v1.6d 全部五个条目 DONE。

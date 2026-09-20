@@ -23,9 +23,11 @@ import {
   readProjectActors,
   readProjectHandoffs,
   reapExpiredScopeReservations,
+  recordConflict,
   recordDecision,
   releaseScopeReservation,
   reserveScope,
+  resolveConflict,
   recordHandoff,
   registerActor,
   requestApproval,
@@ -82,7 +84,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project')).resolves.toMatchObject({
         kind: 'success',
         text: expect.stringMatching(
-          /todo \[--agent\][\s\S]*doctor[\s\S]*history[\s\S]*export[\s\S]*actors[\s\S]*assignments[\s\S]*handoffs[\s\S]*reservations/u,
+          /todo \[--agent\][\s\S]*doctor[\s\S]*export[\s\S]*assignments[\s\S]*handoffs[\s\S]*reservations[\s\S]*conflicts/u,
         ) as string,
       })
     } finally {
@@ -112,6 +114,7 @@ describe('/project', () => {
       await expect(run(mounted, '/project assignments a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project handoffs a b')).resolves.toEqual(usage)
       await expect(run(mounted, '/project reservations a b')).resolves.toEqual(usage)
+      await expect(run(mounted, '/project conflicts a b')).resolves.toEqual(usage)
     } finally {
       await unmount(mounted)
     }
@@ -497,7 +500,7 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 9, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 10, 'plan/imported', 0, '{}', 1)",
       ).run()
       const result = await run(mounted, '/project replay')
       expect(result).toMatchObject({ kind: 'success' })
@@ -1090,6 +1093,65 @@ describe('/project', () => {
     }
   })
 
+  it('lists collaboration conflicts with their items, raiser, and resolution', async () => {
+    const mounted = await mount()
+    try {
+      const db = mounted.ctx.projectLedger.db
+      seedActivePlan(db, TINY_PLAN_TEXT)
+      await expect(run(mounted, '/project conflicts')).resolves.toEqual({
+        kind: 'success',
+        text: 'No collaboration conflicts in project tiny-proj.',
+      })
+
+      const lane = registerActor(db, brandString<ProjectId>('tiny-proj'), {
+        actorKey: 'ci-lane', actorKind: 'AGENT', displayName: 'Lane',
+      }, { nowMs: 90_000, actorRef: 'spec-owner' })
+      const request = openDecisionRequest(db, brandString<ProjectId>('tiny-proj'), {
+        decisionKey: 'overlap-ruling',
+        title: 'Overlap ruling',
+        question: 'Who keeps the path?',
+        blockingLevel: 'ADVISORY',
+        raisedBy: 'spec-owner',
+      }, { nowMs: 91_000, actorRef: 'spec-owner' })
+      const decision = recordDecision(db, request.requestId, {
+        decidedBy: 'owner',
+        decisionText: 'Lane keeps the path.',
+      }, { nowMs: 92_000, actorRef: 'spec-owner' })
+      const first = recordConflict(db, {
+        workItemAId: brandString<WorkItemId>('wi:tiny-proj:AGENT-FREE'),
+        workItemBId: brandString<WorkItemId>('wi:tiny-proj:OWNER-A'),
+        raisedByActorId: lane.actorId,
+        conflictKind: 'SCOPE_OVERLAP',
+        description: 'reserved tree contains the sibling path',
+      }, { nowMs: 94_000, actorRef: 'spec-owner' })
+      recordConflict(db, {
+        workItemAId: brandString<WorkItemId>('wi:tiny-proj:AGENT-FREE'),
+        workItemBId: brandString<WorkItemId>('wi:tiny-proj:OWNER-A'),
+        raisedByActorId: lane.actorId,
+        conflictKind: 'SCOPE_OVERLAP',
+        description: 'second overlap noticed during the stage',
+      }, { nowMs: 95_000, actorRef: 'spec-owner' })
+      resolveConflict(db, first.conflictId, decision.decisionId, { nowMs: 96_000, actorRef: 'spec-owner' })
+
+      const expected = [
+        'Project tiny-proj — collaboration conflicts, 2:',
+        '- ci-lane raised SCOPE_OVERLAP between AGENT-FREE and OWNER-A '
+          + '— second overlap noticed during the stage — open',
+        '- ci-lane raised SCOPE_OVERLAP between AGENT-FREE and OWNER-A '
+          + '— reserved tree contains the sibling path — '
+          + `resolved by ${decision.decisionId} at 1970-01-01T00:01:36.000Z`,
+      ].join('\n')
+      await expect(run(mounted, '/project conflicts')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project conflicts tiny-proj')).resolves.toEqual({ kind: 'success', text: expected })
+      await expect(run(mounted, '/project conflicts no-such-project')).resolves.toEqual({
+        kind: 'error',
+        text: 'No plan in this ledger records project "no-such-project".',
+      })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
   it('digests a versionless plan, drift findings, and an undecodable timeline', async () => {
     const mounted = await mount((db) => {
       seedActivePlan(db, TINY_PLAN_TEXT)
@@ -1154,13 +1216,13 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 9, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 10, 'plan/imported', 0, '{}', 1)",
       ).run()
       const broken = await run(mounted, '/project digest tiny-proj')
       expect(broken).toMatchObject({ kind: 'success' })
       if (broken.kind !== 'success' || broken.text === undefined) return
       expect(broken.text).toContain('Replay audit: the timeline cannot be decoded by this build — ')
-      expect(broken.text).toContain('carries event format 9; this build reads up to format 8')
+      expect(broken.text).toContain('carries event format 10; this build reads up to format 9')
       expect(broken.text).not.toContain('Replay audit: clean')
 
       // The export's replay section reports the decode failure, not parity.
@@ -1168,7 +1230,7 @@ describe('/project', () => {
       expect(brokenExport).toMatchObject({ kind: 'success' })
       if (brokenExport.kind !== 'success' || brokenExport.text === undefined) return
       expect(brokenExport.text).toContain('the timeline cannot be decoded by this build — ')
-      expect(brokenExport.text).toContain('carries event format 9; this build reads up to format 8')
+      expect(brokenExport.text).toContain('carries event format 10; this build reads up to format 9')
       expect(brokenExport.text).not.toContain('clean over')
     } finally {
       await unmount(mounted)

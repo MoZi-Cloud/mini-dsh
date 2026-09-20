@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Use this bundle when a `mini` profile needs the v1.6a Project Ledger capability mounted through the only supported launch form. It layers three inserts over `dsh-base`: the `mini-project-ledger` plugin opens the ledger through the SQLite store's fail-closed open, exposing it as `ctx.projectLedger`; the `mini-project-commands` plugin registers the read-only `/project` command (todo, doctor F05, item review/history, replay audit, digest/export, decisions/approvals/resources/actors/assignments/handoffs/reservations); the `mini-project-work` plugin registers the `project_work_*` tools claiming work and delivering the bounded WorkPacket (§16/§17). The ledger path comes from `DSH_MINI_LEDGER_PATH` with a dsh-home fallback. Nothing here adds a bin or runs a verifier.
+Use this bundle when a `mini` profile needs the v1.6a Project Ledger capability mounted through the only supported launch form. It layers three inserts over `dsh-base`: the `mini-project-ledger` plugin opens the ledger through the SQLite store's fail-closed open, exposing it as `ctx.projectLedger`; the `mini-project-commands` plugin registers the read-only `/project` command (todo, doctor F05, item review/history, replay audit, digest/export, decisions/approvals/resources/actors/assignments/handoffs/reservations/conflicts); the `mini-project-work` plugin registers the `project_work_*` tools claiming work and delivering the bounded WorkPacket (§16/§17). The ledger path comes from `DSH_MINI_LEDGER_PATH` with a dsh-home fallback. Nothing here adds a bin or runs a verifier.
 
 ## Table of Contents
 
