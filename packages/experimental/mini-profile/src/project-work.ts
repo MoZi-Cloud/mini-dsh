@@ -2,9 +2,10 @@
  * The mini profile's model-facing project-work tools (v1.6a §5.4, the W09
  * consumer): the three short tools the proposal names, over the mounted
  * Project Ledger. `project_work_next` lists the agent todo view (§11) as
- * canonical JSON; `project_work_claim` takes the lease and delivers the
- * bounded WorkPacket (§16/§17); `project_work_update` advances the held
- * claim — heartbeat, release, or a verification report.
+ * canonical JSON, filtered to the calling agent's per-actor claim visibility
+ * (v1.6d) when the session names an agent; `project_work_claim` takes the
+ * lease and delivers the bounded WorkPacket (§16/§17); `project_work_update`
+ * advances the held claim — heartbeat, release, or a verification report.
  *
  * The lease bearer token never enters a model-visible value: the plugin holds
  * it in process memory keyed by the claiming agent's worker identity, so
@@ -218,7 +219,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'project_work_next',
     description: 'List this project\'s outstanding agent work items with claim readiness, blockers, and lease '
-      + 'holders. Optional parameter projectId selects the project when the ledger records several.',
+      + 'holders. The list is your per-actor view: items another agent holds a live claim on do not appear. '
+      + 'Optional parameter projectId selects the project when the ledger records several.',
     parameters: {
       projectId: { type: 'string', description: 'Project id, when the ledger records more than one project.' },
     },
@@ -283,10 +285,15 @@ export function apply(ctx: Context, config: Config = {}): void {
       }],
     },
     presentCall: args => present('List next project tasks', 'search', args.projectId),
-    execute(args, _exec) {
+    execute(args, exec) {
       const db = ctx.projectLedger.db
       const projectId = resolveProjectId(listPlans(db), args.projectId)
-      const view = listAgentTodo(db, projectId)
+      // Per-actor claim visibility resolves at this boundary: a session that
+      // names an agent sees its own queue (another holder's live claims drop
+      // out); a session-less execution has no identity to filter by and lists
+      // the full queue, the same view the `/project todo --agent` command reads.
+      const viewer = exec.agent === undefined ? undefined : workerIdentityOf(exec.agent)
+      const view = listAgentTodo(db, projectId, viewer === undefined ? {} : { viewerIdentity: viewer })
       return Promise.resolve({
         projectId: view.projectId,
         items: view.entries.map(entry => ({

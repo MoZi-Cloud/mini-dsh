@@ -185,7 +185,19 @@ v1.6b 计划 supersede 了自己的版本 1，本增量完成版本 2 批次的�
 
 运行之后，本域首行记录了阶段 A 收拢条目此刻等待的传递：`ho:mini-dsh:168`——`PA-CLAIM-VISIBILITY-001` 以 `DELEGATE` 从 lane agent 交给持有 `executor` 角色者，artifact 引用钉住 v1.6d 计划——落在事件 161–168，时间线的首批 format-7 戳。持久账本首次打开时就地迁移 schema 6→7，现在把 1/2/3/4/5/6/7 混合时间线折叠干净（168 事件中 97 + 19 + 2 + 14 + 15 + 13 + 8 个戳记）。幂等重跑通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。`PA-CLAIM-VISIBILITY-001`——按 actor 的领取可见性与双 agent 证据运行——收拢阶段 A。
 
+### 2026-09-20 —— PA-CLAIM-VISIBILITY-001：agent todo 视图获得按 actor 的领取可见性
+
+阶段 A 的收尾项是范围提案承诺的调度投影变更，无 schema 或事件格式变更：todo 视图获得按 actor 的领取可见性——todo 视图请求上的 `viewerIdentity`，经解析后的 spec 携带、在视图上回显。给出查看者时，另一身份持有活跃领取的条目从视图中消失，无人领取与自己的条目保留；不给时，视图仍是 `/project todo --agent` 命令读到的全队列。`project_work_next` 在自己的边界解析查看者——点名 agent 的会话按 `agent:<id>` 过滤（与领取和评估记录的身份一致）；无会话的执行没有可过滤的身份，列出全部——空查看者身份响亮失败（`empty-viewer-identity`）。过滤活在读取里：不加 readiness 阻塞器，不增权威。
+
+随后，阶段 A 的证据运行经已发布的接缝驱动两个注册 AGENT actor 完成一次条目传递：第二个 agent `actor:mini-dsh:agent:second` 注册（事件 169），lane 在本条目上担 `PRIMARY`（`executor` 角色）（`wa:mini-dsh:170`），第二个 agent 以 `agent:second` 领取（租约 171）——过滤视图按设计分裂：lane 的视图隐藏该条目，第二个 agent 的视图显示其为己所持，未过滤视图带标注显示——随后传递记为 `ho:mini-dsh:172`（`DELEGATE` 给 lane）、第二个 agent 释放，条目回到 `READY` 交给 lane。由 `agent:mini-real-use-lane` 领取，存储 verifier `pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile`（退出码 0；345 测试，三包 per-file 100% 覆盖率），条目 DONE，doctor 0 issues，replay 审计 0 drift。首跑报告行：
+
+```json
+{"lane":"real-use","ledger":"~/.dsh/project-ledger/ledger.sqlite","alreadyComplete":false,"planVersionId":"plv:mini-dsh-v16d-collaboration:v1","workItemId":"wi:mini-dsh:PA-CLAIM-VISIBILITY-001","stableKey":"PA-CLAIM-VISIBILITY-001","verifierResults":[{"criterionId":"ac:wi:mini-dsh:PA-CLAIM-VISIBILITY-001:AC-PA-CLAIM-VISIBILITY-001","command":"pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile","exitCode":0}],"itemStatus":"DONE","doctorIssues":0,"replayDrift":0,"replayItemStatus":"DONE","toolCalls":{"project_work_next":1,"project_work_claim":1,"project_work_update":1}}
+```
+
+条目 DONE 后阶段 A 收拢：持久账本把 1/2/3/4/5/6/7 混合时间线折叠干净（180 事件中 97 + 19 + 2 + 14 + 15 + 13 + 20 个戳记），现在持有两个注册 AGENT actor 与它们之间的一次已记录传递。幂等重跑通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。v1.6d 阶段 A 三项在版本 1 中全部 DONE；阶段 B——范围预留与协作冲突——等待 owner 的门槛。
+
 ## 相对门槛的状态
 
 
-经账本完成的工作项：32（15 个黄金计划项由 v1.6a 构建本身完成，加上面十七条 lane 条目——第 17 条是 v1.6d 入场决策，不完成工作项）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入并随其完成报告关闭；**v1.6d 已于 2026-09-20 给出**——决策 `dr:mini-dsh:v1.6d-entry`（选中 `enter-v1.6d-stage-a`）——v1.6d 阶段 A 已进入。
+经账本完成的工作项：33（15 个黄金计划项由 v1.6a 构建本身完成，加上面十八条 lane 条目——第 17 条是 v1.6d 入场决策，不完成工作项）。BOOT/4K 回归：无记录——4K 门槛本身已是完成的账本条目（`PW-4K-GATE-001`，存储 verifier `run-4k.sh`，退出码 0）且每个增量的复跑保持绿色；BOOT 验收套件保持绿色。用户价值确认：**已于 2026-09-19 给出**——经既定 go 门确认、并记为决策 `dr:mini-dsh:v1.6b-entry`（选中 `enter-v1.6b`）——v1.6b 已进入并随其完成报告关闭；**v1.6d 已于 2026-09-20 给出**——决策 `dr:mini-dsh:v1.6d-entry`（选中 `enter-v1.6d-stage-a`）——v1.6d 阶段 A 已进入。

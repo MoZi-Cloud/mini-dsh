@@ -118,6 +118,23 @@ describe('resolveWorkTodoSpec', () => {
     expect(error.code).toBe('empty-executor-kinds')
     expect(error.message).toContain('executorKinds must name at least one executor kind')
   })
+
+  it('carries a named viewer identity and rejects an empty one', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    try {
+      expect(resolveWorkTodoSpec({ viewerIdentity: 'worker/a' })).toEqual({
+        executorKinds: ['AGENT', 'EXTERNAL', 'OWNER', 'SYSTEM'],
+        viewerIdentity: 'worker/a',
+        nowMs: 1_000,
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+    const error = thrownError(WorkTodoError, () => resolveWorkTodoSpec({ viewerIdentity: '' }))
+    expect(error.code).toBe('empty-viewer-identity')
+    expect(error.message).toContain('viewerIdentity must name the viewing worker')
+  })
 })
 
 describe('owner and agent todo views', () => {
@@ -184,6 +201,39 @@ describe('owner and agent todo views', () => {
       expect(expired.readiness.reasons.map(reason => reason.kind)).toEqual(['work-status-closed'])
 
       expect(listOwnerTodo(db, PROJECT, { nowMs: 15 }).entries).toEqual([])
+    } finally {
+      db.close()
+    }
+  })
+
+  it('hides another holder\'s live claim from a named viewer and keeps own and unclaimed entries', async () => {
+    const db = await goldenLedger()
+    try {
+      db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
+      db.prepare('UPDATE phases SET status = ?').run('ACTIVE')
+      db.prepare('UPDATE work_items SET status = ? WHERE stable_key IN (?, ?)').run('DONE', 'OWNER-REVIEW-001', 'PRE-001')
+      const leaseOptions = { nowMs: 10, leaseConfig: { ttlMs: 1000, heartbeatIntervalMs: 400 } }
+      claimWorkItem(db, itemId('SCHEMA-001'), 'worker/a', leaseOptions)
+      claimWorkItem(db, itemId('PRE-002'), 'worker/b', leaseOptions)
+
+      const asA = listAgentTodo(db, PROJECT, { viewerIdentity: 'worker/a', nowMs: 15 })
+      expect(asA.viewerIdentity).toBe('worker/a')
+      expect(asA.entries).toHaveLength(12)
+      const own = entryByStableKey(asA, 'SCHEMA-001')
+      expect(own.activeLease).toMatchObject({ workerIdentity: 'worker/a' })
+      expect(asA.entries.map(entry => entry.stableKey)).not.toContain('PRE-002')
+
+      const asB = listAgentTodo(db, PROJECT, { viewerIdentity: 'worker/b', nowMs: 15 })
+      expect(asB.entries).toHaveLength(12)
+      expect(entryByStableKey(asB, 'PRE-002').activeLease).toMatchObject({ workerIdentity: 'worker/b' })
+      expect(asB.entries.map(entry => entry.stableKey)).not.toContain('SCHEMA-001')
+
+      // Without a viewer the view is the full queue: both live claims show,
+      // each labeled with its holder.
+      const unfiltered = listAgentTodo(db, PROJECT, { nowMs: 15 })
+      expect(unfiltered.viewerIdentity).toBeUndefined()
+      expect(unfiltered.entries).toHaveLength(13)
+      expect(entryByStableKey(unfiltered, 'PRE-002').activeLease).toMatchObject({ workerIdentity: 'worker/b' })
     } finally {
       db.close()
     }

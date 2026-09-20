@@ -78,7 +78,7 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **令牌只存哈希，绝不入日志**——认领返回一次性 bearer 令牌；账本只存其 SHA-256 哈希，任何租约事件都不携带它，日志重建租约状态时无需重放机密。
 - **packet 是配方，不是行**——`buildWorkPacket` 只读 §17 列出的逐项输入（plan 身份、目标、phase 摘要、关系回执、带存储 spec 的验收标准、baseline），为每个被引用小节计算哈希，并追加携带完整配方的 `project/work-packet-prepared` 事件；不存在物化 packet 表，因为事件就是持久记录且 packet 可重建。`rebuildWorkPacket` 仅从当前行重组 packet 并点名漂移的引用，审计模型所见永远不需要 Master Plan 全文。
 - **有界靠拒绝而非截断**——`serializeWorkPacket` 输出必须低于 `maxSerializedBytes`（默认 65,536）；超限即抛错而不是截断，模型可见文档要么完整要么缺席，相同行永远序列化出相同字节。
-- **Owner 与 Agent todo 是按执行者分离的视图**——`listOwnerTodo` 与 `listAgentTodo` 对 `executor_kind`（§11）跑一条只读查询，覆盖全部非终态状态，按种类、优先级降序、年龄与 id 排序；每个条目携带重算的 readiness 与活跃租约，阻塞原因与持有者随任务一并呈现。视图绝不变更：完成权威仍在验收接缝，没有稳定 item id、没有项目身份的 session todo 在账本中没有入口。
+- **Owner 与 Agent todo 是按执行者分离的视图**——`listOwnerTodo` 与 `listAgentTodo` 对 `executor_kind`（§11）跑一条只读查询，覆盖全部非终态状态，按种类、优先级降序、年龄与 id 排序；每个条目携带重算的 readiness 与活跃租约，阻塞原因与持有者随任务一并呈现。给出查看者身份时视图变为按 actor（v1.6d）：他人持有活跃领取的条目不再出现，第二个 agent 看到的队列不含别人的进行中领取。视图绝不变更：完成权威仍在验收接缝，没有稳定 item id、没有项目身份的 session todo 在账本中没有入口。
 - **supersede 退役版本，绝不改写历史**——`supersedePlanVersion` 在单个 `BEGIN IMMEDIATE` 内只移动生命周期列（`SUPERSEDED`、`superseded_at_ms`）与 `plans.current_version_id` 指针，并随 `plan/version-superseded` 事件落库；readiness 随即以 `plan-version-not-active` 拒绝该版本的每个新认领，活跃尝试保留租约、放弃租约后落 `BLOCKED`，事件载荷记录 review 队列。工作项、plan 事实与评估逐字节不变。
 - **drift 封堵认领，绝不改写 baseline 钉**——`recordBaselineDrift` 把调用方观测的仓库事实与版本钉住的 baseline 比较，追加 `baseline/drift-detected`，并在工作项上打开 `BASELINE_DRIFT` 外部阻塞，下一次认领被拒，直到 owner 解决、豁免或 supersede；baseline 列本身绝不移动（§21）。
 - **doctor 是只读巡检**——`planDoctor` 一趟重验已导入版本：验收与 verifier 的存在性、层级与排序环、关系的项目内约束、过了自身有效期仍记 ACTIVE 的租约行（即 reaper 自己的判定谓词，读时钟由调用方给定）、事件时间线可解码，以及工作项/标准/租约状态的投影对等；全部独立问题连同版本身份、baseline 与行数一并报告。

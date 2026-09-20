@@ -4,7 +4,10 @@
  * project, separated by `executor_kind` exactly as the constitution defines
  * them. A view entry carries the display facts plus the recomputed readiness
  * and the live lease, so a consumer sees why work is blocked and who holds
- * it without a second query surface. Queries never mutate: status moves,
+ * it without a second query surface. A view may also name a viewing worker
+ * identity: per-actor claim visibility (v1.6d) drops the entries another
+ * identity holds a live claim on, so a second agent sees the queue without
+ * another agent's live claims. Queries never mutate: status moves,
  * claims, and evaluations stay with their owning writers, and completing a
  * project work item remains reachable only through the acceptance seam
  * (`todo completed != project work item done`, §5.3).
@@ -40,7 +43,7 @@ export const OWNER_TODO_EXECUTOR_KINDS = ['OWNER'] as const satisfies readonly P
 export const AGENT_TODO_EXECUTOR_KINDS = ['AGENT'] as const satisfies readonly PlanExecutorKind[]
 
 /** Closed set of todo-view rejection reasons. */
-export type WorkTodoErrorCode = 'empty-executor-kinds'
+export type WorkTodoErrorCode = 'empty-executor-kinds' | 'empty-viewer-identity'
 
 /** Thrown by the todo-view resolve step; queries themselves only read. */
 export class WorkTodoError extends Error {
@@ -59,6 +62,12 @@ export class WorkTodoError extends Error {
 export interface WorkTodoRequest {
   /** Executor kinds the view lists; defaults to every kind. */
   readonly executorKinds?: readonly PlanExecutorKind[] | undefined
+  /**
+   * Worker identity whose live claims stay listed: entries another identity
+   * holds drop out of the view; unclaimed entries and the viewer's own stay.
+   * Absent lists every entry.
+   */
+  readonly viewerIdentity?: string | undefined
   /** Now, for the lease-expiry comparison; defaults to `Date.now()`. */
   readonly nowMs?: number | undefined
 }
@@ -67,17 +76,21 @@ export interface WorkTodoRequest {
 export interface WorkTodoSpec {
   /** Executor kinds the view lists, de-duplicated and sorted for a stable query order. */
   readonly executorKinds: readonly PlanExecutorKind[]
+  /** The viewing worker identity, when the caller named one. */
+  readonly viewerIdentity: string | undefined
   readonly nowMs: number
 }
 
 /**
  * Resolve a todo-view request into its spec: default the kind list to every
  * executor kind, de-duplicate and sort what the caller named (the sort fixes
- * the row order and the echoed `executorKinds`), and default the clock. An
- * explicitly empty filter fails loud instead of silently listing nothing.
- * @param request - the caller's kind filter and clock override.
+ * the row order and the echoed `executorKinds`), default the clock, and carry
+ * the viewer identity. An explicitly empty filter fails loud instead of
+ * silently listing nothing; so does an empty viewer identity, which is a
+ * caller mistake, not a request for the unfiltered view.
+ * @param request - the caller's kind filter, viewer identity, and clock override.
  * @returns the resolved spec.
- * @throws {WorkTodoError} on `empty-executor-kinds`.
+ * @throws {WorkTodoError} on `empty-executor-kinds` and `empty-viewer-identity`.
  */
 export function resolveWorkTodoSpec(request: WorkTodoRequest = {}): WorkTodoSpec {
   const requested = request.executorKinds === undefined ? PLAN_EXECUTOR_KINDS : request.executorKinds
@@ -88,7 +101,13 @@ export function resolveWorkTodoSpec(request: WorkTodoRequest = {}): WorkTodoSpec
       'executorKinds must name at least one executor kind; an empty filter would list nothing',
     )
   }
-  return { executorKinds, nowMs: request.nowMs ?? Date.now() }
+  if (request.viewerIdentity !== undefined && request.viewerIdentity.length === 0) {
+    throw new WorkTodoError(
+      'empty-viewer-identity',
+      'viewerIdentity must name the viewing worker; an empty string is not a worker identity',
+    )
+  }
+  return { executorKinds, viewerIdentity: request.viewerIdentity, nowMs: request.nowMs ?? Date.now() }
 }
 
 /** The live lease holding one listed work item, when one exists. */
@@ -117,6 +136,8 @@ export interface WorkTodoEntry {
 export interface WorkTodoView {
   readonly projectId: ProjectId
   readonly executorKinds: readonly PlanExecutorKind[]
+  /** The viewing worker identity, when the caller named one. */
+  readonly viewerIdentity: string | undefined
   readonly entries: readonly WorkTodoEntry[]
 }
 
@@ -124,11 +145,13 @@ export interface WorkTodoView {
  * List one project's outstanding work for the requested executor kinds.
  * Entries cover the non-terminal statuses, ordered by executor kind,
  * descending priority, then age and id for a stable display; each carries
- * its recomputed readiness and live lease. The query only reads — no view
- * path moves a status or records an event.
+ * its recomputed readiness and live lease. With a viewer identity, the
+ * entries another identity holds a live claim on drop out — per-actor claim
+ * visibility — while unclaimed entries and the viewer's own stay listed.
+ * The query only reads — no view path moves a status or records an event.
  * @param db - open ledger database.
  * @param projectId - project whose work is listed.
- * @param request - kind filter and clock override.
+ * @param request - kind filter, viewer identity, and clock override.
  * @returns the resolved view.
  * @throws {WorkTodoError} the {@link resolveWorkTodoSpec} rejections.
  */
@@ -156,7 +179,8 @@ export function listWorkTodo(
     priority: number
     phase_stable_key: string | null
   }[]
-  const entries: WorkTodoEntry[] = rows.map((row) => {
+  const entries: WorkTodoEntry[] = []
+  for (const row of rows) {
     const workItemId = brandString<WorkItemId>(row.id)
     const lease = db.prepare(
       'SELECT id, worker_identity, expires_at_ms FROM work_leases '
@@ -164,7 +188,17 @@ export function listWorkTodo(
     ).get(workItemId, spec.nowMs) as
       | { id: string; worker_identity: string; expires_at_ms: number }
       | undefined
-    return {
+    // Per-actor claim visibility: a named viewer sees another holder's live
+    // claim neither as available nor as an entry, so no second agent plans
+    // around work another agent already holds.
+    if (
+      spec.viewerIdentity !== undefined
+      && lease !== undefined
+      && lease.worker_identity !== spec.viewerIdentity
+    ) {
+      continue
+    }
+    entries.push({
       workItemId,
       stableKey: row.stable_key,
       title: row.title,
@@ -178,9 +212,9 @@ export function listWorkTodo(
         workerIdentity: lease.worker_identity,
         expiresAtMs: lease.expires_at_ms,
       },
-    }
-  })
-  return { projectId, executorKinds: spec.executorKinds, entries }
+    })
+  }
+  return { projectId, executorKinds: spec.executorKinds, viewerIdentity: spec.viewerIdentity, entries }
 }
 
 /**
@@ -201,10 +235,12 @@ export function listOwnerTodo(
 
 /**
  * The agent todo view (§11): one project's outstanding `AGENT` work, the
- * query `/project todo --agent` projects.
+ * query `/project todo --agent` projects. With a viewer identity the view is
+ * the calling agent's per-actor queue: entries another agent holds a live
+ * claim on drop out (v1.6d).
  * @param db - open ledger database.
  * @param projectId - project whose agent work is listed.
- * @param request - clock override; the kind filter is fixed to {@link AGENT_TODO_EXECUTOR_KINDS}.
+ * @param request - clock and viewer overrides; the kind filter is fixed to {@link AGENT_TODO_EXECUTOR_KINDS}.
  * @returns the resolved agent view.
  */
 export function listAgentTodo(

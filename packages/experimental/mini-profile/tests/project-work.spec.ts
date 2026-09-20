@@ -247,6 +247,27 @@ describe('project-work tools', () => {
     }
   })
 
+  it('next shows each agent its own queue: another holder\'s live claim drops out', async () => {
+    const mounted = await mount((db) => {
+      seedActivePlan(db, TINY_PLAN_TEXT)
+    })
+    try {
+      await run(mounted, 'project_work_claim', { workItemId: 'wi:tiny-proj:AGENT-FREE' }, { agent: agent('agent-1') })
+
+      const other = await run(mounted, 'project_work_next', {}, { agent: agent('agent-2') })
+      expect(other.isError).toBe(false)
+      expect(other.value).toMatchObject({ items: [] })
+      expect(text(other)).toBe('No outstanding agent work in project tiny-proj.')
+
+      const holder = await run(mounted, 'project_work_next', {}, { agent: agent('agent-1') })
+      expect(holder.value).toMatchObject({
+        items: [{ workItemId: 'wi:tiny-proj:AGENT-FREE', activeLease: { workerIdentity: 'agent:agent-1' } }],
+      })
+    } finally {
+      await unmount(mounted)
+    }
+  })
+
   it('claim delivers the configured lease and the bounded packet, never the bearer token', async () => {
     const mounted = await mount((db) => {
       seedActivePlan(db, TINY_PLAN_TEXT)
