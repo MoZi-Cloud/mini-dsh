@@ -18,8 +18,10 @@
  * instances and verification verdicts, `actors` lists the project's
  * registered actors, defined roles, and live assignments, `assignments`
  * lists the project's work assignments with their item, actor, and role
- * labels, and `handoffs` lists the project's recorded handoffs with their
- * item, sender, and recipient labels. The project and plan version
+ * labels, `handoffs` lists the project's recorded handoffs with their
+ * item, sender, and recipient labels, and `reservations` lists the
+ * project's scope reservations with their item, actor, and scope. The
+ * project and plan version
  * resolve through the ledger's plan directory when the command names none. The handler never mutates ledger state, never sends anything to
  * the model, and never executes a verifier command — mutating surfaces stay
  * with their owning writers and later work.
@@ -45,6 +47,7 @@ import {
   readProjectResources,
   readProjectDigest,
   readProjectHandoffs,
+  readProjectScopeReservations,
   readProjectReplay,
   readProjectWorkAssignments,
   readWorkItemHistory,
@@ -60,6 +63,7 @@ import {
   type ResourceRequirement,
   type ReviewedCriterion,
   type Handoff,
+  type ScopeReservation,
   type WorkAssignment,
   type WorkItemHistory,
   type WorkItemReview,
@@ -89,6 +93,7 @@ type ProjectCommand =
   | { readonly kind: 'actors'; readonly projectId: string | undefined }
   | { readonly kind: 'assignments'; readonly projectId: string | undefined }
   | { readonly kind: 'handoffs'; readonly projectId: string | undefined }
+  | { readonly kind: 'reservations'; readonly projectId: string | undefined }
 
 /* v8 ignore next 3 -- the parse step returns a closed union */
 function assertNever(value: never, label: string): never {
@@ -110,6 +115,7 @@ const HELP_TEXT = [
   '/project actors [<project-id>] — list registered actors, defined roles, and live assignments',
   '/project assignments [<project-id>] — list work assignments with their item, actor, and role labels',
   '/project handoffs [<project-id>] — list recorded handoffs with their item, sender, and recipient labels',
+  '/project reservations [<project-id>] — list scope reservations with their item, actor, and scope',
 ].join('\n')
 
 /** The usage hint the command registry shows for /project. */
@@ -127,6 +133,7 @@ const PROJECT_INPUT_HINT = [
   'actors [<project-id>]',
   'assignments [<project-id>]',
   'handoffs [<project-id>]',
+  'reservations [<project-id>]',
 ].join(' | ')
 
 /**
@@ -207,6 +214,11 @@ function parseProjectCommand(rawInput: string): ProjectCommand | undefined {
   if (tokens[0] === 'handoffs') {
     return tokens.length <= 2
       ? { kind: 'handoffs', projectId: tokens[1] }
+      : undefined
+  }
+  if (tokens[0] === 'reservations') {
+    return tokens.length <= 2
+      ? { kind: 'reservations', projectId: tokens[1] }
       : undefined
   }
   return undefined
@@ -744,6 +756,32 @@ function renderHandoffs(projectId: ProjectId, handoffs: readonly Handoff[]): str
 }
 
 /**
+ * Render the project's scope reservations as command output: one line per
+ * reservation with its actor, scope, item, and lifecycle.
+ * @param projectId - the project whose reservations are listed.
+ * @param reservations - the listed reservations, newest-first.
+ * @returns the multi-line command text.
+ */
+function renderReservations(projectId: ProjectId, reservations: readonly ScopeReservation[]): string {
+  if (reservations.length === 0) {
+    return `No scope reservations in project ${projectId}.`
+  }
+  const lines = [
+    `Project ${projectId} — scope reservations, ${reservations.length}:`,
+    ...reservations.map((reservation) => {
+      const lifecycle = reservation.status === 'ACTIVE'
+        ? `expires ${new Date(reservation.expiresAtMs).toISOString()}`
+        : reservation.releasedAtMs === undefined
+          ? 'expired'
+          : `released at ${new Date(reservation.releasedAtMs).toISOString()}`
+      return `- ${reservation.actorKey} holds ${reservation.scopeKind} "${reservation.scopeValue}" `
+        + `on ${reservation.stableKey} — ${lifecycle}`
+    }),
+  ]
+  return lines.join('\n')
+}
+
+/**
  * Execute one parsed `/project` invocation against the mounted ledger.
  * @param ctx - context whose `projectLedger` service owns the opened database.
  * @param rawInput - exact text after the command name.
@@ -821,6 +859,10 @@ function runProjectCommand(ctx: Context, rawInput: string): CommandResult {
       case 'handoffs': {
         const projectId = resolveProjectId(listPlans(db), command.projectId)
         return { kind: 'success', text: renderHandoffs(projectId, readProjectHandoffs(db, projectId)) }
+      }
+      case 'reservations': {
+        const projectId = resolveProjectId(listPlans(db), command.projectId)
+        return { kind: 'success', text: renderReservations(projectId, readProjectScopeReservations(db, projectId)) }
       }
       /* v8 ignore next 2 -- the parse step returns a closed union */
       default: return assertNever(command, 'project command')

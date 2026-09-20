@@ -22,8 +22,11 @@ import {
   provideResourceInstance,
   recordDecision,
   registerActor,
+  releaseScopeReservation,
+  reapExpiredScopeReservations,
   replayProjectEvents,
   requestApproval,
+  reserveScope,
   validatePlanSchema,
   verifyResourceInstance,
   type AcceptanceCriterionId,
@@ -56,6 +59,8 @@ import {
   type ReplayedPlanVersion,
   type ReplayedProjectProjection,
   type ReplayedRole,
+  type ReplayedScopeReservation,
+  type ScopeReservationId,
   type ReplayedWorkAssignment,
   type ReplayedWorkItem,
   type ResourceRequirementId,
@@ -356,6 +361,27 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
       handoffKind: row.handoff_kind as ReplayedHandoff['handoffKind'],
     })
   }
+  const scopeReservations = new Map<ScopeReservationId, ReplayedScopeReservation>()
+  for (const row of db.prepare(
+    'SELECT id, work_item_id, actor_id, scope_kind, scope_value, expires_at_ms, status FROM scope_reservations',
+  ).all() as {
+    id: string
+    work_item_id: string
+    actor_id: string
+    scope_kind: string
+    scope_value: string
+    expires_at_ms: number
+    status: string
+  }[]) {
+    scopeReservations.set(brandString<ScopeReservationId>(row.id), {
+      workItemId: brandString<WorkItemId>(row.work_item_id),
+      actorId: brandString<ActorId>(row.actor_id),
+      scopeKind: row.scope_kind as ReplayedScopeReservation['scopeKind'],
+      scopeValue: row.scope_value,
+      expiresAtMs: row.expires_at_ms,
+      status: row.status as ReplayedScopeReservation['status'],
+    })
+  }
   return {
     planVersions,
     workItems,
@@ -372,6 +398,7 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
     actorRoles,
     workAssignments,
     handoffs,
+    scopeReservations,
   }
 }
 
@@ -703,6 +730,7 @@ describe('replayProjectEvents', () => {
       actorRoles: new Map(),
       workAssignments: new Map(),
       handoffs: new Map(),
+      scopeReservations: new Map(),
     })
     db.close()
   })
@@ -1542,6 +1570,220 @@ describe('replayProjectEvents', () => {
     expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
       .toContain('must name exactly one handoff recipient')
     setPayload(handoff.sequenceNo, baseHandoff)
+    db.close()
+  })
+
+  it('replays the scope-reservation domain to the materialized projection', async () => {
+    const db = await goldenLedger()
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 20, actorRef: 'tester' })
+    const second = registerActor(db, PROJECT, {
+      actorKey: 'second', actorKind: 'AGENT', displayName: 'Second',
+    }, { nowMs: 21, actorRef: 'tester' })
+    const item = brandString<WorkItemId>('wi:mini-dsh:IMPORT-001')
+    const active = reserveScope(db, {
+      workItemId: item,
+      actorId: lane.actorId,
+      scopeKind: 'PATH',
+      scopeValue: 'packages/ledger/src',
+      expiresAtMs: 900,
+    }, { nowMs: 30, actorRef: 'tester' })
+    reserveScope(db, {
+      workItemId: item,
+      actorId: second.actorId,
+      scopeKind: 'PATH',
+      scopeValue: 'packages/ledger/tests',
+      expiresAtMs: 900,
+    }, { nowMs: 31, actorRef: 'tester' })
+    const released = releaseScopeReservation(db, active.reservationId, { nowMs: 32, actorRef: 'tester' })
+    const reaped = reapExpiredScopeReservations(db, {
+      nowMs: 41,
+      actorRef: 'tester',
+    })
+    expect(reaped.map(entry => entry.reservationId)).toEqual([])
+
+    const replayed = replayProjectEvents(db, PROJECT)
+    expect(replayed).toEqual(materializedProjection(db))
+    expect(replayed.scopeReservations.get(active.reservationId)).toEqual({
+      workItemId: item,
+      actorId: lane.actorId,
+      scopeKind: 'PATH',
+      scopeValue: 'packages/ledger/src',
+      expiresAtMs: 900,
+      status: 'RELEASED',
+    })
+    expect(released.releasedAtMs).toBe(32)
+    db.close()
+  })
+
+  it('replays scope reservation events through their lifecycle', async () => {
+    const db = await goldenLedger()
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const item = brandString<WorkItemId>('wi:mini-dsh:IMPORT-001')
+    appendProjectEvent(db, PROJECT, 'scope/reserved', {
+      reservationId: 'sr:mini-dsh:17',
+      workItemId: item,
+      actorId: lane.actorId,
+      scopeKind: 'PATH',
+      scopeValue: 'src/foo.ts',
+      expiresAtMs: 900,
+    }, { entityType: 'scope_reservation', entityId: 'sr:mini-dsh:17', nowMs: 4 })
+    expect(replayProjectEvents(db, PROJECT).scopeReservations.get(brandString<ScopeReservationId>('sr:mini-dsh:17')))
+      .toEqual({
+        workItemId: item,
+        actorId: lane.actorId,
+        scopeKind: 'PATH',
+        scopeValue: 'src/foo.ts',
+        expiresAtMs: 900,
+        status: 'ACTIVE',
+      })
+    appendProjectEvent(db, PROJECT, 'scope/released', {
+      reservationId: 'sr:mini-dsh:17',
+    }, { entityType: 'scope_reservation', entityId: 'sr:mini-dsh:17', nowMs: 6 })
+    expect(replayProjectEvents(db, PROJECT).scopeReservations.get(brandString<ScopeReservationId>('sr:mini-dsh:17')))
+      .toEqual({
+        workItemId: item,
+        actorId: lane.actorId,
+        scopeKind: 'PATH',
+        scopeValue: 'src/foo.ts',
+        expiresAtMs: 900,
+        status: 'RELEASED',
+      })
+    appendProjectEvent(db, PROJECT, 'scope/reserved', {
+      reservationId: 'sr:mini-dsh:19',
+      workItemId: item,
+      actorId: lane.actorId,
+      scopeKind: 'PATH',
+      scopeValue: 'src/bar.ts',
+      expiresAtMs: 800,
+    }, { entityType: 'scope_reservation', entityId: 'sr:mini-dsh:19', nowMs: 5 })
+    appendProjectEvent(db, PROJECT, 'scope/expired', {
+      reservationId: 'sr:mini-dsh:19',
+    }, { entityType: 'scope_reservation', entityId: 'sr:mini-dsh:19', nowMs: 7 })
+    expect(replayProjectEvents(db, PROJECT).scopeReservations.get(brandString<ScopeReservationId>('sr:mini-dsh:19')))
+      .toEqual({
+        workItemId: item,
+        actorId: lane.actorId,
+        scopeKind: 'PATH',
+        scopeValue: 'src/bar.ts',
+        expiresAtMs: 800,
+        status: 'EXPIRED',
+      })
+    db.close()
+  })
+
+  it('fails replay on scope/reserved events naming unreplayed entities or a held scope', async () => {
+    const db = await goldenLedger()
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'tester' })
+    const item = brandString<WorkItemId>('wi:mini-dsh:IMPORT-001')
+    const append = (payload: Record<string, unknown>): ProjectEventEnvelope =>
+      appendProjectEvent(db, PROJECT, 'scope/reserved', payload, {
+        entityType: 'scope_reservation', entityId: 'sr:mini-dsh:ghost', nowMs: 2,
+      })
+    const appendReleased = (reservationId: string): ProjectEventEnvelope =>
+      appendProjectEvent(db, PROJECT, 'scope/released', { reservationId }, {
+        entityType: 'scope_reservation', entityId: reservationId, nowMs: 3,
+      })
+    const base: Record<string, unknown> = {
+      reservationId: 'sr:mini-dsh:ghost', workItemId: item,
+      actorId: lane.actorId, scopeKind: 'PATH', scopeValue: 'src/ghost.ts', expiresAtMs: 900,
+    }
+    const deleteLast = (): void => {
+      db.prepare('DELETE FROM project_events WHERE sequence_no = (SELECT MAX(sequence_no) FROM project_events)').run()
+    }
+    append({ ...base, workItemId: 'wi:mini-dsh:ghost' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "workItemId" names no replayed work item (wi:mini-dsh:ghost)')
+    deleteLast()
+    append({ ...base, actorId: 'actor:mini-dsh:ghost' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "actorId" names no replayed actor (actor:mini-dsh:ghost)')
+    deleteLast()
+    append(base)
+    append({ ...base, reservationId: 'sr:mini-dsh:second' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('reserves PATH scope "src/ghost.ts" while active reservation "sr:mini-dsh:ghost" already holds it')
+    deleteLast()
+    // A released reservation frees the scope: re-reserving replays clean.
+    appendReleased('sr:mini-dsh:ghost')
+    append({ ...base, reservationId: 'sr:mini-dsh:again' })
+    expect(replayProjectEvents(db, PROJECT).scopeReservations.size).toBe(2)
+    db.close()
+  })
+
+  it('fails replay on release and expiry events naming unknown or finished reservations', async () => {
+    const db = await goldenLedger()
+    const lane = registerActor(db, PROJECT, {
+      actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+    }, { nowMs: 10, actorRef: 'tester' })
+    appendProjectEvent(db, PROJECT, 'scope/reserved', {
+      reservationId: 'sr:mini-dsh:twice',
+      workItemId: 'wi:mini-dsh:IMPORT-001',
+      actorId: lane.actorId,
+      scopeKind: 'PATH',
+      scopeValue: 'src/twice.ts',
+      expiresAtMs: 900,
+    }, { entityType: 'scope_reservation', entityId: 'sr:mini-dsh:twice', nowMs: 2 })
+    const appendEnd = (eventType: 'scope/released' | 'scope/expired', reservationId: string): ProjectEventEnvelope =>
+      appendProjectEvent(db, PROJECT, eventType, { reservationId }, {
+        entityType: 'scope_reservation', entityId: reservationId, nowMs: 3,
+      })
+    const deleteLast = (): void => {
+      db.prepare('DELETE FROM project_events WHERE sequence_no = (SELECT MAX(sequence_no) FROM project_events)').run()
+    }
+    appendEnd('scope/released', 'sr:mini-dsh:ghost')
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "reservationId" names no replayed scope reservation (sr:mini-dsh:ghost)')
+    deleteLast()
+    appendEnd('scope/expired', 'sr:mini-dsh:ghost')
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "reservationId" names no replayed scope reservation (sr:mini-dsh:ghost)')
+    deleteLast()
+    appendEnd('scope/released', 'sr:mini-dsh:twice')
+    appendEnd('scope/released', 'sr:mini-dsh:twice')
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('releases reservation "sr:mini-dsh:twice" that is no longer active')
+    deleteLast()
+    appendEnd('scope/expired', 'sr:mini-dsh:twice')
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('expires reservation "sr:mini-dsh:twice" that is no longer active')
+    db.close()
+  })
+
+  it('fails replay on scope payloads with missing or mistyped fields', async () => {
+    const db = await goldenLedger()
+    const setPayload = (sequenceNo: number, payload: unknown): void => {
+      db.prepare('UPDATE project_events SET payload_json = ? WHERE project_id = ? AND sequence_no = ?')
+        .run(JSON.stringify(payload), PROJECT, sequenceNo)
+    }
+    const base: Record<string, unknown> = {
+      reservationId: 'sr:mini-dsh:17',
+      workItemId: 'wi:mini-dsh:IMPORT-001',
+      actorId: 'actor:mini-dsh:holder',
+      scopeKind: 'PATH',
+      scopeValue: 'src/x.ts',
+      expiresAtMs: 900,
+    }
+    const reserved = appendProjectEvent(db, PROJECT, 'scope/reserved', base, {
+      entityType: 'scope_reservation', entityId: 'sr:mini-dsh:17', nowMs: 2,
+    })
+    for (const field of ['reservationId', 'workItemId', 'actorId', 'scopeKind', 'scopeValue', 'expiresAtMs']) {
+      const payload = Object.fromEntries(Object.entries(base).filter(([key]) => key !== field))
+      setPayload(reserved.sequenceNo, payload)
+      expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message).toContain(`payload field "${field}"`)
+    }
+    setPayload(reserved.sequenceNo, { ...base, scopeKind: 'HOST' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "scopeKind" is not a scope-reservation kind: "HOST"')
+    setPayload(reserved.sequenceNo, { ...base, expiresAtMs: 'soon' })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('payload field "expiresAtMs" must be a number')
+    setPayload(reserved.sequenceNo, base)
     db.close()
   })
 })

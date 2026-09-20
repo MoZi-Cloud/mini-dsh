@@ -20,6 +20,7 @@ import {
   planDoctor,
   recordDecision,
   recordHandoff,
+  reserveScope,
   openResourceRequirement,
   provideResourceInstance,
   registerActor,
@@ -107,8 +108,8 @@ describe('planDoctor', () => {
         versionNo: 1,
         status: 'DRAFT',
         projectId: 'mini-dsh',
-        databaseUserVersion: 7,
-        eventFormatVersion: 7,
+        databaseUserVersion: 8,
+        eventFormatVersion: 8,
         baselineRepoHead: null,
         baselineWorktreeHash: null,
         counts: { phases: 13, workItems: 15, relations: 14, criteria: 16, events: 16 },
@@ -269,7 +270,7 @@ describe('planDoctor', () => {
       const issues = planDoctor(unreadable, GOLDEN_VERSION).issues
       expect(issues).toHaveLength(1)
       expect(issues[0]?.code).toBe('event-timeline-unreadable')
-      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 7')
+      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 8')
     } finally {
       unreadable.close()
     }
@@ -706,6 +707,71 @@ describe('planDoctor', () => {
       ])
     } finally {
       handoffDrift.close()
+    }
+
+    const scopeDrift = await goldenLedger()
+    try {
+      const lane = registerActor(scopeDrift, brandString<ProjectId>('mini-dsh'), {
+        actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
+      }, { nowMs: 40, actorRef: 'doctor/agent' })
+      const handActor = registerActor(scopeDrift, brandString<ProjectId>('mini-dsh'), {
+        actorKey: 'hand', actorKind: 'SERVICE', displayName: 'Hand row',
+      }, { nowMs: 41, actorRef: 'doctor/agent' })
+      const held = reserveScope(scopeDrift, {
+        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
+        actorId: lane.actorId,
+        scopeKind: 'PATH',
+        scopeValue: 'src/one.ts',
+        expiresAtMs: 900,
+      }, { nowMs: 42, actorRef: 'doctor/agent' })
+      const second = reserveScope(scopeDrift, {
+        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
+        actorId: lane.actorId,
+        scopeKind: 'PATH',
+        scopeValue: 'src/two.ts',
+        expiresAtMs: 900,
+      }, { nowMs: 43, actorRef: 'doctor/agent' })
+      scopeDrift.prepare('UPDATE scope_reservations SET actor_id = ?, scope_value = ?, status = ?, released_at_ms = 5 WHERE id = ?')
+        .run(handActor.actorId, 'src/tampered.ts', 'RELEASED', held.reservationId)
+      scopeDrift.prepare('UPDATE scope_reservations SET work_item_id = ? WHERE id = ?')
+        .run('wi:mini-dsh:SCHEMA-001', second.reservationId)
+      scopeDrift.prepare(
+        'INSERT INTO scope_reservations '
+        + '(id, project_id, work_item_id, actor_id, scope_kind, scope_value, acquired_at_ms, expires_at_ms, status) '
+        + "VALUES ('sr:mini-dsh:hand', 'mini-dsh', 'wi:mini-dsh:DB-001', ?, 'PATH', 'src/ghost.ts', 44, 900, 'ACTIVE')",
+      ).run(handActor.actorId)
+      const issues = planDoctor(scopeDrift, GOLDEN_VERSION).issues
+      expect(issues).toEqual([
+        {
+          code: 'projection-drift',
+          refId: held.reservationId,
+          message: `scope reservation "${held.reservationId}" materializes actor "${handActor.actorId}" over item "wi:mini-dsh:DB-001" `
+            + `but replays actor "${lane.actorId}" over item "wi:mini-dsh:DB-001"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: held.reservationId,
+          message: `scope reservation "${held.reservationId}" materializes scope PATH "src/tampered.ts" but replays scope PATH "src/one.ts"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: held.reservationId,
+          message: `scope reservation "${held.reservationId}" has materialized status RELEASED but replays to ACTIVE`,
+        },
+        {
+          code: 'projection-drift',
+          refId: second.reservationId,
+          message: `scope reservation "${second.reservationId}" materializes actor "${lane.actorId}" over item "wi:mini-dsh:SCHEMA-001" `
+            + `but replays actor "${lane.actorId}" over item "wi:mini-dsh:DB-001"`,
+        },
+        {
+          code: 'projection-drift',
+          refId: 'sr:mini-dsh:hand',
+          message: 'scope reservation "sr:mini-dsh:hand" is materialized but no replayed scope/reserved event',
+        },
+      ])
+    } finally {
+      scopeDrift.close()
     }
 
     const rawCriterion = await goldenLedger()

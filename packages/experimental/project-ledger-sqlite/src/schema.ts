@@ -11,8 +11,10 @@
  * §25/§26/§27: requirements, instances, verifications), its actor/role
  * layout (blueprint §3/§4: actors, roles, and the assignments between them),
  * the v1.6d work-assignment layout (blueprint §18: an actor's duty on
- * one work item), and the v1.6d handoff layout (blueprint §28: one recorded
- * pass of a work item between actors).
+ * one work item), the v1.6d handoff layout (blueprint §28: one recorded
+ * pass of a work item between actors), and the v1.6d stage-B scope
+ * reservation layout (blueprint §21: an actor's exclusive claim on one
+ * project scope).
  *
  * The database is a source of truth, not a rebuildable index: a stamped
  * `user_version` newer than this build rejects, upgrades advance one
@@ -115,6 +117,12 @@ export const PROJECT_LEDGER_MIGRATIONS: readonly ProjectLedgerMigration[] = [
     toVersion: 7,
     description: 'v1.6d handoff domain (handoffs)',
     apply: createHandoffTables,
+  },
+  {
+    fromVersion: 7,
+    toVersion: 8,
+    description: 'v1.6d stage-B scope-reservation domain (scope reservations)',
+    apply: createScopeReservationTables,
   },
 ]
 
@@ -737,5 +745,40 @@ function createHandoffTables(db: DatabaseSync): void {
     ) STRICT;
     CREATE INDEX IF NOT EXISTS idx_handoffs_item
       ON handoffs(work_item_id, recorded_at_ms);
+  `)
+}
+
+/**
+ * Materialize the v1.6d stage-B scope-reservation table (blueprint §21,
+ * adapted like the earlier domains: `project_id` stays because the scope's
+ * uniqueness is project-scoped, foreign keys reference the work-item and
+ * actor rows directly, the blueprint's `mode` column is dropped — every
+ * reservation ships exclusive — and the unvalued `scope_kind` closes
+ * uppercase to the ledger convention). One project scope holds at most one
+ * active reservation, enforced by the partial unique index; the blueprint's
+ * `idx_scope_active` ships as-is and the expiry index mirrors the lease
+ * reaper's scan. Idempotent by design.
+ */
+function createScopeReservationTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scope_reservations (
+      id             TEXT PRIMARY KEY,
+      project_id     TEXT NOT NULL,
+      work_item_id   TEXT NOT NULL REFERENCES work_items(id),
+      actor_id       TEXT NOT NULL REFERENCES actors(id),
+      scope_kind     TEXT NOT NULL CHECK(scope_kind IN ('PATH')),
+      scope_value    TEXT NOT NULL,
+      acquired_at_ms INTEGER NOT NULL,
+      expires_at_ms  INTEGER NOT NULL,
+      released_at_ms INTEGER,
+      status         TEXT NOT NULL CHECK(status IN ('ACTIVE','RELEASED','EXPIRED'))
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_scope_active
+      ON scope_reservations(project_id, status, scope_kind, scope_value);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_one_active_reservation_per_scope
+      ON scope_reservations(project_id, scope_kind, scope_value)
+      WHERE status = 'ACTIVE';
+    CREATE INDEX IF NOT EXISTS idx_scope_reservation_expiry
+      ON scope_reservations(status, expires_at_ms);
   `)
 }

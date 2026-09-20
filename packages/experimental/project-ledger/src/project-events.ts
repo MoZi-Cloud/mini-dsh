@@ -21,6 +21,7 @@ import type { ActorId, ActorRoleId, RoleId } from './actors.js'
 import type { ApprovalId } from './approvals.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { HandoffId } from './handoffs.js'
+import type { ScopeReservationId } from './scope-reservations.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
 import type { WorkAssignmentId } from './work-assignments.js'
 import type { WorkExternalBlockerId } from './versioning.js'
@@ -223,6 +224,22 @@ export type HandoffKind = (typeof HANDOFF_KINDS)[number]
 const HANDOFF_KIND_SET: ReadonlySet<string> = new Set<string>(HANDOFF_KINDS)
 
 /**
+ * The scopes a `scope/reserved` payload may name (blueprint §21's
+ * `scope_kind`, uppercased to the ledger convention). The blueprint leaves
+ * `scope_kind` unvalued; this build closes it to the one scope the ledger's
+ * agents coordinate on — a repository path, where the value may name a file
+ * or a directory and overlap is judged at the equal value. Owned here (not
+ * in the scope-reservations module) because the payload codec validates it
+ * on read.
+ */
+export const SCOPE_RESERVATION_KINDS = ['PATH'] as const
+
+/** A kind of one reserved scope. */
+export type ScopeReservationKind = (typeof SCOPE_RESERVATION_KINDS)[number]
+
+const SCOPE_RESERVATION_KIND_SET: ReadonlySet<string> = new Set<string>(SCOPE_RESERVATION_KINDS)
+
+/**
  * The event envelope version recorded in the `event_format_version` column of
  * every `project_events` row — the single home of this constant. Adding a
  * required vocabulary entry bumps it together with the codec; purely
@@ -231,7 +248,7 @@ const HANDOFF_KIND_SET: ReadonlySet<string> = new Set<string>(HANDOFF_KINDS)
  * (the vocabulary is cumulative), and only a row stamped newer than this
  * build rejects.
  */
-export const PROJECT_EVENT_FORMAT_VERSION = 7
+export const PROJECT_EVENT_FORMAT_VERSION = 8
 
 /**
  * The event vocabulary. Every listed type is required: rows carry
@@ -242,8 +259,9 @@ export const PROJECT_EVENT_FORMAT_VERSION = 7
  * `project/work-packet-prepared`, `decision/requested`,
  * `decision/recorded`, `approval/requested`, `approval/decided`,
  * `resource/required`, `resource/provided`, `resource/verified`,
- * `actor/registered`, `role/defined`, `role/assigned`, `work/assigned`, and
- * `handoff/recorded`), and a
+ * `actor/registered`, `role/defined`, `role/assigned`, `work/assigned`,
+ * `handoff/recorded`, `scope/reserved`, `scope/released`, and
+ * `scope/expired`), and a
  * reader that does not know the type
  * fails closed. `plan/version-superseded` and `baseline/drift-detected` are
  * validated without state change: their writers own lifecycle columns and
@@ -276,6 +294,9 @@ export const PROJECT_EVENT_TYPES = [
   'role/assigned',
   'work/assigned',
   'handoff/recorded',
+  'scope/reserved',
+  'scope/released',
+  'scope/expired',
 ] as const
 
 /** A vocabulary type of the v1 event format. */
@@ -679,6 +700,22 @@ export interface ReplayedHandoff {
   readonly handoffKind: HandoffKind
 }
 
+/**
+ * Scope-reservation facts the `scope/*` events replay; the reservation's
+ * `acquired_at_ms` is the reserve event's `createdAtMs`, and the lifecycle
+ * status folds from the event that moved it (`scope/released`,
+ * `scope/expired`). The release and expiry stamps stay with the materialized
+ * row, like the decision domain's decision text.
+ */
+export interface ReplayedScopeReservation {
+  readonly workItemId: WorkItemId
+  readonly actorId: ActorId
+  readonly scopeKind: ScopeReservationKind
+  readonly scopeValue: string
+  readonly expiresAtMs: number
+  readonly status: 'ACTIVE' | 'RELEASED' | 'EXPIRED'
+}
+
 /** The projection replaying a project's events rebuilds. */
 export interface ReplayedProjectProjection {
   readonly planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>
@@ -704,6 +741,8 @@ export interface ReplayedProjectProjection {
   readonly workAssignments: ReadonlyMap<WorkAssignmentId, ReplayedWorkAssignment>
   /** The handoff domain, rebuilt from the `handoff/recorded` event. */
   readonly handoffs: ReadonlyMap<HandoffId, ReplayedHandoff>
+  /** The scope-reservation domain, rebuilt from the `scope/*` events. */
+  readonly scopeReservations: ReadonlyMap<ScopeReservationId, ReplayedScopeReservation>
 }
 
 /**
@@ -733,6 +772,7 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
   const actorRoles = new Map<ActorRoleId, ReplayedActorRole>()
   const workAssignments = new Map<WorkAssignmentId, ReplayedWorkAssignment>()
   const handoffs = new Map<HandoffId, ReplayedHandoff>()
+  const scopeReservations = new Map<ScopeReservationId, ReplayedScopeReservation>()
   // Validation state for the supersede applier: a version retires once.
   const supersededPlanVersionIds = new Set<PlanVersionId>()
   for (const event of readProjectEvents(db, projectId)) {
@@ -1109,6 +1149,62 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         })
         break
       }
+      case 'scope/reserved': {
+        const payload = decodeScopeReservedPayload(event)
+        requireReplayedWorkItem(workItems, payload.workItemId, event)
+        requireReplayedActor(actors, payload.actorId, event)
+        for (const [reservationId, reservation] of scopeReservations) {
+          const replayedKind: string = reservation.scopeKind
+          const replayedValue: string = reservation.scopeValue
+          if (
+            replayedKind === payload.scopeKind
+            && replayedValue === payload.scopeValue
+            && reservation.status === 'ACTIVE'
+          ) {
+            throw new ProjectEventError(
+              'malformed-event-payload',
+              `project event ${event.sequenceNo} of "${event.projectId}" reserves `
+                + `${payload.scopeKind} scope "${payload.scopeValue}" while active reservation `
+                + `"${reservationId}" already holds it`,
+            )
+          }
+        }
+        scopeReservations.set(payload.reservationId, {
+          workItemId: payload.workItemId,
+          actorId: payload.actorId,
+          scopeKind: payload.scopeKind,
+          scopeValue: payload.scopeValue,
+          expiresAtMs: payload.expiresAtMs,
+          status: 'ACTIVE',
+        })
+        break
+      }
+      case 'scope/released': {
+        const payload = decodeScopeEndedPayload(event)
+        const replayed = requireReplayedScopeReservation(scopeReservations, payload.reservationId, event)
+        if (replayed.status !== 'ACTIVE') {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" releases reservation `
+              + `"${payload.reservationId}" that is no longer active`,
+          )
+        }
+        scopeReservations.set(payload.reservationId, { ...replayed, status: 'RELEASED' })
+        break
+      }
+      case 'scope/expired': {
+        const payload = decodeScopeEndedPayload(event)
+        const replayed = requireReplayedScopeReservation(scopeReservations, payload.reservationId, event)
+        if (replayed.status !== 'ACTIVE') {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" expires reservation `
+              + `"${payload.reservationId}" that is no longer active`,
+          )
+        }
+        scopeReservations.set(payload.reservationId, { ...replayed, status: 'EXPIRED' })
+        break
+      }
       default:
         break
     }
@@ -1129,6 +1225,7 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
     actorRoles,
     workAssignments,
     handoffs,
+    scopeReservations,
   }
 }
 
@@ -1288,6 +1385,23 @@ function requireReplayedRole(
       'malformed-event-payload',
       `project event ${event.sequenceNo} of "${event.projectId}" payload field "roleId" `
         + `names no replayed role (${roleId})`,
+    )
+  }
+  return replayed
+}
+
+/** Fail closed when a payload names a scope reservation the fold has not replayed. */
+function requireReplayedScopeReservation(
+  scopeReservations: ReadonlyMap<ScopeReservationId, ReplayedScopeReservation>,
+  reservationId: ScopeReservationId,
+  event: ProjectEventEnvelope,
+): ReplayedScopeReservation {
+  const replayed = scopeReservations.get(reservationId)
+  if (replayed === undefined) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "reservationId" `
+        + `names no replayed scope reservation (${reservationId})`,
     )
   }
   return replayed
@@ -1549,6 +1663,21 @@ interface HandoffRecordedPayload {
   readonly summary: string
   readonly artifactRefsJson: string | undefined
   readonly memoryRefsJson: string | undefined
+}
+
+/** Payload facts of one `scope/reserved` event; the acquired stamp is the envelope's `createdAtMs`. */
+interface ScopeReservedPayload {
+  readonly reservationId: ScopeReservationId
+  readonly workItemId: WorkItemId
+  readonly actorId: ActorId
+  readonly scopeKind: ScopeReservationKind
+  readonly scopeValue: string
+  readonly expiresAtMs: number
+}
+
+/** Payload facts of one `scope/released` or `scope/expired` event; the stamp is the envelope's `createdAtMs`. */
+interface ScopeEndedPayload {
+  readonly reservationId: ScopeReservationId
 }
 
 /** The event payload must be a JSON object for appliers to read fields from. */
@@ -2378,5 +2507,43 @@ function decodeHandoffRecordedPayload(event: ProjectEventEnvelope): HandoffRecor
     summary: requiredString(fields, event, 'summary'),
     artifactRefsJson: optionalString(fields, event, 'artifactRefsJson'),
     memoryRefsJson: optionalString(fields, event, 'memoryRefsJson'),
+  }
+}
+
+/** Read one required scope-kind payload field. */
+function requiredScopeKind(
+  fields: Record<string, unknown>,
+  event: ProjectEventEnvelope,
+  field: string,
+): ScopeReservationKind {
+  const value = requiredString(fields, event, field)
+  if (!SCOPE_RESERVATION_KIND_SET.has(value)) {
+    throw new ProjectEventError(
+      'malformed-event-payload',
+      `project event ${event.sequenceNo} of "${event.projectId}" payload field "${field}" `
+        + `is not a scope-reservation kind: ${JSON.stringify(value)}`,
+    )
+  }
+  return value as ScopeReservationKind
+}
+
+/** Decode one `scope/reserved` payload, failing closed on missing or mistyped fields. */
+function decodeScopeReservedPayload(event: ProjectEventEnvelope): ScopeReservedPayload {
+  const fields = payloadFields(event)
+  return {
+    reservationId: requiredString(fields, event, 'reservationId') as ScopeReservationId,
+    workItemId: requiredString(fields, event, 'workItemId') as WorkItemId,
+    actorId: requiredString(fields, event, 'actorId') as ActorId,
+    scopeKind: requiredScopeKind(fields, event, 'scopeKind'),
+    scopeValue: requiredString(fields, event, 'scopeValue'),
+    expiresAtMs: requiredNumber(fields, event, 'expiresAtMs'),
+  }
+}
+
+/** Decode one `scope/released` or `scope/expired` payload, failing closed on missing or mistyped fields. */
+function decodeScopeEndedPayload(event: ProjectEventEnvelope): ScopeEndedPayload {
+  const fields = payloadFields(event)
+  return {
+    reservationId: requiredString(fields, event, 'reservationId') as ScopeReservationId,
   }
 }

@@ -6,7 +6,8 @@
  * inside one project, no lease row still records ACTIVE past its own expiry,
  * the event timeline is readable by this codec, and the replayed projection
  * agrees with the materialized tables (work items, criteria, leases, the
- * decision, approval, resource, actor/role, work-assignment, and handoff
+ * decision, approval, resource, actor/role, work-assignment, handoff, and
+ * scope-reservation
  * domains). The doctor never
  * mutates and never executes a verifier command; it reports every
  * independent issue it finds, so a caller sees the whole picture in one
@@ -25,6 +26,7 @@ import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId 
 import type { ActorId, ActorRoleId, RoleId } from './actors.js'
 import type { WorkAssignmentId } from './work-assignments.js'
 import type { HandoffId } from './handoffs.js'
+import type { ScopeReservationId } from './scope-reservations.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
 import { PROJECT_EVENT_FORMAT_VERSION, replayProjectEvents, type ReplayedHandoff, type ReplayedProjectProjection } from './project-events.js'
@@ -146,6 +148,16 @@ interface HandoffFactsRow {
 interface LeaseExpiryRow {
   readonly id: string
   readonly expires_at_ms: number
+}
+
+/** One `scope_reservations` row the parity check reads, in select order. */
+interface ScopeReservationFactsRow {
+  readonly id: string
+  readonly work_item_id: string
+  readonly actor_id: string
+  readonly scope_kind: string
+  readonly scope_value: string
+  readonly status: string
 }
 
 /**
@@ -710,7 +722,46 @@ function collectProjectionDrift(
       })
     }
   }
+  const scopeReservationRows = db.prepare(
+    'SELECT r.id, r.work_item_id, r.actor_id, r.scope_kind, r.scope_value, r.status FROM scope_reservations r '
+    + 'WHERE r.project_id = ? ORDER BY r.id',
+  ).all(projectId) as unknown as ScopeReservationFactsRow[]
+  for (const row of scopeReservationRows) {
+    const replayed = projection.scopeReservations.get(brandString<ScopeReservationId>(row.id))
+    if (replayed === undefined) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `scope reservation "${row.id}" is materialized but no replayed scope/reserved event`,
+      })
+      continue
+    }
+    if (replayed.workItemId !== row.work_item_id || replayed.actorId !== row.actor_id) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `scope reservation "${row.id}" materializes actor "${row.actor_id}" over item "${row.work_item_id}" `
+          + `but replays actor "${replayed.actorId}" over item "${replayed.workItemId}"`,
+      })
+    }
+    if (replayed.scopeKind !== row.scope_kind || replayed.scopeValue !== row.scope_value) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `scope reservation "${row.id}" materializes scope ${row.scope_kind} "${row.scope_value}" `
+          + `but replays scope ${replayed.scopeKind} "${replayed.scopeValue}"`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      issues.push({
+        code: 'projection-drift',
+        refId: row.id,
+        message: `scope reservation "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
 }
+
 
 /** Fail the recipient check when the row and the replay hand off to different actors or roles. */
 function handoffRecipientMatches(replayed: ReplayedHandoff, row: HandoffFactsRow): boolean {

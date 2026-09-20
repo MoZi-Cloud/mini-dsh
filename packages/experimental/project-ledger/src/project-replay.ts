@@ -21,6 +21,7 @@ import type { HandoffId } from './handoffs.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
+import type { ScopeReservationId } from './scope-reservations.js'
 import type { WorkAssignmentId } from './work-assignments.js'
 import { replayProjectEvents, type ReplayedProjectProjection } from './project-events.js'
 
@@ -49,6 +50,7 @@ export interface ProjectReplayEntityCounts {
   readonly actorRoles: number
   readonly workAssignments: number
   readonly handoffs: number
+  readonly scopeReservations: number
 }
 
 /** What the fold rebuilt, plus the packet recipes that have no materialized table. */
@@ -205,6 +207,16 @@ interface HandoffFactsRow {
   readonly handoff_kind: string
 }
 
+/** One `scope_reservations` row the audit reads, in select order. */
+interface ScopeReservationFactsRow {
+  readonly id: string
+  readonly work_item_id: string
+  readonly actor_id: string
+  readonly scope_kind: string
+  readonly scope_value: string
+  readonly status: string
+}
+
 /**
  * Audit one project's ledger integrity read-only: fold the project's event
  * timeline and compare the rebuilt projection with the materialized tables,
@@ -272,6 +284,10 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     'SELECT h.id, h.work_item_id, h.from_actor_id, h.to_actor_id, h.to_role_id, h.handoff_kind FROM handoffs h '
     + 'JOIN work_items w ON w.id = h.work_item_id WHERE w.project_id = ? ORDER BY h.id',
   ).all(projectId) as unknown as HandoffFactsRow[]
+  const scopeReservationRows = db.prepare(
+    'SELECT r.id, r.work_item_id, r.actor_id, r.scope_kind, r.scope_value, r.status FROM scope_reservations r '
+    + 'WHERE r.project_id = ? ORDER BY r.id',
+  ).all(projectId) as unknown as ScopeReservationFactsRow[]
   const materialized: ProjectReplayEntityCounts = {
     planVersions: versionRows.length,
     workItems: itemRows.length,
@@ -288,6 +304,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
     actorRoles: assignmentRows.length,
     workAssignments: workAssignmentRows.length,
     handoffs: handoffRows.length,
+    scopeReservations: scopeReservationRows.length,
   }
   let projection: ReplayedProjectProjection
   try {
@@ -316,6 +333,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
   collectActorDrift(actorRows, roleRows, assignmentRows, projection, drift)
   collectWorkAssignmentDrift(workAssignmentRows, projection, drift)
   collectHandoffDrift(handoffRows, projection, drift)
+  collectScopeReservationDrift(scopeReservationRows, projection, drift)
   return {
     outcome: 'compared',
     projectId,
@@ -338,6 +356,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
       actorRoles: projection.actorRoles.size,
       workAssignments: projection.workAssignments.size,
       handoffs: projection.handoffs.size,
+      scopeReservations: projection.scopeReservations.size,
     },
     materialized,
     drift,
@@ -859,4 +878,49 @@ function collectHandoffDrift(
     }
   }
   pushReplayOnlyDrift(replayedIds, drift, refId => `handoff "${refId}" replays from a handoff/recorded event but no row is materialized`)
+}
+
+/**
+ * Compare the scope-reservation family, both directions: existence, then the
+ * item and actor references, the reserved scope, and the lifecycle status.
+ */
+function collectScopeReservationDrift(
+  rows: readonly ScopeReservationFactsRow[],
+  projection: ReplayedProjectProjection,
+  drift: ProjectReplayDrift[],
+): void {
+  const replayedIds = new Set(projection.scopeReservations.keys())
+  for (const row of rows) {
+    const id = brandString<ScopeReservationId>(row.id)
+    const replayed = projection.scopeReservations.get(id)
+    if (replayed === undefined) {
+      drift.push({
+        refId: row.id,
+        message: `scope reservation "${row.id}" is materialized but no scope/reserved event replays it`,
+      })
+      continue
+    }
+    replayedIds.delete(id)
+    if (replayed.workItemId !== row.work_item_id || replayed.actorId !== row.actor_id) {
+      drift.push({
+        refId: row.id,
+        message: `scope reservation "${row.id}" materializes actor "${row.actor_id}" over item "${row.work_item_id}" `
+          + `but replays actor "${replayed.actorId}" over item "${replayed.workItemId}"`,
+      })
+    }
+    if (replayed.scopeKind !== row.scope_kind || replayed.scopeValue !== row.scope_value) {
+      drift.push({
+        refId: row.id,
+        message: `scope reservation "${row.id}" materializes ${row.scope_kind} scope "${row.scope_value}" `
+          + `but replays ${replayed.scopeKind} scope "${replayed.scopeValue}"`,
+      })
+    }
+    if (replayed.status !== row.status) {
+      drift.push({
+        refId: row.id,
+        message: `scope reservation "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedIds, drift, refId => `scope reservation "${refId}" replays from a scope/reserved event but no row is materialized`)
 }

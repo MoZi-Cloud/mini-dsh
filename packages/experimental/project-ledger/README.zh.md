@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core 的 plan 文档接缝。`parsePlanDocument` 解析 YAML，拒绝重复键、锚点、别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用与关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝 fail-closed 重放；readiness 与租约接缝仲裁可领取性；`buildWorkPacket` 准备有界 WorkPacket；todo 视图按 executor 划分工作；supersede 与 drift 退役版本、封堵漂移 baseline；评审、历史、重放、摘要读取返回逐条目事实、奇偶与证据；v1.6b 接缝记录决策、审批、经验证的资源与 actor 角色（各自挂在主题旁）；v1.6d 记录工作指派与交接。本包绝不执行 verifier。
+`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core 的 plan 文档接缝。`parsePlanDocument` 解析 YAML，拒绝重复键、锚点、别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用与关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝 fail-closed 重放；readiness 与租约接缝仲裁可领取性；`buildWorkPacket` 准备有界 WorkPacket；todo 视图按 executor 划分工作；supersede 与 drift 退役版本、封堵漂移 baseline；评审、历史、重放、摘要读取返回逐条目奇偶；v1.6b 接缝记录决策、审批、经验证的资源与 actor 角色（各自挂在主题旁）；v1.6d 记录工作指派、交接与范围预留。本包绝不执行 verifier。
 
 ## 目录
 
@@ -91,7 +91,8 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **actor 与 role 给 actor 字符串以持久指涉**——`registerActor` 在 `actor/registered` 之下记录项目 actor（`HUMAN`/`AGENT`/`SERVICE`/`SYSTEM`），`defineRole` 在 `role/defined` 之下记录审批 `required_role` 所指的 `GOVERNANCE` 或 `EXECUTION` 角色，`assignRole` 在 `role/assigned` 之下授予角色，每个 actor-role 配对至多一条在册 assignment——部分唯一索引与接缝都拒绝第二条。`INACTIVE` actor 与终止 actor-role assignment 是尚无写入者的保留状态。
 - **工作指派记录 actor 在条目上的职责**——`assignWorkItem` 在 `work/assigned` 之下，于 v1.6b 的 actor、role、工作项行旁写入六种大写职责之一（蓝图 §18），每个条目至多一条在册 `PRIMARY`——部分唯一索引、接缝与 fold 都拒绝第二条。`ENDED` 与接受、完成时间戳是尚无写入者的保留状态。
 - **交接记录一次条目在 actor 之间的传递**——`recordHandoff` 在 `handoff/recorded` 之下写入发送方、恰好一个接收方（actor 或 role）、`DELEGATE` 或 `RETURN` 种类与内联摘要（蓝图 §28，其内容间接引用折入摘要文本），artifact 与 memory 引用序列化在行旁。`accepted_at_ms` 是尚无写入者的保留状态。
-- **重放对账双向比对**——`readProjectReplay` 折叠项目的全量事件时间线，把重建投影与物化表逐族比对——plan 版本按身份事实、工作项、标准与租约按状态、决策与审批按解除事实、资源需求按身份事实、实例与验证按引用、actor 与 role 按身份事实、actor-role 按其配对、工作指派按其职责、交接按其接收方——物化侧多出的行与重放侧多出的实体同样算 drift。WorkPacket 只计入重放侧（recipe 即持久记录）；本构建无法解码的时间线只报告原因，不做半程比对。对账只读：parity 是事实，不是修复。
+- **范围预留让一个 actor 守住一个范围**——`reserveScope` 在 `scope/reserved` 之下写入一个 actor 对项目范围（`PATH` 值）的独占认领，挂在所服务的条目旁（蓝图 §21，其 `mode` 列删除：每个预留都独占）；每项目范围至多一条活跃预留，由部分唯一索引、接缝与 fold 三层执法；`releaseScopeReservation` 归还范围，`reapExpiredScopeReservations` 移动过期行，`scope/released` 与 `scope/expired` 各自记录迁移。仍占着范围的陈旧行在下一次预留事务内过期，与租约领取的 reap 完全一致。
+- **重放对账双向比对**——`readProjectReplay` 折叠项目的全量事件时间线，把重建投影与物化表逐族比对——plan 版本按身份事实、工作项、标准与租约按状态、决策与审批按解除事实、资源需求按身份事实、实例与验证按引用、actor 与 role 按身份事实、actor-role 按其配对、工作指派按其职责、交接按其接收方、范围预留按其范围与生命周期状态——物化侧多出的行与重放侧多出的实体同样算 drift。WorkPacket 只计入重放侧（recipe 即持久记录）；本构建无法解码的时间线只报告原因，不做半程比对。对账只读：parity 是事实，不是修复。
 
 <a id="dev-note"></a>
 ## 开发备注
@@ -123,7 +124,7 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **尚无激活与 supersede**——导入绝不激活版本，且拒绝已属于其他版本或 backlog 的工作项；这些迁移由 supersede 流程负责，指向本项的 `SUPERSEDES` 边在其落地前不进入 readiness。
 - **packet 尚无项目记忆引用**——§17 允许在存在持久记忆能力后加入显式关联的 memory 引用；v1 packet 不记录任何记忆引用，重建因此只读账本行。
 - **todo 视图只是查询**——`/project todo --owner`/`--agent` 斜杠面与 `project_work_*` 工具属于命令接缝；v1.6b 把 executor identity 扩展为 actor/role/assignment（§11）。
-- **decision/approval/resource/actor-role/工作指派/交接写入是库接缝**——`openDecisionRequest`、`recordDecision`、`requestApproval`、`decideApproval`、`openResourceRequirement`、`provideResourceInstance`、`verifyResourceInstance`、`registerActor`、`defineRole`、`assignRole`、`assignWorkItem` 与 `recordHandoff` 暂无斜杠命令或面向模型的工具（`/project decisions`、`/project approvals`、`/project resources`、`/project actors`、`/project assignments` 与 `/project handoffs` 视图只读）；交互式 owner 表面随后到来。
+- **decision/approval/resource/actor-role/工作指派/交接/范围预留写入是库接缝**——`openDecisionRequest`、`recordDecision`、`requestApproval`、`decideApproval`、`openResourceRequirement`、`provideResourceInstance`、`verifyResourceInstance`、`registerActor`、`defineRole`、`assignRole`、`assignWorkItem`、`recordHandoff`、`reserveScope`、`releaseScopeReservation` 与 `reapExpiredScopeReservations` 暂无斜杠命令或面向模型的工具（`/project decisions`、`/project approvals`、`/project resources`、`/project actors`、`/project assignments`、`/project handoffs` 与 `/project reservations` 视图只读）；交互式 owner 表面随后到来。
 - **尚无 carry-forward 绑定**——supersede 命名的继任版本只被记录、未被应用：重复声明继承的工作项属于 adoption 流程（§9.3），漂移阻塞的解决与豁免也尚无写入者。
 - **`REVOKED` 是保留行状态**——租约生命周期只写 `ACTIVE`、`RELEASED` 与 `EXPIRED`；Owner 侧吊销尚无写入者，reaper 循环节奏（`reaperIntervalMs`）属于有界 `reapExpiredLeases` 批次的调用方。
 - **英文诊断**——问题消息仅英文；它们是编译器输入，不是 UI 文案。

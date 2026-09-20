@@ -60,6 +60,7 @@ const LEDGER_TABLES = [
   'resource_requirements',
   'resource_verifications',
   'roles',
+  'scope_reservations',
   'verification_specs',
   'work_assignments',
   'work_external_blockers',
@@ -84,6 +85,8 @@ const LEDGER_INDEXES = [
   'idx_resource_instances_requirement',
   'idx_resource_requirements_project',
   'idx_resource_verifications_instance',
+  'idx_scope_active',
+  'idx_scope_reservation_expiry',
   'idx_work_assignments_actor',
   'idx_work_assignments_item',
   'idx_work_items_parent',
@@ -92,6 +95,7 @@ const LEDGER_INDEXES = [
   'idx_work_rel_from',
   'idx_work_rel_to',
   'uq_one_active_lease_per_work',
+  'uq_one_active_reservation_per_scope',
   'uq_one_live_assignment_per_pair',
   'uq_one_live_primary_per_work',
 ]
@@ -443,6 +447,42 @@ describe('adjacent migration fixture', () => {
     reopened.close()
   })
 
+  it('upgrades a v7 database through the shipped 7→8 step without losing rows', async () => {
+    const path = tmpFile('v7-to-v8.sqlite')
+    // A real v7 database: the shipped steps' own layout, stamped as v7 and
+    // carrying one actor row.
+    const [coreStep, decisionStep, approvalStep, resourceStep, actorStep, workAssignmentStep, handoffStep]
+      = PROJECT_LEDGER_MIGRATIONS
+    if (coreStep === undefined || decisionStep === undefined || approvalStep === undefined
+      || resourceStep === undefined || actorStep === undefined || workAssignmentStep === undefined
+      || handoffStep === undefined) {
+      throw new Error('test setup: the registry ships a missing step')
+    }
+    const raw = new DatabaseSync(path)
+    coreStep.apply(raw)
+    decisionStep.apply(raw)
+    approvalStep.apply(raw)
+    resourceStep.apply(raw)
+    actorStep.apply(raw)
+    workAssignmentStep.apply(raw)
+    handoffStep.apply(raw)
+    raw.exec(
+      'INSERT INTO actors '
+      + '(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) '
+      + "VALUES ('actor:p:1', 'p', 'k', 'AGENT', 'A', 'ACTIVE', 1)",
+    )
+    raw.exec('PRAGMA user_version = 7')
+    raw.close()
+
+    const reopened = await openProjectLedgerDatabase(path)
+    expect(userVersionOf(reopened)).toBe(PROJECT_LEDGER_SCHEMA_VERSION)
+    expect(tableNames(reopened)).toEqual(LEDGER_TABLES)
+    expect(indexNames(reopened)).toEqual(LEDGER_INDEXES)
+    const reservations = reopened.prepare('SELECT COUNT(*) AS n FROM scope_reservations').get() as { n: number }
+    expect(reservations.n).toBe(0)
+    reopened.close()
+  })
+
   it('upgrades the committed v1 fixture databases through the same steps', async () => {
     const fixtureRoot = resolve(REPO_ROOT, 'fixtures/project-ledger')
     for (const name of ['v1.6a-empty.db', 'v1.6a-populated.db']) {
@@ -539,6 +579,8 @@ describe('Ledger Core schema contract', () => {
       ['handoffs.from_actor_id', "INSERT INTO handoffs(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms) VALUES('ho_x','work_1','actor_x','actor_1',NULL,'DELEGATE','s',1)"],
       ['handoffs.to_actor_id', "INSERT INTO handoffs(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms) VALUES('ho_x','work_1','actor_1','actor_x',NULL,'DELEGATE','s',1)"],
       ['handoffs.to_role_id', "INSERT INTO handoffs(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms) VALUES('ho_x','work_1','actor_1',NULL,'role_x','DELEGATE','s',1)"],
+      ['scope_reservations.work_item_id', "INSERT INTO scope_reservations(id, project_id, work_item_id, actor_id, scope_kind, scope_value, acquired_at_ms, expires_at_ms, status) VALUES('sr_x','proj_1','missing','actor_1','PATH','src/x.ts',1,2,'ACTIVE')"],
+      ['scope_reservations.actor_id', "INSERT INTO scope_reservations(id, project_id, work_item_id, actor_id, scope_kind, scope_value, acquired_at_ms, expires_at_ms, status) VALUES('sr_x','proj_1','work_1','actor_x','PATH','src/x.ts',1,2,'ACTIVE')"],
     ]
     for (const [edge, sql] of orphanInserts) {
       try {
@@ -710,6 +752,26 @@ describe('Ledger Core schema contract', () => {
       { to_actor_id: 'actor_1', to_role_id: null },
       { to_actor_id: null, to_role_id: 'role_1' },
     ])
+    db.close()
+  })
+
+  it('keeps scope reservations on the controlled kind and status vocabularies', async () => {
+    const db = await openProjectLedgerDatabase(':memory:')
+    insertFixtureChain(db)
+    db.exec("INSERT INTO actors(id, project_id, actor_key, actor_kind, display_name, status, created_at_ms) VALUES('actor_1','proj_1','a','AGENT','A','ACTIVE',1)")
+    const insert = (id: string, scopeKind: string, status: string): void => {
+      db.exec(`INSERT INTO scope_reservations(id, project_id, work_item_id, actor_id, scope_kind, scope_value, acquired_at_ms, expires_at_ms, status)
+        VALUES('${id}','proj_1','work_1','actor_1','${scopeKind}','src/one.ts',1,2,'${status}')`)
+    }
+    insert('sr_1', 'PATH', 'ACTIVE')
+    insert('sr_2', 'PATH', 'RELEASED')
+    insert('sr_3', 'PATH', 'EXPIRED')
+    expect(() => { insert('sr_e1', 'HOST', 'ACTIVE') }).toThrow()
+    expect(() => { insert('sr_e2', 'PATH', 'REVOKED') }).toThrow()
+    // The partial unique index keeps one active reservation per project scope.
+    expect(() => { insert('sr_e3', 'PATH', 'ACTIVE') }).toThrow()
+    const statuses = db.prepare('SELECT status FROM scope_reservations ORDER BY id').all() as { status: string }[]
+    expect(statuses.map(row => row.status)).toEqual(['ACTIVE', 'RELEASED', 'EXPIRED'])
     db.close()
   })
 })

@@ -5,46 +5,47 @@ project:
 plan:
   id: mini-dsh-v16d-collaboration
   name: v1.6d Multi-Agent Collaboration
-  version: 1
+  version: 2
 phases:
-  - id: CO1
-    title: Stage A — sequential collaboration
+  - id: CO2
+    title: Stage B — parallel collaboration
     ordinal: 0
     status: ACTIVE
     description: >
-      Stage A of the v1.6d scope proposal
+      Stage B of the v1.6d scope proposal
       (docs/mini/v1.6d/fork-mini-DSH-v1.6d-collaboration-scope-proposal.md),
       entered through the §33 gate on 2026-09-20 as decision
-      dr:mini-dsh:v1.6d-entry (enter-v1.6d-stage-a selected). One domain per
-      item, each with its own appended migration step (5→6 work assignments,
-      6→7 handoffs): the proposal's single-migration wording for the stage
-      yields to the one-domain-per-step rhythm the v1.6b domains set.
-      Per-actor claim visibility and the two-agent evidence run close the
-      stage; stage B (scope reservations, collaboration conflicts) enters as
-      its own batch later.
+      dr:mini-dsh:v1.6d-stage-b (enter-v1.6d-stage-b selected) after stage A
+      closed with all three items DONE. One domain per item, each with its
+      own appended migration step (7→8 scope reservations, then 8→9
+      collaboration conflicts): the proposal's single-migration wording for
+      the stage yields to the one-domain-per-step rhythm the v1.6b domains
+      set. The two agents registered during stage A are the cast this stage
+      composes against.
 workItems:
-  - id: PA-WORK-ASSIGNMENT-001
-    phaseId: CO1
+  - id: SB-SCOPE-RESERVATION-001
+    phaseId: CO2
     type: IMPLEMENTATION
     executorKind: AGENT
-    title: Work assignments recorded through the ledger
+    title: Scope reservations prevent overlap through the ledger
     description: >
-      The work-assignment domain (v1.6 blueprint attachment §18, adapted to
-      the v1.6a ledger like the v1.6b domains): an actor's duty on one work
-      item, the blueprint's six assignment kinds closed uppercase, as ledger
-      schema v6 through one appended 5→6 migration, one required vocabulary
-      event (work/assigned, event format 6 with adjacent reads), a
-      transactional write seam with one live PRIMARY assignment per item as
-      both index and fold fact, a newest-first project read with the item,
-      actor, and role labels resolved, replay-audit and doctor parity, and
-      the read-only /project assignments view. ENDED status and the
-      acceptance and completion timestamps stay reserved with no writer.
+      The scope-reservation domain (v1.6 blueprint attachment §21, adapted
+      to the v1.6a ledger like the v1.6d stage-A domains): an actor's
+      exclusive claim on one project scope (a repository path) while working
+      a work item, as ledger schema v8 through one appended 7→8 migration,
+      required vocabulary events (scope/reserved, scope/released,
+      scope/expired — event format 8 with adjacent reads), one active
+      reservation per project scope as index, seam, and fold fact, an
+      expiry-and-release lifecycle mirroring the work leases, a newest-first
+      project read with the item and actor labels resolved, replay-audit and
+      doctor parity, and the read-only /project reservations view. The
+      blueprint's mode column is dropped: every reservation ships exclusive.
     priority: 10
     status: READY
     acceptance:
-      - id: AC-PA-WORK-ASSIGNMENT-001
+      - id: AC-SB-SCOPE-RESERVATION-001
         kind: TEST
-        description: The project-ledger, project-ledger-sqlite, and mini-profile package suites pass with the work-assignment domain covered.
+        description: The project-ledger, project-ledger-sqlite, and mini-profile package suites pass with the scope-reservation domain covered.
         required: true
         verifier:
           kind: TEST
@@ -52,50 +53,26 @@ workItems:
           expectedExitCode: 0
           sandboxRequired: true
           approvalRequired: false
-  - id: PA-HANDOFF-RECORD-001
-    phaseId: CO1
+  - id: SB-CONFLICT-RECORD-001
+    phaseId: CO2
     type: IMPLEMENTATION
     executorKind: AGENT
-    title: Work handoffs recorded through the ledger
+    title: Collaboration conflicts recorded through the ledger
     description: >
-      The handoff domain (v1.6 blueprint attachment §28, adapted): one
-      recorded pass of a work item between actors — from actor, to actor or
-      role, inline summary over the blueprint's content indirection — as
-      ledger schema v7 through one appended 6→7 migration with the required
-      handoff/recorded event (event format 7 with adjacent reads), seam,
-      read, parity, and the read-only /project handoffs view. Acceptance is
-      reserved until a consumer ships.
+      The collaboration-conflict domain (v1.6 blueprint attachment §29,
+      adapted): one recorded overlap that slipped through the reservations —
+      conflict kind, raised-by actor, the two work items, inline description
+      over the blueprint's content indirection, and a resolution that points
+      at the v1.6b decisions domain — as ledger schema v9 through one
+      appended 8→9 migration with the required conflict/recorded and
+      conflict/resolved events (event format 9 with adjacent reads), seam,
+      read, parity, and the read-only /project conflicts view.
     priority: 20
     status: READY
     acceptance:
-      - id: AC-PA-HANDOFF-RECORD-001
+      - id: AC-SB-CONFLICT-RECORD-001
         kind: TEST
-        description: The project-ledger, project-ledger-sqlite, and mini-profile package suites pass with the handoff domain covered.
-        required: true
-        verifier:
-          kind: TEST
-          command: pnpm exec vitest run project-ledger project-ledger-sqlite mini-profile
-          expectedExitCode: 0
-          sandboxRequired: true
-          approvalRequired: false
-  - id: PA-CLAIM-VISIBILITY-001
-    phaseId: CO1
-    type: IMPLEMENTATION
-    executorKind: AGENT
-    title: Per-actor claim visibility closes stage A
-    description: >
-      The scheduling-projection change of the v1.6d scope proposal: the
-      agent todo view gains per-actor claim visibility so a second agent
-      sees the queue without another agent's live claims, and the stage's
-      evidence run drives two registered AGENT actors through one item pass
-      with a recorded assignment and handoff. No schema or event-format
-      change.
-    priority: 30
-    status: READY
-    acceptance:
-      - id: AC-PA-CLAIM-VISIBILITY-001
-        kind: TEST
-        description: The project-ledger, project-ledger-sqlite, and mini-profile package suites pass with per-actor claim visibility covered.
+        description: The project-ledger, project-ledger-sqlite, and mini-profile package suites pass with the collaboration-conflict domain covered.
         required: true
         verifier:
           kind: TEST
