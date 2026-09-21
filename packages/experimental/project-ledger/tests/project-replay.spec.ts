@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
 import {
+  activatePlanVersion,
   appendProjectEvent,
   assignRole,
   assignWorkItem,
@@ -30,6 +31,7 @@ import {
   validatePlanSchema,
   verifyResourceInstance,
   type AcceptanceCriterionId,
+  type PlanVersionId,
   type ProjectId,
   type WorkItemId,
 } from '../src/index.js'
@@ -83,10 +85,7 @@ async function ledgerOf(planText: string): Promise<DatabaseSync> {
   const db = await openProjectLedgerDatabase(':memory:')
   const { value } = parsePlanDocument(planText)
   const { planVersionId } = importPlanVersion(db, compilePlan(validatePlanSchema(value), { sourceText: planText }))
-  // Activation is an owner seam without an exported writer (v1.6a §5); the
-  // spec sets it the way the pinned-fixture generator does. The fold projects
-  // no version status, so the raw activation never drifts.
-  db.prepare("UPDATE plan_versions SET status = 'ACTIVE' WHERE id = ?").run(planVersionId)
+  activatePlanVersion(db, brandString<PlanVersionId>(planVersionId), { nowMs: 1 })
   return db
 }
 
@@ -101,8 +100,8 @@ describe('readProjectReplay', () => {
     expect(readProjectReplay(db, PROJECT)).toEqual({
       outcome: 'compared',
       projectId: PROJECT,
-      eventCount: 5,
-      lastSequenceNo: 5,
+      eventCount: 6,
+      lastSequenceNo: 6,
       replayed: {
         planVersions: 1, workItems: 1, criteria: 1, leases: 1, workPackets: 0,
         decisionRequests: 0, decisions: 0, approvals: 0,
@@ -123,9 +122,11 @@ describe('readProjectReplay', () => {
     const db = await ledgerOf(REPLAY_PLAN_TEXT)
     // Backlog rows have no writer yet (import always versions its items); the
     // out-of-band inserts mirror the readiness spec's fixtures and make every
-    // family carry one row the timeline never recorded. Dropping the
-    // plan/imported event leaves the version row in the same shape.
-    db.prepare("DELETE FROM project_events WHERE event_type = 'plan/imported'").run()
+    // family carry one row the timeline never recorded. Dropping the plan
+    // events leaves the version row — and the pointer the activation moved —
+    // in the same shape.
+    db.prepare("DELETE FROM project_events WHERE event_type IN ('plan/imported', 'plan/version-activated')").run()
+    db.prepare('UPDATE plans SET current_version_id = NULL').run()
     db.prepare(
       'INSERT INTO work_items '
         + '(id, project_id, plan_version_id, phase_id, parent_work_item_id, stable_key, work_type, executor_kind, '
@@ -224,6 +225,24 @@ describe('readProjectReplay', () => {
       'work item "wi:replay-proj:AGENT-WORK" has materialized status FAILED but replays to IN_PROGRESS',
       `acceptance criterion "${CRITERION}" has materialized status WAIVED but replays to PENDING`,
       `work lease "${claim.leaseId}" has materialized status REVOKED but replays to ACTIVE`,
+    ])
+  })
+
+  it('flags direct lifecycle mutation of versions and the plan pointer', async () => {
+    const db = await ledgerOf(REPLAY_PLAN_TEXT)
+    db.prepare(
+      "UPDATE plan_versions SET status = 'SUPERSEDED', activated_at_ms = NULL, superseded_at_ms = 5 "
+      + "WHERE id = 'plv:replay-plan:v1'",
+    ).run()
+    db.prepare("UPDATE plans SET current_version_id = 'plv:replay-plan:v9'").run()
+    const report = readProjectReplay(db, PROJECT)
+    expect(report.outcome).toBe('compared')
+    if (report.outcome !== 'compared') return
+    expect(report.drift.map(finding => finding.message)).toEqual([
+      'plan version "plv:replay-plan:v1" has materialized status SUPERSEDED but replays to ACTIVE',
+      'plan version "plv:replay-plan:v1" materializes activation at none but replays activation at 1',
+      'plan version "plv:replay-plan:v1" materializes supersede at 5 but replays supersede at none',
+      'plan "replay-plan" materializes current version plv:replay-plan:v9 but replays plv:replay-plan:v1',
     ])
   })
 
@@ -814,13 +833,13 @@ describe('readProjectReplay', () => {
     db.prepare(
       'INSERT INTO project_events '
         + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-        + "VALUES (?, 99, 10, 'plan/imported', 0, '{}', 1)",
+        + "VALUES (?, 99, 11, 'plan/imported', 0, '{}', 1)",
     ).run(PROJECT)
     const report = readProjectReplay(db, PROJECT)
     expect(report).toMatchObject({
       outcome: 'undecodable',
       projectId: PROJECT,
-      eventCount: 3,
+      eventCount: 4,
       lastSequenceNo: 99,
       materialized: {
         planVersions: 1, workItems: 1, criteria: 1, leases: 0,
@@ -831,6 +850,6 @@ describe('readProjectReplay', () => {
     })
     expect(report.outcome).toBe('undecodable')
     if (report.outcome !== 'undecodable') return
-    expect(report.timelineError).toMatch(/carries event format 10; this build reads up to format 9/u)
+    expect(report.timelineError).toMatch(/carries event format 11; this build reads up to format 10/u)
   })
 })

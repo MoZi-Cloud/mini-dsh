@@ -25,7 +25,7 @@ import type { HandoffId } from './handoffs.js'
 import type { ScopeReservationId } from './scope-reservations.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
 import type { WorkAssignmentId } from './work-assignments.js'
-import type { WorkExternalBlockerId } from './versioning.js'
+import type { WorkExternalBlockerId, PlanVersionStatus } from './versioning.js'
 import type { WorkLeaseId } from './lease.js'
 import type { AcceptanceCriterionId, PlanId, PlanVersionId, ProjectId, SourceDocumentHash, WorkItemId } from './plan-compile.js'
 import type { PlanAcceptanceKind, PlanWorkItemStatus } from './plan-document.js'
@@ -265,12 +265,13 @@ const CONFLICT_KIND_SET: ReadonlySet<string> = new Set<string>(CONFLICT_KINDS)
  * (the vocabulary is cumulative), and only a row stamped newer than this
  * build rejects.
  */
-export const PROJECT_EVENT_FORMAT_VERSION = 9
+export const PROJECT_EVENT_FORMAT_VERSION = 10
 
 /**
  * The event vocabulary. Every listed type is required: rows carry
  * `ignorable = 0`, replay knows their projection effect (this build applies
- * `plan/imported`, `work/created`, `work/status-changed`, `work/blocked`,
+ * `plan/imported`, `plan/version-activated`, `plan/version-superseded`,
+ * `work/created`, `work/status-changed`, `work/blocked`,
  * `work/unblocked`, `work/claimed`, `work/lease-heartbeat`,
  * `work/lease-expired`, `work/lease-released`, `acceptance/evaluated`,
  * `project/work-packet-prepared`, `decision/requested`,
@@ -280,9 +281,9 @@ export const PROJECT_EVENT_FORMAT_VERSION = 9
  * `handoff/recorded`, `scope/reserved`, `scope/released`, `scope/expired`,
  * `conflict/recorded`, and `conflict/resolved`), and a
  * reader that does not know the type
- * fails closed. `plan/version-superseded` and `baseline/drift-detected` are
- * validated without state change: their writers own lifecycle columns and
- * external blocker rows, which the fold's projection facts do not carry.
+ * fails closed. `baseline/drift-detected` is validated without state
+ * change: its writer owns external blocker rows, which the fold's
+ * projection facts do not carry.
  */
 export const PROJECT_EVENT_TYPES = [
   'plan/imported',
@@ -545,11 +546,17 @@ function decodeEventRow(projectId: ProjectId, row: ProjectEventRow): ProjectEven
   }
 }
 
-/** Plan-version facts carried by a `plan/imported` event. */
+/** Plan-version facts the plan lifecycle events replay. */
 export interface ReplayedPlanVersion {
   readonly planId: PlanId
   readonly versionNo: number
   readonly sourceDocumentHash: SourceDocumentHash
+  /** The lifecycle status; import replays `DRAFT`, activation `ACTIVE`, supersede `SUPERSEDED`. */
+  readonly status: PlanVersionStatus
+  /** The activation stamp, when a `plan/version-activated` event replays. */
+  readonly activatedAtMs: number | undefined
+  /** The supersede stamp, when a `plan/version-superseded` event replays. */
+  readonly supersededAtMs: number | undefined
 }
 
 /** One acceptance criterion of a replayed work item. */
@@ -757,6 +764,8 @@ export interface ReplayedConflict {
 /** The projection replaying a project's events rebuilds. */
 export interface ReplayedProjectProjection {
   readonly planVersions: ReadonlyMap<PlanVersionId, ReplayedPlanVersion>
+  /** Each plan's current-version pointer, rebuilt from activation and supersede events. */
+  readonly currentPlanVersions: ReadonlyMap<PlanId, PlanVersionId>
   readonly workItems: ReadonlyMap<WorkItemId, ReplayedWorkItem>
   /** The lease lifecycle, rebuilt from `work/claimed` and the lease end events. */
   readonly leases: ReadonlyMap<WorkLeaseId, ReplayedLease>
@@ -798,6 +807,7 @@ export interface ReplayedProjectProjection {
  */
 export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): ReplayedProjectProjection {
   const planVersions = new Map<PlanVersionId, ReplayedPlanVersion>()
+  const currentPlanVersions = new Map<PlanId, PlanVersionId>()
   const workItems = new Map<WorkItemId, ReplayedWorkItem>()
   const leases = new Map<WorkLeaseId, ReplayedLease>()
   const workPackets = new Map<WorkPacketId, ReplayedWorkPacket>()
@@ -824,7 +834,43 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
           planId: payload.planId,
           versionNo: payload.versionNo,
           sourceDocumentHash: payload.sourceDocumentHash,
+          status: 'DRAFT',
+          activatedAtMs: undefined,
+          supersededAtMs: undefined,
         })
+        break
+      }
+      case 'plan/version-activated': {
+        const payload = decodePlanVersionActivatedPayload(event)
+        const version = planVersions.get(payload.planVersionId)
+        if (version === undefined) {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "planVersionId" `
+              + `names no replayed plan version (${payload.planVersionId})`,
+          )
+        }
+        if (version.planId !== payload.planId) {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" payload field "planId" `
+              + `names plan "${payload.planId}", but version "${payload.planVersionId}" belongs to `
+              + `plan "${version.planId}"`,
+          )
+        }
+        if (version.status !== 'DRAFT') {
+          throw new ProjectEventError(
+            'malformed-event-payload',
+            `project event ${event.sequenceNo} of "${event.projectId}" activates plan version `
+              + `"${payload.planVersionId}" whose replayed status is ${version.status}; only a DRAFT version activates`,
+          )
+        }
+        planVersions.set(payload.planVersionId, {
+          ...version,
+          status: 'ACTIVE',
+          activatedAtMs: payload.activatedAtMs,
+        })
+        currentPlanVersions.set(payload.planId, payload.planVersionId)
         break
       }
       case 'work/created': {
@@ -981,8 +1027,10 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         break
       }
       case 'plan/version-superseded': {
-        // Validation-only: the supersede owns lifecycle columns and the
-        // plans pointer, which the fold's version facts do not carry.
+        // The fold moves the same lifecycle columns the writer writes. It
+        // does not demand a prior activation event: the writers gate the
+        // transitions, and timelines may hold supersedes recorded before
+        // activation events existed.
         const payload = decodePlanVersionSupersededPayload(event)
         const version = planVersions.get(payload.planVersionId)
         if (version === undefined) {
@@ -1009,6 +1057,16 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
         }
         for (const attempt of payload.reviewAttempts) {
           requireReplayedWorkItem(workItems, attempt.workItemId, event)
+        }
+        planVersions.set(payload.planVersionId, {
+          ...version,
+          status: 'SUPERSEDED',
+          supersededAtMs: payload.supersededAtMs,
+        })
+        // The writer repoints the plan only when the pointer named the retired version.
+        if (currentPlanVersions.get(payload.planId) === payload.planVersionId) {
+          if (payload.succeededBy === undefined) currentPlanVersions.delete(payload.planId)
+          else currentPlanVersions.set(payload.planId, payload.succeededBy)
         }
         supersededPlanVersionIds.add(payload.planVersionId)
         break
@@ -1286,6 +1344,7 @@ export function replayProjectEvents(db: DatabaseSync, projectId: ProjectId): Rep
   }
   return {
     planVersions,
+    currentPlanVersions,
     workItems,
     leases,
     workPackets,
@@ -1621,6 +1680,13 @@ interface SupersededAttemptRef {
   readonly leaseId: WorkLeaseId
   readonly workerIdentity: string
   readonly expiresAtMs: number
+}
+
+/** Payload facts of one `plan/version-activated` event. */
+interface PlanVersionActivatedPayload {
+  readonly planId: PlanId
+  readonly planVersionId: PlanVersionId
+  readonly activatedAtMs: number
 }
 
 /** Payload facts of one `plan/version-superseded` event. */
@@ -2258,6 +2324,16 @@ function requiredReviewAttempts(event: ProjectEventEnvelope, fields: Record<stri
       expiresAtMs: requiredNumber(entryFields, event, 'expiresAtMs', `reviewAttempts[${index}].expiresAtMs`),
     }
   })
+}
+
+/** Decode one `plan/version-activated` payload, failing closed on missing or mistyped fields. */
+function decodePlanVersionActivatedPayload(event: ProjectEventEnvelope): PlanVersionActivatedPayload {
+  const fields = payloadFields(event)
+  return {
+    planId: requiredString(fields, event, 'planId') as PlanId,
+    planVersionId: requiredString(fields, event, 'planVersionId') as PlanVersionId,
+    activatedAtMs: requiredNumber(fields, event, 'activatedAtMs'),
+  }
 }
 
 /** Decode one `plan/version-superseded` payload, failing closed on missing or mistyped fields. */

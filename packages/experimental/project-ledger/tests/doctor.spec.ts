@@ -6,34 +6,19 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project-ledger-sqlite'
 import {
   PlanDoctorError,
-  assignRole,
-  assignWorkItem,
+  activatePlanVersion,
   claimWorkItem,
   compilePlan,
-  decideApproval,
-  defineRole,
   evaluateAcceptanceCriterion,
   changeWorkStatus,
   importPlanVersion,
-  openDecisionRequest,
   parsePlanDocument,
   planDoctor,
-  recordConflict,
-  recordDecision,
-  recordHandoff,
-  reserveScope,
-  openResourceRequirement,
-  provideResourceInstance,
-  registerActor,
   releaseWorkLease,
-  requestApproval,
-  resolveConflict,
   validatePlanSchema,
-  verifyResourceInstance,
   type AcceptanceCriterionId,
   type CompiledPlan,
   type PlanVersionId,
-  type ProjectId,
   type WorkItemId,
   type WorkLeaseClaim,
 } from '../src/index.js'
@@ -65,9 +50,9 @@ async function goldenLedger(): Promise<DatabaseSync> {
  */
 async function claimGoldenSchemaItem(): Promise<{ db: DatabaseSync; claim: WorkLeaseClaim }> {
   const db = await goldenLedger()
-  // Activation and phase state have no writers; the DONE moves go
-  // through the real writers so replay parity holds.
-  db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
+  // Activation runs through its writer; the phase state has no writer and
+  // the DONE moves go through the real writers so replay parity holds.
+  activatePlanVersion(db, GOLDEN_VERSION)
   db.prepare('UPDATE phases SET status = ? WHERE stable_key = ?').run('ACTIVE', 'W01')
   for (const [stableKey, criterion] of [['OWNER-REVIEW-001', 'AC-OWNER-001'], ['PRE-001', 'AC-PRE-001']] as const) {
     const id = brandString<WorkItemId>(`wi:mini-dsh:${stableKey}`)
@@ -111,15 +96,19 @@ describe('planDoctor', () => {
         status: 'DRAFT',
         projectId: 'mini-dsh',
         databaseUserVersion: 9,
-        eventFormatVersion: 9,
+        eventFormatVersion: 10,
         baselineRepoHead: null,
         baselineWorktreeHash: null,
         counts: { phases: 13, workItems: 15, relations: 14, criteria: 16, events: 16 },
         issues: [],
       }
       expect(planDoctor(db, GOLDEN_VERSION)).toEqual(expected)
-      db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
-      expect(planDoctor(db, GOLDEN_VERSION)).toEqual({ ...expected, status: 'ACTIVE' })
+      activatePlanVersion(db, GOLDEN_VERSION)
+      expect(planDoctor(db, GOLDEN_VERSION)).toEqual({
+        ...expected,
+        status: 'ACTIVE',
+        counts: { phases: 13, workItems: 15, relations: 14, criteria: 16, events: 17 },
+      })
     } finally {
       db.close()
     }
@@ -140,7 +129,7 @@ describe('planDoctor', () => {
       changeWorkStatus(db, id, 'DONE', { nowMs: 55, actorRef: 'doctor/agent' })
       const report = planDoctor(db, GOLDEN_VERSION)
       expect(report.issues).toEqual([])
-      expect(report.counts).toEqual({ phases: 13, workItems: 15, relations: 14, criteria: 16, events: 31 })
+      expect(report.counts).toEqual({ phases: 13, workItems: 15, relations: 14, criteria: 16, events: 32 })
       expect(report.status).toBe('ACTIVE')
 
       const error = thrownError(PlanDoctorError, () =>
@@ -198,7 +187,7 @@ describe('planDoctor', () => {
         {
           code: 'projection-drift',
           refId: 'wi:mini-dsh:ADHOC-9',
-          message: 'work item "wi:mini-dsh:ADHOC-9" has materialized status READY but no replayed work/created event',
+          message: 'work item "wi:mini-dsh:ADHOC-9" is materialized but no work/created event replays it',
         },
       ])
     } finally {
@@ -272,614 +261,9 @@ describe('planDoctor', () => {
       const issues = planDoctor(unreadable, GOLDEN_VERSION).issues
       expect(issues).toHaveLength(1)
       expect(issues[0]?.code).toBe('event-timeline-unreadable')
-      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 9')
+      expect(issues[0]?.message).toContain('the project event timeline cannot be decoded by event format 10')
     } finally {
       unreadable.close()
-    }
-
-    const decisionDrift = await goldenLedger()
-    try {
-      const resolved = openDecisionRequest(decisionDrift, brandString<ProjectId>('mini-dsh'), {
-        decisionKey: 'resolved', title: 'Resolved', question: 'Q?', blockingLevel: 'BLOCKING',
-        options: [{ optionKey: 'go', label: 'Go' }],
-      }, { nowMs: 40, actorRef: 'doctor/agent' })
-      recordDecision(decisionDrift, resolved.requestId, {
-        decidedBy: 'owner', selectedOptionKey: 'go', decisionText: 'go',
-      }, { nowMs: 41, actorRef: 'doctor/agent' })
-      const open = openDecisionRequest(decisionDrift, brandString<ProjectId>('mini-dsh'), {
-        decisionKey: 'open', title: 'Open', question: 'Q?', blockingLevel: 'ADVISORY',
-      }, { nowMs: 42, actorRef: 'doctor/agent' })
-      decisionDrift.prepare("UPDATE decision_requests SET status = 'OPEN' WHERE id = ?").run(resolved.requestId)
-      decisionDrift.prepare(
-        'INSERT INTO decision_requests '
-        + '(id, project_id, plan_version_id, decision_key, title, question, blocking_level, status, created_at_ms) '
-        + "VALUES ('dr:mini-dsh:hand', 'mini-dsh', NULL, 'hand', 'Hand row', 'Q?', 'ADVISORY', 'OPEN', 43)",
-      ).run()
-      decisionDrift.prepare(
-        'INSERT INTO decisions '
-        + '(id, decision_request_id, decided_by, selected_option_id, decision_text, decided_at_ms) '
-        + "VALUES ('dc:dr:mini-dsh:open:hand', ?, 'owner', NULL, 'decided out of band', 44)",
-      ).run(open.requestId)
-      decisionDrift.prepare("UPDATE decisions SET decided_by = 'impostor' WHERE decision_request_id = ?").run(resolved.requestId)
-      const resolvedDecisionId = (decisionDrift.prepare('SELECT id FROM decisions WHERE decision_request_id = ?')
-        .get(resolved.requestId) as { id: string }).id
-      const issues = planDoctor(decisionDrift, GOLDEN_VERSION, { nowMs: 45 }).issues
-      expect(issues).toEqual([
-        {
-          code: 'projection-drift',
-          refId: 'dr:mini-dsh:hand',
-          message: 'decision request "dr:mini-dsh:hand" has materialized status OPEN but no replayed decision/requested event',
-        },
-        {
-          code: 'projection-drift',
-          refId: resolved.requestId,
-          message: `decision request "${resolved.requestId}" has materialized status OPEN but replays to RESOLVED`,
-        },
-        {
-          code: 'projection-drift',
-          refId: 'dc:dr:mini-dsh:open:hand',
-          message: `decision "dc:dr:mini-dsh:open:hand" is materialized for "${open.requestId}" but no replayed decision/recorded event`,
-        },
-        {
-          code: 'projection-drift',
-          refId: resolvedDecisionId,
-          message: `decision "${resolvedDecisionId}" materializes for "dr:mini-dsh:resolved" by impostor `
-            + 'but replays for "dr:mini-dsh:resolved" by owner',
-        },
-      ])
-    } finally {
-      decisionDrift.close()
-    }
-
-    const approvalDrift = await goldenLedger()
-    try {
-      const approved = requestApproval(approvalDrift, brandString<ProjectId>('mini-dsh'), {
-        subjectType: 'plan-version', subjectId: 'plv:mini-dsh-v1.6a-ledger:v1', requestedBy: 'doctor/agent',
-      }, { nowMs: 40, actorRef: 'doctor/agent' })
-      decideApproval(approvalDrift, approved.approvalId, {
-        outcome: 'APPROVED', decidedBy: 'owner', decisionText: 'approved',
-      }, { nowMs: 41, actorRef: 'doctor/agent' })
-      // The CHECKs couple the deciding columns to the non-PENDING status, so
-      // tampering moves each column set whole.
-      const wiped = requestApproval(approvalDrift, brandString<ProjectId>('mini-dsh'), {
-        subjectType: 'work-item', subjectId: 'wi:mini-dsh:SCHEMA-001',
-      }, { nowMs: 42, actorRef: 'doctor/agent' })
-      decideApproval(approvalDrift, wiped.approvalId, {
-        outcome: 'REJECTED', decidedBy: 'owner', decisionText: 'wiped after the fact',
-      }, { nowMs: 43, actorRef: 'doctor/agent' })
-      approvalDrift.prepare(
-        "UPDATE approvals SET status = 'PENDING', decision_text = NULL, decided_by = NULL, decided_at_ms = NULL WHERE id = ?",
-      ).run(wiped.approvalId)
-      const promoted = requestApproval(approvalDrift, brandString<ProjectId>('mini-dsh'), {
-        subjectType: 'work-item', subjectId: 'wi:mini-dsh:SCHEMA-001',
-      }, { nowMs: 44, actorRef: 'doctor/agent' })
-      approvalDrift.prepare(
-        "UPDATE approvals SET status = 'APPROVED', decision_text = 'decided out of band', decided_by = 'owner', decided_at_ms = 5 WHERE id = ?",
-      ).run(promoted.approvalId)
-      const retargeted = requestApproval(approvalDrift, brandString<ProjectId>('mini-dsh'), {
-        subjectType: 'plan-version', subjectId: 'plv:mini-dsh-v1.6a-ledger:v1',
-      }, { nowMs: 45, actorRef: 'doctor/agent' })
-      approvalDrift.prepare("UPDATE approvals SET subject_type = 'work-item' WHERE id = ?").run(retargeted.approvalId)
-      approvalDrift.prepare(
-        'INSERT INTO approvals '
-        + '(id, project_id, subject_type, subject_id, required_role, requested_by, status, requested_at_ms) '
-        + "VALUES ('ap:mini-dsh:hand', 'mini-dsh', 'plan-version', 'plv:mini-dsh-v1.6a-ledger:v1', NULL, 'owner', 'PENDING', 46)",
-      ).run()
-      approvalDrift.prepare("UPDATE approvals SET decided_by = 'impostor' WHERE id = ?").run(approved.approvalId)
-      const issues = planDoctor(approvalDrift, GOLDEN_VERSION, { nowMs: 47 }).issues
-      expect(issues).toEqual([
-        {
-          code: 'projection-drift',
-          refId: approved.approvalId,
-          message: `approval "${approved.approvalId}" materializes decided by impostor but replays decided by owner`,
-        },
-        {
-          code: 'projection-drift',
-          refId: wiped.approvalId,
-          message: `approval "${wiped.approvalId}" has materialized status PENDING but replays to REJECTED`,
-        },
-        {
-          code: 'projection-drift',
-          refId: wiped.approvalId,
-          message: `approval "${wiped.approvalId}" materializes decided by nobody but replays decided by owner`,
-        },
-        {
-          code: 'projection-drift',
-          refId: promoted.approvalId,
-          message: `approval "${promoted.approvalId}" has materialized status APPROVED but replays to PENDING`,
-        },
-        {
-          code: 'projection-drift',
-          refId: promoted.approvalId,
-          message: `approval "${promoted.approvalId}" materializes decided by owner but replays decided by nobody`,
-        },
-        {
-          code: 'projection-drift',
-          refId: retargeted.approvalId,
-          message: `approval "${retargeted.approvalId}" materializes over work-item "plv:mini-dsh-v1.6a-ledger:v1" `
-            + 'but replays over plan-version "plv:mini-dsh-v1.6a-ledger:v1"',
-        },
-        {
-          code: 'projection-drift',
-          refId: 'ap:mini-dsh:hand',
-          message: 'approval "ap:mini-dsh:hand" has materialized status PENDING but no replayed approval/requested event',
-        },
-      ])
-    } finally {
-      approvalDrift.close()
-    }
-
-    const resourceDrift = await goldenLedger()
-    try {
-      const requirement = openResourceRequirement(resourceDrift, brandString<ProjectId>('mini-dsh'), {
-        requirementKey: 'parity', requirementKind: 'ENVIRONMENT', name: 'Parity', constraintsJson: '{}',
-      }, { nowMs: 40, actorRef: 'doctor/agent' })
-      const instance = provideResourceInstance(resourceDrift, {
-        requirementId: requirement.requirementId, label: 'inst',
-      }, { nowMs: 41, actorRef: 'doctor/agent' })
-      const verification = verifyResourceInstance(resourceDrift, instance.instanceId, {
-        verifierKind: 'TEST', verificationSpec: 'x', result: 'PASS',
-      }, { nowMs: 42, actorRef: 'doctor/agent' })
-      resourceDrift.prepare('UPDATE resource_requirements SET name = ?, status = ? WHERE id = ?')
-        .run('Tampered', 'CANCELLED', requirement.requirementId)
-      resourceDrift.prepare(
-        'INSERT INTO resource_requirements '
-        + '(id, project_id, plan_version_id, requirement_key, requirement_kind, name, constraints_json, status, created_at_ms) '
-        + "VALUES ('rr:mini-dsh:hand', 'mini-dsh', NULL, 'hand', 'K', 'Hand row', '{}', 'OPEN', 43)",
-      ).run()
-      resourceDrift.prepare("UPDATE resource_verifications SET result = 'FAIL' WHERE id = ?")
-        .run(verification.verificationId)
-      resourceDrift.prepare(
-        'INSERT INTO resource_instances '
-        + '(id, requirement_id, provider, label, metadata_json, status, provided_at_ms) '
-        + "VALUES ('ri:mini-dsh:hand', 'rr:mini-dsh:hand', NULL, 'Hand instance', NULL, 'AVAILABLE', 44)",
-      ).run()
-      resourceDrift.prepare("UPDATE resource_instances SET requirement_id = 'rr:mini-dsh:hand', status = 'RETIRED' WHERE id = ?")
-        .run(instance.instanceId)
-      resourceDrift.prepare(
-        'INSERT INTO resource_verifications '
-        + '(id, resource_instance_id, verifier, verifier_kind, verification_spec, observed_json, result, verified_at_ms) '
-        + "VALUES ('rv:mini-dsh:hand', 'ri:mini-dsh:hand', NULL, 'TEST', 'spec', NULL, 'PASS', 45)",
-      ).run()
-      const issues = planDoctor(resourceDrift, GOLDEN_VERSION, { nowMs: 46 }).issues
-      expect(issues).toEqual([
-        {
-          code: 'projection-drift',
-          refId: 'rr:mini-dsh:hand',
-          message: 'resource requirement "rr:mini-dsh:hand" has materialized status OPEN but no replayed resource/required event',
-        },
-        {
-          code: 'projection-drift',
-          refId: requirement.requirementId,
-          message: `resource requirement "${requirement.requirementId}" materializes as ENVIRONMENT "parity" (Tampered) `
-            + 'but replays as ENVIRONMENT "parity" (Parity)',
-        },
-        {
-          code: 'projection-drift',
-          refId: requirement.requirementId,
-          message: `resource requirement "${requirement.requirementId}" has materialized status CANCELLED but replays to OPEN`,
-        },
-        {
-          code: 'projection-drift',
-          refId: instance.instanceId,
-          message: `resource instance "${instance.instanceId}" materializes for "rr:mini-dsh:hand" `
-            + `but replays for "${requirement.requirementId}"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: instance.instanceId,
-          message: `resource instance "${instance.instanceId}" has materialized status RETIRED but replays to AVAILABLE`,
-        },
-        {
-          code: 'projection-drift',
-          refId: 'ri:mini-dsh:hand',
-          message: 'resource instance "ri:mini-dsh:hand" has materialized status AVAILABLE but no replayed resource/provided event',
-        },
-        {
-          code: 'projection-drift',
-          refId: 'rv:mini-dsh:hand',
-          message: 'resource verification "rv:mini-dsh:hand" has materialized result PASS but no replayed resource/verified event',
-        },
-        {
-          code: 'projection-drift',
-          refId: verification.verificationId,
-          message: `resource verification "${verification.verificationId}" materializes FAIL for "${instance.instanceId}" `
-            + `but replays PASS for "${instance.instanceId}"`,
-        },
-      ])
-    } finally {
-      resourceDrift.close()
-    }
-
-    const actorDrift = await goldenLedger()
-    try {
-      const owner = registerActor(actorDrift, brandString<ProjectId>('mini-dsh'), {
-        actorKey: 'owner', actorKind: 'HUMAN', displayName: 'Owner',
-      }, { nowMs: 40, actorRef: 'doctor/agent' })
-      const role = defineRole(actorDrift, brandString<ProjectId>('mini-dsh'), {
-        roleName: 'owner', roleKind: 'GOVERNANCE',
-      }, { nowMs: 41, actorRef: 'doctor/agent' })
-      assignRole(actorDrift, { actorId: owner.actorId, roleId: role.roleId }, { nowMs: 42, actorRef: 'doctor/agent' })
-      actorDrift.prepare('UPDATE actors SET display_name = ?, status = ? WHERE id = ?')
-        .run('Tampered', 'INACTIVE', owner.actorId)
-      actorDrift.prepare(
-        'INSERT INTO actors '
-        + '(id, project_id, actor_key, actor_kind, display_name, external_identity, metadata_json, status, created_at_ms) '
-        + "VALUES ('actor:mini-dsh:hand', 'mini-dsh', 'hand', 'SERVICE', 'Hand row', NULL, NULL, 'ACTIVE', 43)",
-      ).run()
-      actorDrift.prepare('UPDATE roles SET role_kind = ? WHERE id = ?').run('EXECUTION', role.roleId)
-      actorDrift.prepare(
-        'INSERT INTO roles (id, project_id, role_name, role_kind, description, created_at_ms) '
-        + "VALUES ('role:mini-dsh:hand', 'mini-dsh', 'hand', 'GOVERNANCE', NULL, 44)",
-      ).run()
-      actorDrift.prepare(
-        'INSERT INTO actor_roles (id, actor_id, role_id, valid_from_ms, valid_to_ms) '
-        + "VALUES ('asg:mini-dsh:hand', 'actor:mini-dsh:hand', 'role:mini-dsh:hand', 45, NULL)",
-      ).run()
-      actorDrift.prepare('UPDATE actor_roles SET role_id = ? WHERE actor_id = ?').run('role:mini-dsh:hand', owner.actorId)
-      actorDrift.prepare('UPDATE actor_roles SET valid_to_ms = 5 WHERE actor_id = ?').run(owner.actorId)
-      const issues = planDoctor(actorDrift, GOLDEN_VERSION, { nowMs: 46 }).issues
-      expect(issues).toEqual([
-        {
-          code: 'projection-drift',
-          refId: 'actor:mini-dsh:hand',
-          message: 'actor "actor:mini-dsh:hand" has materialized status ACTIVE but no replayed actor/registered event',
-        },
-        {
-          code: 'projection-drift',
-          refId: owner.actorId,
-          message: `actor "${owner.actorId}" materializes as HUMAN "owner" (Tampered) but replays as HUMAN "owner" (Owner)`,
-        },
-        {
-          code: 'projection-drift',
-          refId: owner.actorId,
-          message: `actor "${owner.actorId}" has materialized status INACTIVE but replays to ACTIVE`,
-        },
-        {
-          code: 'projection-drift',
-          refId: 'role:mini-dsh:hand',
-          message: 'role "role:mini-dsh:hand" materializes GOVERNANCE "hand" but no replayed role/defined event',
-        },
-        {
-          code: 'projection-drift',
-          refId: role.roleId,
-          message: `role "${role.roleId}" materializes as EXECUTION "owner" but replays as GOVERNANCE "owner"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: 'asg:mini-dsh:19',
-          message: 'actor role "asg:mini-dsh:19" materializes actor "actor:mini-dsh:owner" over role "role:mini-dsh:hand" '
-            + `but replays actor "actor:mini-dsh:owner" over role "${role.roleId}"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: 'asg:mini-dsh:19',
-          message: 'actor role "asg:mini-dsh:19" materializes valid until 5 but replays valid until now',
-        },
-        {
-          code: 'projection-drift',
-          refId: 'asg:mini-dsh:hand',
-          message: 'actor role "asg:mini-dsh:hand" is materialized but no replayed role/assigned event',
-        },
-      ])
-    } finally {
-      actorDrift.close()
-    }
-
-    const workAssignmentDrift = await goldenLedger()
-    try {
-      const actor = registerActor(workAssignmentDrift, brandString<ProjectId>('mini-dsh'), {
-        actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
-      }, { nowMs: 40, actorRef: 'doctor/agent' })
-      const reviewerRole = defineRole(workAssignmentDrift, brandString<ProjectId>('mini-dsh'), {
-        roleName: 'reviewer', roleKind: 'GOVERNANCE',
-      }, { nowMs: 41, actorRef: 'doctor/agent' })
-      const assignment = assignWorkItem(workAssignmentDrift, {
-        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
-        actorId: actor.actorId,
-        assignmentKind: 'PRIMARY',
-        roleId: reviewerRole.roleId,
-      }, { nowMs: 42, actorRef: 'doctor/agent' })
-      const handActor = registerActor(workAssignmentDrift, brandString<ProjectId>('mini-dsh'), {
-        actorKey: 'hand', actorKind: 'SERVICE', displayName: 'Hand row',
-      }, { nowMs: 43, actorRef: 'doctor/agent' })
-      const secondAssignment = assignWorkItem(workAssignmentDrift, {
-        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
-        actorId: actor.actorId,
-        assignmentKind: 'COLLABORATOR',
-      }, { nowMs: 44, actorRef: 'doctor/agent' })
-      workAssignmentDrift.prepare('UPDATE work_assignments SET actor_id = ?, assignment_kind = ?, role_id = NULL, status = ? WHERE id = ?')
-        .run(handActor.actorId, 'TESTER', 'ENDED', assignment.assignmentId)
-      workAssignmentDrift.prepare('UPDATE work_assignments SET role_id = ? WHERE id = ?')
-        .run(reviewerRole.roleId, secondAssignment.assignmentId)
-      workAssignmentDrift.prepare(
-        'INSERT INTO work_assignments '
-        + '(id, work_item_id, actor_id, role_id, assignment_kind, status, assigned_at_ms) '
-        + "VALUES ('wa:mini-dsh:hand', 'wi:mini-dsh:DB-001', ?, NULL, 'OBSERVER', 'ACTIVE', 45)",
-      ).run(handActor.actorId)
-      const issues = planDoctor(workAssignmentDrift, GOLDEN_VERSION).issues
-      expect(issues).toEqual([
-        {
-          code: 'projection-drift',
-          refId: assignment.assignmentId,
-          message: `work assignment "${assignment.assignmentId}" materializes actor "actor:mini-dsh:hand" over item "wi:mini-dsh:DB-001" `
-            + `but replays actor "${actor.actorId}" over item "wi:mini-dsh:DB-001"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: assignment.assignmentId,
-          message: `work assignment "${assignment.assignmentId}" materializes with role none `
-            + `but replays with role "${reviewerRole.roleId}"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: assignment.assignmentId,
-          message: `work assignment "${assignment.assignmentId}" materializes TESTER but replays PRIMARY`,
-        },
-        {
-          code: 'projection-drift',
-          refId: assignment.assignmentId,
-          message: `work assignment "${assignment.assignmentId}" has materialized status ENDED but replays to ACTIVE`,
-        },
-        {
-          code: 'projection-drift',
-          refId: secondAssignment.assignmentId,
-          message: `work assignment "${secondAssignment.assignmentId}" materializes with role "${reviewerRole.roleId}" `
-            + 'but replays with role none',
-        },
-        {
-          code: 'projection-drift',
-          refId: 'wa:mini-dsh:hand',
-          message: 'work assignment "wa:mini-dsh:hand" is materialized but no replayed work/assigned event',
-        },
-      ])
-    } finally {
-      workAssignmentDrift.close()
-    }
-
-    const handoffDrift = await goldenLedger()
-    try {
-      const lane = registerActor(handoffDrift, brandString<ProjectId>('mini-dsh'), {
-        actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
-      }, { nowMs: 40, actorRef: 'doctor/agent' })
-      const second = registerActor(handoffDrift, brandString<ProjectId>('mini-dsh'), {
-        actorKey: 'second', actorKind: 'AGENT', displayName: 'Second',
-      }, { nowMs: 41, actorRef: 'doctor/agent' })
-      const executorRole = defineRole(handoffDrift, brandString<ProjectId>('mini-dsh'), {
-        roleName: 'executor', roleKind: 'EXECUTION',
-      }, { nowMs: 42, actorRef: 'doctor/agent' })
-      const governanceRole = defineRole(handoffDrift, brandString<ProjectId>('mini-dsh'), {
-        roleName: 'governance', roleKind: 'GOVERNANCE',
-      }, { nowMs: 43, actorRef: 'doctor/agent' })
-      const handActor = registerActor(handoffDrift, brandString<ProjectId>('mini-dsh'), {
-        actorKey: 'hand', actorKind: 'SERVICE', displayName: 'Hand row',
-      }, { nowMs: 44, actorRef: 'doctor/agent' })
-      const handoff = recordHandoff(handoffDrift, {
-        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
-        fromActorId: lane.actorId,
-        toActorId: second.actorId,
-        handoffKind: 'DELEGATE',
-        summary: 'first pass',
-      }, { nowMs: 45, actorRef: 'doctor/agent' })
-      const returned = recordHandoff(handoffDrift, {
-        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
-        fromActorId: second.actorId,
-        toRoleId: executorRole.roleId,
-        handoffKind: 'RETURN',
-        summary: 'back to the role',
-      }, { nowMs: 46, actorRef: 'doctor/agent' })
-      handoffDrift.prepare('UPDATE handoffs SET from_actor_id = ?, handoff_kind = ? WHERE id = ?')
-        .run(handActor.actorId, 'RETURN', handoff.handoffId)
-      handoffDrift.prepare('UPDATE handoffs SET to_actor_id = NULL, to_role_id = ? WHERE id = ?')
-        .run(executorRole.roleId, handoff.handoffId)
-      handoffDrift.prepare('UPDATE handoffs SET to_role_id = ? WHERE id = ?').run(governanceRole.roleId, returned.handoffId)
-      handoffDrift.prepare(
-        'INSERT INTO handoffs '
-        + '(id, work_item_id, from_actor_id, to_actor_id, to_role_id, handoff_kind, summary, recorded_at_ms) '
-        + "VALUES ('ho:mini-dsh:hand', 'wi:mini-dsh:DB-001', ?, NULL, ?, 'DELEGATE', 'ghost row', 47)",
-      ).run(handActor.actorId, executorRole.roleId)
-      const issues = planDoctor(handoffDrift, GOLDEN_VERSION).issues
-      expect(issues).toEqual([
-        {
-          code: 'projection-drift',
-          refId: handoff.handoffId,
-          message: `handoff "${handoff.handoffId}" materializes actor "${handActor.actorId}" handing item "wi:mini-dsh:DB-001" `
-            + `but replays actor "${lane.actorId}" handing item "wi:mini-dsh:DB-001"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: handoff.handoffId,
-          message: `handoff "${handoff.handoffId}" materializes to role "${executorRole.roleId}" but replays to actor "${second.actorId}"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: handoff.handoffId,
-          message: `handoff "${handoff.handoffId}" materializes RETURN but replays DELEGATE`,
-        },
-        {
-          code: 'projection-drift',
-          refId: returned.handoffId,
-          message: `handoff "${returned.handoffId}" materializes to role "${governanceRole.roleId}" but replays to role "${executorRole.roleId}"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: 'ho:mini-dsh:hand',
-          message: 'handoff "ho:mini-dsh:hand" is materialized but no replayed handoff/recorded event',
-        },
-      ])
-    } finally {
-      handoffDrift.close()
-    }
-
-    const scopeDrift = await goldenLedger()
-    try {
-      const lane = registerActor(scopeDrift, brandString<ProjectId>('mini-dsh'), {
-        actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
-      }, { nowMs: 40, actorRef: 'doctor/agent' })
-      const handActor = registerActor(scopeDrift, brandString<ProjectId>('mini-dsh'), {
-        actorKey: 'hand', actorKind: 'SERVICE', displayName: 'Hand row',
-      }, { nowMs: 41, actorRef: 'doctor/agent' })
-      const held = reserveScope(scopeDrift, {
-        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
-        actorId: lane.actorId,
-        scopeKind: 'PATH',
-        scopeValue: 'src/one.ts',
-        expiresAtMs: 900,
-      }, { nowMs: 42, actorRef: 'doctor/agent' })
-      const second = reserveScope(scopeDrift, {
-        workItemId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
-        actorId: lane.actorId,
-        scopeKind: 'PATH',
-        scopeValue: 'src/two.ts',
-        expiresAtMs: 900,
-      }, { nowMs: 43, actorRef: 'doctor/agent' })
-      scopeDrift.prepare('UPDATE scope_reservations SET actor_id = ?, scope_value = ?, status = ?, released_at_ms = 5 WHERE id = ?')
-        .run(handActor.actorId, 'src/tampered.ts', 'RELEASED', held.reservationId)
-      scopeDrift.prepare('UPDATE scope_reservations SET work_item_id = ? WHERE id = ?')
-        .run('wi:mini-dsh:SCHEMA-001', second.reservationId)
-      scopeDrift.prepare(
-        'INSERT INTO scope_reservations '
-        + '(id, project_id, work_item_id, actor_id, scope_kind, scope_value, acquired_at_ms, expires_at_ms, status) '
-        + "VALUES ('sr:mini-dsh:hand', 'mini-dsh', 'wi:mini-dsh:DB-001', ?, 'PATH', 'src/ghost.ts', 44, 900, 'ACTIVE')",
-      ).run(handActor.actorId)
-      const issues = planDoctor(scopeDrift, GOLDEN_VERSION).issues
-      expect(issues).toEqual([
-        {
-          code: 'projection-drift',
-          refId: held.reservationId,
-          message: `scope reservation "${held.reservationId}" materializes actor "${handActor.actorId}" over item "wi:mini-dsh:DB-001" `
-            + `but replays actor "${lane.actorId}" over item "wi:mini-dsh:DB-001"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: held.reservationId,
-          message: `scope reservation "${held.reservationId}" materializes scope PATH "src/tampered.ts" but replays scope PATH "src/one.ts"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: held.reservationId,
-          message: `scope reservation "${held.reservationId}" has materialized status RELEASED but replays to ACTIVE`,
-        },
-        {
-          code: 'projection-drift',
-          refId: second.reservationId,
-          message: `scope reservation "${second.reservationId}" materializes actor "${lane.actorId}" over item "wi:mini-dsh:SCHEMA-001" `
-            + `but replays actor "${lane.actorId}" over item "wi:mini-dsh:DB-001"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: 'sr:mini-dsh:hand',
-          message: 'scope reservation "sr:mini-dsh:hand" is materialized but no replayed scope/reserved event',
-        },
-      ])
-    } finally {
-      scopeDrift.close()
-    }
-
-    const conflictDrift = await goldenLedger()
-    try {
-      const lane = registerActor(conflictDrift, brandString<ProjectId>('mini-dsh'), {
-        actorKey: 'lane', actorKind: 'AGENT', displayName: 'Lane',
-      }, { nowMs: 40, actorRef: 'doctor/agent' })
-      const handActor = registerActor(conflictDrift, brandString<ProjectId>('mini-dsh'), {
-        actorKey: 'hand', actorKind: 'SERVICE', displayName: 'Hand row',
-      }, { nowMs: 41, actorRef: 'doctor/agent' })
-      const request = openDecisionRequest(conflictDrift, brandString<ProjectId>('mini-dsh'), {
-        decisionKey: 'doctor-ruling',
-        title: 'Doctor ruling',
-        question: 'Who keeps the path?',
-        blockingLevel: 'ADVISORY',
-        raisedBy: 'doctor/agent',
-      }, { nowMs: 42, actorRef: 'doctor/agent' })
-      const decision = recordDecision(conflictDrift, request.requestId, {
-        decidedBy: 'owner',
-        decisionText: 'Lane keeps the path.',
-      }, { nowMs: 43, actorRef: 'doctor/agent' })
-      const held = recordConflict(conflictDrift, {
-        workItemAId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
-        workItemBId: brandString<WorkItemId>('wi:mini-dsh:SCHEMA-001'),
-        raisedByActorId: lane.actorId,
-        conflictKind: 'SCOPE_OVERLAP',
-        description: 'doctor-recorded overlap',
-      }, { nowMs: 44, actorRef: 'doctor/agent' })
-      const second = recordConflict(conflictDrift, {
-        workItemAId: brandString<WorkItemId>('wi:mini-dsh:DB-001'),
-        workItemBId: brandString<WorkItemId>('wi:mini-dsh:PRE-002'),
-        raisedByActorId: lane.actorId,
-        conflictKind: 'SCOPE_OVERLAP',
-        description: 'second overlap',
-      }, { nowMs: 45, actorRef: 'doctor/agent' })
-      conflictDrift.prepare(
-        'UPDATE collaboration_conflicts SET raised_by_actor_id = ?, description = ?, status = ?, '
-        + 'resolution_decision_id = ?, resolved_at_ms = 46 WHERE id = ?',
-      ).run(handActor.actorId, 'tampered account', 'RESOLVED', decision.decisionId, held.conflictId)
-      resolveConflict(conflictDrift, second.conflictId, decision.decisionId, {
-        nowMs: 46,
-        actorRef: 'doctor/agent',
-      })
-      conflictDrift.prepare(
-        'UPDATE collaboration_conflicts SET work_item_b = ?, status = ?, resolution_decision_id = NULL, '
-        + 'resolved_at_ms = NULL WHERE id = ?',
-      ).run('wi:mini-dsh:SCHEMA-001', 'OPEN', second.conflictId)
-      conflictDrift.prepare(
-        'INSERT INTO collaboration_conflicts '
-        + '(id, work_item_a, work_item_b, raised_by_actor_id, conflict_kind, description, status, created_at_ms) '
-        + "VALUES ('cf:mini-dsh:hand', 'wi:mini-dsh:DB-001', 'wi:mini-dsh:SCHEMA-001', ?, "
-        + "'SCOPE_OVERLAP', 'ghost row', 'OPEN', 47)",
-      ).run(lane.actorId)
-      const issues = planDoctor(conflictDrift, GOLDEN_VERSION).issues
-      expect(issues).toEqual([
-        {
-          code: 'projection-drift',
-          refId: held.conflictId,
-          message: `collaboration conflict "${held.conflictId}" materializes actor "${handActor.actorId}" `
-            + 'between items "wi:mini-dsh:DB-001" and "wi:mini-dsh:SCHEMA-001" but replays actor '
-            + `"${lane.actorId}" between items "wi:mini-dsh:DB-001" and "wi:mini-dsh:SCHEMA-001"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: held.conflictId,
-          message: `collaboration conflict "${held.conflictId}" materializes description "tampered account" `
-            + 'but the timeline replays "doctor-recorded overlap"',
-        },
-        {
-          code: 'projection-drift',
-          refId: held.conflictId,
-          message: `collaboration conflict "${held.conflictId}" has materialized status RESOLVED but replays to OPEN`,
-        },
-        {
-          code: 'projection-drift',
-          refId: held.conflictId,
-          message: `collaboration conflict "${held.conflictId}" materializes resolution decision `
-            + `${decision.decisionId} but replays none`,
-        },
-        {
-          code: 'projection-drift',
-          refId: second.conflictId,
-          message: `collaboration conflict "${second.conflictId}" materializes actor "${lane.actorId}" `
-            + 'between items "wi:mini-dsh:DB-001" and "wi:mini-dsh:SCHEMA-001" but replays actor '
-            + `"${lane.actorId}" between items "wi:mini-dsh:DB-001" and "wi:mini-dsh:PRE-002"`,
-        },
-        {
-          code: 'projection-drift',
-          refId: second.conflictId,
-          message: `collaboration conflict "${second.conflictId}" has materialized status OPEN `
-            + 'but replays to RESOLVED',
-        },
-        {
-          code: 'projection-drift',
-          refId: second.conflictId,
-          message: `collaboration conflict "${second.conflictId}" materializes resolution decision none `
-            + `but replays ${decision.decisionId}`,
-        },
-        {
-          code: 'projection-drift',
-          refId: 'cf:mini-dsh:hand',
-          message: 'collaboration conflict "cf:mini-dsh:hand" is materialized but no replayed conflict/recorded event',
-        },
-      ])
-    } finally {
-      conflictDrift.close()
     }
 
     const rawCriterion = await goldenLedger()
@@ -898,7 +282,7 @@ describe('planDoctor', () => {
         {
           code: 'projection-drift',
           refId: 'ac:wi:mini-dsh:DB-001:AC-RAW',
-          message: 'acceptance criterion "ac:wi:mini-dsh:DB-001:AC-RAW" has materialized status PENDING but no replayed status',
+          message: 'acceptance criterion "ac:wi:mini-dsh:DB-001:AC-RAW" is materialized but replays to no criterion of its work item',
         },
       ])
     } finally {
@@ -907,7 +291,7 @@ describe('planDoctor', () => {
 
     const revoked = await goldenLedger()
     try {
-      revoked.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
+      activatePlanVersion(revoked, GOLDEN_VERSION)
       revoked.prepare('UPDATE phases SET status = ? WHERE stable_key = ?').run('ACTIVE', 'W01')
       revoked.prepare('UPDATE work_items SET status = ? WHERE stable_key IN (?, ?)').run('DONE', 'OWNER-REVIEW-001', 'PRE-001')
       const claim = claimWorkItem(revoked, brandString<WorkItemId>('wi:mini-dsh:SCHEMA-001'), 'doctor/agent', { nowMs: 40 })
@@ -937,7 +321,7 @@ describe('planDoctor', () => {
         {
           code: 'projection-drift',
           refId: 'ls:orphan:1',
-          message: 'work lease "ls:orphan:1" has materialized status ACTIVE but no replayed claim event',
+          message: 'work lease "ls:orphan:1" is materialized but no work/claimed event replays it',
         },
       ])
     } finally {

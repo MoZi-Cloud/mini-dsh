@@ -35,6 +35,7 @@ import {
   type WorkItemId,
   type WorkLeaseId,
   type WorkReadiness,
+  activatePlanVersion,
 } from '../src/index.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -69,7 +70,7 @@ function readinessOf(db: DatabaseSync, stableKey: string, nowMs?: number): WorkR
 
 /** Flip the imported DRAFT version to ACTIVE — the seam of the activation writer (a later package). */
 function activateVersion(db: DatabaseSync): void {
-  db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
+  activatePlanVersion(db, brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v1'))
 }
 
 /** Overwrite a work item status directly — the seam of writers this package does not own. */
@@ -80,14 +81,32 @@ function setItemStatus(db: DatabaseSync, stableKey: string, status: PlanWorkItem
 /** The projection read straight from the materialized tables, for the parity comparison. */
 function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
   const planVersions = new Map<PlanVersionId, ReplayedPlanVersion>()
-  const versionRows = db.prepare('SELECT id, plan_id, version_no, source_document_hash FROM plan_versions')
-    .all() as { id: string; plan_id: string; version_no: number; source_document_hash: string }[]
+  const versionRows = db.prepare(
+    'SELECT id, plan_id, version_no, source_document_hash, status, activated_at_ms, superseded_at_ms FROM plan_versions',
+  ).all() as {
+    id: string
+    plan_id: string
+    version_no: number
+    source_document_hash: string
+    status: string
+    activated_at_ms: number | null
+    superseded_at_ms: number | null
+  }[]
   for (const row of versionRows) {
     planVersions.set(brandString<PlanVersionId>(row.id), {
       planId: brandString<PlanId>(row.plan_id),
       versionNo: row.version_no,
       sourceDocumentHash: brandString<SourceDocumentHash>(row.source_document_hash),
+      status: row.status as ReplayedPlanVersion['status'],
+      activatedAtMs: row.activated_at_ms ?? undefined,
+      supersededAtMs: row.superseded_at_ms ?? undefined,
     })
+  }
+  const currentPlanVersions = new Map<PlanId, PlanVersionId>()
+  const pointerRows = db.prepare('SELECT id, current_version_id FROM plans WHERE current_version_id IS NOT NULL')
+    .all() as { id: string; current_version_id: string }[]
+  for (const row of pointerRows) {
+    currentPlanVersions.set(brandString<PlanId>(row.id), brandString<PlanVersionId>(row.current_version_id))
   }
   const criteriaByItem = new Map<string, Map<AcceptanceCriterionId, ReplayedCriterion>>()
   const criteriaRows = db.prepare(
@@ -149,6 +168,7 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
   }
   // No test in this file prepares work packets; the rebuild seam owns packet parity.
   return {
+    currentPlanVersions,
     planVersions, workItems, leases, workPackets: new Map(),
     decisionRequests: new Map(), decisions: new Map(), approvals: new Map(),
     resourceRequirements: new Map(), resourceInstances: new Map(), resourceVerifications: new Map(),

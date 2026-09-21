@@ -149,14 +149,32 @@ function insertRawEvent(
 /** The projection read straight from the materialized tables, for the parity comparison. */
 function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
   const planVersions = new Map<PlanVersionId, ReplayedPlanVersion>()
-  const versionRows = db.prepare('SELECT id, plan_id, version_no, source_document_hash FROM plan_versions')
-    .all() as { id: string; plan_id: string; version_no: number; source_document_hash: string }[]
+  const versionRows = db.prepare(
+    'SELECT id, plan_id, version_no, source_document_hash, status, activated_at_ms, superseded_at_ms FROM plan_versions',
+  ).all() as {
+    id: string
+    plan_id: string
+    version_no: number
+    source_document_hash: string
+    status: string
+    activated_at_ms: number | null
+    superseded_at_ms: number | null
+  }[]
   for (const row of versionRows) {
     planVersions.set(brandString<PlanVersionId>(row.id), {
       planId: brandString<PlanId>(row.plan_id),
       versionNo: row.version_no,
       sourceDocumentHash: brandString<SourceDocumentHash>(row.source_document_hash),
+      status: row.status as ReplayedPlanVersion['status'],
+      activatedAtMs: row.activated_at_ms ?? undefined,
+      supersededAtMs: row.superseded_at_ms ?? undefined,
     })
+  }
+  const currentPlanVersions = new Map<PlanId, PlanVersionId>()
+  const pointerRows = db.prepare('SELECT id, current_version_id FROM plans WHERE current_version_id IS NOT NULL')
+    .all() as { id: string; current_version_id: string }[]
+  for (const row of pointerRows) {
+    currentPlanVersions.set(brandString<PlanId>(row.id), brandString<PlanVersionId>(row.current_version_id))
   }
   const criteriaByItem = new Map<string, Map<AcceptanceCriterionId, ReplayedCriterion>>()
   const criteriaRows = db.prepare(
@@ -414,6 +432,7 @@ function materializedProjection(db: DatabaseSync): ReplayedProjectProjection {
   }
   return {
     planVersions,
+    currentPlanVersions,
     workItems,
     leases,
     workPackets: new Map(),
@@ -580,6 +599,9 @@ describe('replayProjectEvents', () => {
       planId: 'mini-dsh-v1.6a-ledger',
       versionNo: 1,
       sourceDocumentHash: GOLDEN_SOURCE_HASH,
+      status: 'DRAFT',
+      activatedAtMs: undefined,
+      supersededAtMs: undefined,
     })
     expect(replayed.workItems.get(brandString<WorkItemId>('wi:mini-dsh:IMPORT-001'))).toEqual({
       stableKey: 'IMPORT-001',
@@ -598,15 +620,76 @@ describe('replayProjectEvents', () => {
     db.close()
   })
 
-  it('skips unknown ignorable rows and vocabulary types without a projection effect', async () => {
+  it('skips unknown ignorable rows without a projection effect', async () => {
     const db = await goldenLedger()
     insertRawEvent(db, { eventType: 'alien/note', ignorable: 1, payloadJson: '{"note":"observed"}' })
+
+    expect(readProjectEvents(db, PROJECT)).toHaveLength(17)
+    expect(replayProjectEvents(db, PROJECT)).toEqual(materializedProjection(db))
+    db.close()
+  })
+
+  it('applies plan/version-activated to the replayed projection', async () => {
+    const db = await goldenLedger()
+    db.prepare(
+      "UPDATE plan_versions SET status = 'ACTIVE', activated_at_ms = 2 WHERE id = 'plv:mini-dsh-v1.6a-ledger:v1'",
+    ).run()
+    db.prepare("UPDATE plans SET current_version_id = 'plv:mini-dsh-v1.6a-ledger:v1'").run()
     appendProjectEvent(db, PROJECT, 'plan/version-activated', {
-      activatedBy: 'owner',
+      planId: 'mini-dsh-v1.6a-ledger',
+      planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
+      activatedAtMs: 2,
     }, { entityType: 'plan_version', entityId: 'plv:mini-dsh-v1.6a-ledger:v1', nowMs: 2 })
 
-    expect(readProjectEvents(db, PROJECT)).toHaveLength(18)
-    expect(replayProjectEvents(db, PROJECT)).toEqual(materializedProjection(db))
+    const replayed = replayProjectEvents(db, PROJECT)
+    expect(replayed.planVersions.get(brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v1'))?.status).toBe('ACTIVE')
+    expect(replayed.currentPlanVersions.get(brandString<PlanId>('mini-dsh-v1.6a-ledger'))).toBe('plv:mini-dsh-v1.6a-ledger:v1')
+    expect(replayed).toEqual(materializedProjection(db))
+    db.close()
+  })
+
+  it('fails replay on an activation naming an unknown version or a non-DRAFT status', async () => {
+    const ghost = await goldenLedger()
+    appendProjectEvent(ghost, PROJECT, 'plan/version-activated', {
+      planId: 'mini-dsh-v1.6a-ledger',
+      planVersionId: 'plv:mini-dsh-v1.6a-ledger:v9',
+      activatedAtMs: 2,
+    }, { entityType: 'plan_version', entityId: 'plv:mini-dsh-v1.6a-ledger:v9', nowMs: 2 })
+    expect(thrownEventError(() => replayProjectEvents(ghost, PROJECT)).message)
+      .toContain('payload field "planVersionId" names no replayed plan version (plv:mini-dsh-v1.6a-ledger:v9)')
+    ghost.close()
+
+    const foreign = await goldenLedger()
+    appendProjectEvent(foreign, PROJECT, 'plan/version-activated', {
+      planId: 'wrong-plan',
+      planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
+      activatedAtMs: 2,
+    }, { entityType: 'plan_version', entityId: 'plv:mini-dsh-v1.6a-ledger:v1', nowMs: 2 })
+    expect(thrownEventError(() => replayProjectEvents(foreign, PROJECT)).message)
+      .toContain('names plan "wrong-plan", but version "plv:mini-dsh-v1.6a-ledger:v1" belongs to '
+        + 'plan "mini-dsh-v1.6a-ledger"')
+    foreign.close()
+
+    const malformed = await goldenLedger()
+    insertRawEvent(malformed, { eventType: 'plan/version-activated', ignorable: 0, payloadJson: '{}' })
+    expect(thrownEventError(() => replayProjectEvents(malformed, PROJECT)).message)
+      .toContain('payload field "planId" must be a string')
+    malformed.close()
+
+    const db = await goldenLedger()
+    appendProjectEvent(db, PROJECT, 'plan/version-activated', {
+      planId: 'mini-dsh-v1.6a-ledger',
+      planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
+      activatedAtMs: 2,
+    }, { entityType: 'plan_version', entityId: 'plv:mini-dsh-v1.6a-ledger:v1', nowMs: 2 })
+    appendProjectEvent(db, PROJECT, 'plan/version-activated', {
+      planId: 'mini-dsh-v1.6a-ledger',
+      planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
+      activatedAtMs: 3,
+    }, { entityType: 'plan_version', entityId: 'plv:mini-dsh-v1.6a-ledger:v1', nowMs: 3 })
+    expect(thrownEventError(() => replayProjectEvents(db, PROJECT)).message)
+      .toContain('activates plan version "plv:mini-dsh-v1.6a-ledger:v1" whose replayed status is ACTIVE; '
+        + 'only a DRAFT version activates')
     db.close()
   })
 
@@ -747,6 +830,7 @@ describe('replayProjectEvents', () => {
     const db = await openProjectLedgerDatabase(':memory:')
     expect(replayProjectEvents(db, brandString<ProjectId>('fresh'))).toEqual({
       planVersions: new Map(),
+      currentPlanVersions: new Map(),
       workItems: new Map(),
       leases: new Map(),
       workPackets: new Map(),

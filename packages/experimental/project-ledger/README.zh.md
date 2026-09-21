@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core 的 plan 文档接缝。`parsePlanDocument` 解析 YAML，拒绝重复键、锚点、别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用与关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入；事件接缝 fail-closed 重放；readiness 与租约接缝仲裁可领取性；`buildWorkPacket` 准备有界 WorkPacket；todo 视图按 executor 划分工作；supersede 与 drift 退役版本、封堵漂移 baseline；评审、历史、重放、摘要返回逐条目奇偶；v1.6b 接缝记录决策、审批、经验证的资源与 actor 角色（各自挂在主题旁）；v1.6d 记录工作指派、交接、范围预留与协作冲突。本包绝不执行 verifier。
+`dsh-experimental-project-ledger` 拥有 v1.6a Ledger Core 的 plan 文档接缝。`parsePlanDocument` 解析 YAML，拒绝重复键、锚点、别名；`validatePlanSchema` 镜像宪法 schema；`validatePlanSemantics` 检查引用与关系。`compilePlan` 编译出规范 IR，`importPlanVersion` 原子写入，`activatePlanVersion` 经 owner 事件激活；事件接缝 fail-closed 重放；readiness 与租约接缝仲裁可领取性；`buildWorkPacket` 准备有界 WorkPacket；todo 视图按 executor 划分工作；supersede 与 drift 退役版本、封堵漂移 baseline；评审、历史、重放、摘要返回逐条目奇偶；v1.6b 接缝记录决策、审批、经验证的资源与 actor 角色（各自挂在主题旁）；v1.6d 记录工作指派、交接、范围预留与协作冲突。本包绝不执行 verifier。
 
 ## 目录
 
@@ -68,7 +68,7 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **版本 fail closed**——`schemaVersion` 不是 `1` 的文档只产生一条 `schema-version-unsupported` 问题，不在其余字段上级联报错。
 - **确定性身份**——行 id 由账本稳定键推导（`wi:<project>:<work id>`、`plv:<plan>:v<n>`），同样的源字节在每个账本数据库中编译出相同的主键；规范 IR hash 是全部产出行按成员键排序 JSON 的 SHA-256。
 - **按 hash 幂等**——重复提交同一源文本会返回已记录版本且不写任何行；同一版本号携带不同源内容抛 `version-conflict`；新版本重复声明已属于其他版本的工作项抛 `work-item-conflict`。
-- **事务与事件原子**——单个 `BEGIN IMMEDIATE` 事务写入版本各表并追加 `plan/imported` 与 `work/created` 事件；任何失败回滚，账本不留部分行。导入绝不激活：版本以 `DRAFT` 落库，`plans.current_version_id` 不被触碰。
+- **事务与事件原子**——单个 `BEGIN IMMEDIATE` 事务写入版本各表并追加 `plan/imported` 与 `work/created` 事件；任何失败回滚，账本不留部分行。导入绝不激活：版本以 `DRAFT` 落库。
 - **事件读取 fail closed**——v1 词表全部是 required 事件：读取遇到未知 required 事件类型或外来 `event_format_version` 时拒绝整条时间线；未知 ignorable 行（更新的写入者的观察性扩展）被保留且不改变重放状态。required 词表条目拒绝以 ignorable 落库。
 - **readiness 只重算、绝不信任**——`computeWorkReadiness` 从因果行推导可领取性（plan 版本、phase、`BLOCKS`/`PRECEDES` 边、外部阻塞、required 验收标准、活跃租约，以及工作项自身状态）；物化的 `READY`/`BLOCKED` 状态只是这些输入的投影，层级绝不进入决策（`parent_work_item_id` 是组成关系，不是依赖）。
 - **环语义只有一个家**——编译期校验与账本侧 `detectWorkGraphCycles` 共享 `relation-graph.ts` 的排序关系种类与环 walks，同一张图在文档与其产出行上永远得到相同判定。
@@ -79,6 +79,7 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 - **packet 是配方，不是行**——`buildWorkPacket` 只读 §17 列出的逐项输入（plan 身份、目标、phase 摘要、关系回执、带存储 spec 的验收标准、baseline），为每个被引用小节计算哈希，并追加携带完整配方的 `project/work-packet-prepared` 事件；不存在物化 packet 表，因为事件就是持久记录且 packet 可重建。`rebuildWorkPacket` 仅从当前行重组 packet 并点名漂移的引用，审计模型所见永远不需要 Master Plan 全文。
 - **有界靠拒绝而非截断**——`serializeWorkPacket` 输出必须低于 `maxSerializedBytes`（默认 65,536）；超限即抛错而不是截断，模型可见文档要么完整要么缺席，相同行永远序列化出相同字节。
 - **Owner 与 Agent todo 是按执行者分离的视图**——`listOwnerTodo` 与 `listAgentTodo` 对 `executor_kind`（§11）跑一条只读查询，覆盖全部非终态状态，按种类、优先级降序、年龄与 id 排序；每个条目携带重算的 readiness 与活跃租约，阻塞原因与持有者随任务一并呈现。给出查看者身份时视图变为按 actor（v1.6d）：他人持有活跃领取的条目不再出现，第二个 agent 看到的队列不含别人的进行中领取。视图绝不变更：完成权威仍在验收接缝，没有稳定 item id、没有项目身份的 session todo 在账本中没有入口。
+- **激活是 owner 动作**——`activatePlanVersion` 在单个 `BEGIN IMMEDIATE` 内把 `DRAFT` 版本移到 `ACTIVE`，带上 `activated_at_ms` 戳记与 `plans.current_version_id` 指针，并随 `plan/version-activated` 事件落库；没有导入记录的版本、已离开 `DRAFT` 的版本、计划仍有 `ACTIVE` 版本的情形一律拒绝（§8）。
 - **supersede 退役版本，绝不改写历史**——`supersedePlanVersion` 在单个 `BEGIN IMMEDIATE` 内只移动生命周期列（`SUPERSEDED`、`superseded_at_ms`）与 `plans.current_version_id` 指针，并随 `plan/version-superseded` 事件落库；readiness 随即以 `plan-version-not-active` 拒绝该版本的每个新认领，活跃尝试保留租约、放弃租约后落 `BLOCKED`，事件载荷记录 review 队列。工作项、plan 事实与评估逐字节不变。
 - **drift 封堵认领，绝不改写 baseline 钉**——`recordBaselineDrift` 把调用方观测的仓库事实与版本钉住的 baseline 比较，追加 `baseline/drift-detected`，并在工作项上打开 `BASELINE_DRIFT` 外部阻塞，下一次认领被拒，直到 owner 解决、豁免或 supersede；baseline 列本身绝不移动（§21）。
 - **doctor 是只读巡检**——`planDoctor` 一趟重验已导入版本：验收与 verifier 的存在性、层级与排序环、关系的项目内约束、过了自身有效期仍记 ACTIVE 的租约行（即 reaper 自己的判定谓词，读时钟由调用方给定）、事件时间线可解码，以及工作项/标准/租约状态的投影对等；全部独立问题连同版本身份、baseline 与行数一并报告。
@@ -122,7 +123,7 @@ const agentTodo = listAgentTodo(db, compiled.projectId)
 
 以下是当前包约束，不是任务清单。
 
-- **尚无激活与 supersede**——导入绝不激活版本，且拒绝已属于其他版本或 backlog 的工作项；这些迁移由 supersede 流程负责，指向本项的 `SUPERSEDES` 边在其落地前不进入 readiness。
+- **尚无 supersede 边采纳**——导入拒绝已属于其他版本或 backlog 的工作项；指向本项的 `SUPERSEDES` 边在采纳流程落地前不进入 readiness。
 - **packet 尚无项目记忆引用**——§17 允许在存在持久记忆能力后加入显式关联的 memory 引用；v1 packet 不记录任何记忆引用，重建因此只读账本行。
 - **todo 视图只是查询**——`/project todo --owner`/`--agent` 斜杠面与 `project_work_*` 工具属于命令接缝；v1.6b 把 executor identity 扩展为 actor/role/assignment（§11）。
 - **decision/approval/resource/actor-role/工作指派/交接/范围预留/协作冲突写入是库接缝**——`openDecisionRequest`、`recordDecision`、`requestApproval`、`decideApproval`、`openResourceRequirement`、`provideResourceInstance`、`verifyResourceInstance`、`registerActor`、`defineRole`、`assignRole`、`assignWorkItem`、`recordHandoff`、`reserveScope`、`releaseScopeReservation`、`reapExpiredScopeReservations`、`recordConflict` 与 `resolveConflict` 暂无斜杠命令或面向模型的工具（`/project decisions`、`/project approvals`、`/project resources`、`/project actors`、`/project assignments`、`/project handoffs`、`/project reservations` 与 `/project conflicts` 视图只读）；交互式 owner 表面随后到来。

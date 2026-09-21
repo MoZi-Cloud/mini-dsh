@@ -7,7 +7,9 @@ import { openProjectLedgerDatabase } from '@deepseek-ai/dsh-experimental-project
 import {
   BaselineDriftError,
   LeaseError,
+  PlanActivationError,
   PlanSupersedeError,
+  activatePlanVersion,
   appendProjectEvent,
   claimWorkItem,
   compilePlan,
@@ -24,6 +26,7 @@ import {
   validatePlanSchema,
   type AcceptanceCriterionId,
   type CompiledPlan,
+  type PlanId,
   type PlanVersionId,
   type ProjectId,
   type WorkItemId,
@@ -110,12 +113,12 @@ function criterionId(stableKey: string, criterion: string): AcceptanceCriterionI
 }
 
 /**
- * Make a golden item claimable through the causal rows: activate the version,
- * activate its phase, and satisfy the BLOCKS edges — the seams of writers
- * this package does not own (activation, evaluation outcomes).
+ * Make a golden item claimable through the causal rows: activate the version
+ * through its writer, activate its phase, and satisfy the BLOCKS edges — the
+ * phase and item moves are the seams of writers this package does not own.
  */
 function makeClaimable(db: DatabaseSync, phaseKey: string): void {
-  db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
+  activatePlanVersion(db, GOLDEN_VERSION)
   db.prepare('UPDATE phases SET status = ? WHERE stable_key = ?').run('ACTIVE', phaseKey)
   db.prepare('UPDATE work_items SET status = ? WHERE stable_key IN (?, ?)').run('DONE', 'OWNER-REVIEW-001', 'PRE-001')
 }
@@ -168,7 +171,6 @@ describe('supersedePlanVersion', () => {
         nowMs: 40,
         leaseConfig: { ttlMs: 100_000, heartbeatIntervalMs: 20_000 },
       })
-      db.prepare('UPDATE plans SET current_version_id = ?').run(GOLDEN_VERSION)
       const before = db.prepare(
         'SELECT source_document_hash, compiled_ir_hash, baseline_repo_head, baseline_worktree_hash, created_at_ms FROM plan_versions WHERE id = ?',
       ).get(GOLDEN_VERSION) as Record<string, string | number | null>
@@ -186,9 +188,9 @@ describe('supersedePlanVersion', () => {
           workerIdentity: 'worker/session-9',
           expiresAtMs: claim.expiresAtMs,
         }],
-        sequenceNo: 19,
+        sequenceNo: 20,
       })
-      expect(eventPayload(db, 19)).toEqual({
+      expect(eventPayload(db, 20)).toEqual({
         planId: 'mini-dsh-v1.6a-ledger',
         planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
         policy: 'freeze-new-claims-and-review-active',
@@ -210,12 +212,17 @@ describe('supersedePlanVersion', () => {
         'SELECT source_document_hash, compiled_ir_hash, baseline_repo_head, baseline_worktree_hash, created_at_ms FROM plan_versions WHERE id = ?',
       ).get(GOLDEN_VERSION) as Record<string, string | number | null>
       expect(after).toEqual(before)
+      const activatedAtMs = (db.prepare('SELECT activated_at_ms FROM plan_versions WHERE id = ?')
+        .get(GOLDEN_VERSION) as { activated_at_ms: number }).activated_at_ms
       expect(replayProjectEvents(db, PROJECT).planVersions.get(GOLDEN_VERSION)).toEqual({
         planId: 'mini-dsh-v1.6a-ledger',
         versionNo: 1,
         sourceDocumentHash: before.source_document_hash,
+        status: 'SUPERSEDED',
+        activatedAtMs,
+        supersededAtMs: 50,
       })
-      expect(readProjectEvents(db, PROJECT)).toHaveLength(19)
+      expect(readProjectEvents(db, PROJECT)).toHaveLength(20)
       expect(listAgentTodo(db, PROJECT, { nowMs: 55 }).entries.map(entry => entry.stableKey)).toContain('SCHEMA-001')
 
       // New claims stop: readiness recomputes the version blocker.
@@ -280,7 +287,7 @@ describe('supersedePlanVersion', () => {
         supersedePlanVersion(db, GOLDEN_VERSION, { succeededBy: brandString<PlanVersionId>('plv:other-plan:v1') }))
       expect(foreign.code).toBe('successor-not-same-plan')
       expect(foreign.message).toContain('a successor must continue plan "mini-dsh-v1.6a-ledger"')
-      expect(eventCount(db)).toBe(16)
+      expect(eventCount(db)).toBe(17)
     } finally {
       db.close()
     }
@@ -296,15 +303,94 @@ describe('supersedePlanVersion', () => {
         + "source_document_hash, compiled_ir_hash, created_at_ms) VALUES (?, 'mini-dsh-v1.6a-ledger', 2, 'DRAFT', "
         + "NULL, NULL, 'sha-c', 'sha-d', 6)",
       ).run(successor)
-      db.prepare('UPDATE plans SET current_version_id = ?').run(GOLDEN_VERSION)
 
       const supersede = supersedePlanVersion(db, GOLDEN_VERSION, { succeededBy: successor, nowMs: 50 })
       expect(supersede.succeededBy).toBe(successor)
       expect(supersede.reviewAttempts).toEqual([])
-      expect(eventPayload(db, 17).succeededBy).toBe('plv:mini-dsh-v1.6a-ledger:v2')
+      expect(eventPayload(db, 18).succeededBy).toBe('plv:mini-dsh-v1.6a-ledger:v2')
       expect((db.prepare('SELECT current_version_id FROM plans').get() as { current_version_id: string }).current_version_id)
         .toBe('plv:mini-dsh-v1.6a-ledger:v2')
       expect(replayProjectEvents(db, PROJECT).planVersions.size).toBe(1)
+    } finally {
+      db.close()
+    }
+  })
+})
+
+describe('activatePlanVersion', () => {
+  it('activates a DRAFT version: status, stamp, pointer, and the required event in one transaction', async () => {
+    const db = await goldenLedger()
+    try {
+      const activation = activatePlanVersion(db, GOLDEN_VERSION, { nowMs: 20 })
+      expect(activation).toEqual({
+        planVersionId: GOLDEN_VERSION,
+        planId: 'mini-dsh-v1.6a-ledger',
+        activatedAtMs: 20,
+        sequenceNo: 17,
+      })
+      expect(eventPayload(db, 17)).toEqual({
+        planId: 'mini-dsh-v1.6a-ledger',
+        planVersionId: 'plv:mini-dsh-v1.6a-ledger:v1',
+        activatedAtMs: 20,
+      })
+      expect(db.prepare('SELECT status, activated_at_ms, superseded_at_ms FROM plan_versions WHERE id = ?')
+        .get(GOLDEN_VERSION)).toEqual({ status: 'ACTIVE', activated_at_ms: 20, superseded_at_ms: null })
+      expect((db.prepare('SELECT current_version_id FROM plans').get() as { current_version_id: string }).current_version_id)
+        .toBe('plv:mini-dsh-v1.6a-ledger:v1')
+      const sourceHash = (db.prepare('SELECT source_document_hash FROM plan_versions WHERE id = ?')
+        .get(GOLDEN_VERSION) as { source_document_hash: string }).source_document_hash
+      const replayed = replayProjectEvents(db, PROJECT)
+      expect(replayed.planVersions.get(GOLDEN_VERSION)).toEqual({
+        planId: 'mini-dsh-v1.6a-ledger',
+        versionNo: 1,
+        sourceDocumentHash: sourceHash,
+        status: 'ACTIVE',
+        activatedAtMs: 20,
+        supersededAtMs: undefined,
+      })
+      expect(replayed.currentPlanVersions.get(brandString<PlanId>('mini-dsh-v1.6a-ledger'))).toBe(GOLDEN_VERSION)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('rejects unknown versions, unimported versions, a second ACTIVE version, and non-DRAFT states', async () => {
+    const db = await goldenLedger()
+    try {
+      const unknown = thrownError(PlanActivationError, () =>
+        activatePlanVersion(db, brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v9')))
+      expect(unknown.code).toBe('unknown-plan-version')
+      expect(unknown.message).toContain('is not recorded in this ledger')
+
+      // A hand-inserted version row carries no plan_imports record: the
+      // activation seam refuses versions that never entered through the
+      // supported importer.
+      db.prepare(
+        'INSERT INTO plan_versions (id, plan_id, version_no, status, baseline_repo_head, baseline_worktree_hash, '
+        + "source_document_hash, compiled_ir_hash, created_at_ms) VALUES ('plv:mini-dsh-v1.6a-ledger:v2', "
+        + "'mini-dsh-v1.6a-ledger', 2, 'DRAFT', NULL, NULL, 'sha-c', 'sha-d', 6)",
+      ).run()
+      const unimported = thrownError(PlanActivationError, () =>
+        activatePlanVersion(db, brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v2')))
+      expect(unimported.code).toBe('import-record-missing')
+      expect(unimported.message).toContain('records no plan_imports row')
+      db.prepare(
+        'INSERT INTO plan_imports (id, project_id, source_path, source_hash, schema_version, parser_version, '
+        + 'compiler_version, status, plan_version_id, imported_at_ms) '
+        + "VALUES ('imp:plv:mini-dsh-v1.6a-ledger:v2', 'mini-dsh', NULL, 'sha-c', 1, '1', '1', 'IMPORTED', "
+        + "'plv:mini-dsh-v1.6a-ledger:v2', 6)",
+      ).run()
+
+      expect(activatePlanVersion(db, GOLDEN_VERSION, { nowMs: 20 }).sequenceNo).toBe(17)
+      const second = thrownError(PlanActivationError, () =>
+        activatePlanVersion(db, brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v2'), { nowMs: 21 }))
+      expect(second.code).toBe('active-version-exists')
+      expect(second.message).toContain('already has an ACTIVE version (plv:mini-dsh-v1.6a-ledger:v1)')
+
+      const again = thrownError(PlanActivationError, () => activatePlanVersion(db, GOLDEN_VERSION, { nowMs: 22 }))
+      expect(again.code).toBe('version-not-draft')
+      expect(again.message).toContain('is ACTIVE; only a DRAFT version activates')
+      expect(eventCount(db)).toBe(17)
     } finally {
       db.close()
     }
@@ -315,11 +401,11 @@ describe('recordBaselineDrift', () => {
   it('records the drift, blocks the next claim, and never rewrites the pin', async () => {
     const db = await driftLedger()
     try {
-      db.prepare("UPDATE plan_versions SET status = 'ACTIVE'").run()
+      activatePlanVersion(db, brandString<PlanVersionId>('plv:drift-plan:v1'))
       const work = brandString<WorkItemId>('wi:drift-proj:WORK-001')
       const drift = recordBaselineDrift(db, work, { repoHead: 'head-2', worktreeHash: null }, { nowMs: 20 })
       expect(drift).toEqual({
-        driftId: 'dr:wi:drift-proj:WORK-001:3',
+        driftId: 'dr:wi:drift-proj:WORK-001:4',
         workItemId: 'wi:drift-proj:WORK-001',
         planVersionId: 'plv:drift-plan:v1',
         baselineRepoHead: 'head-1',
@@ -327,31 +413,31 @@ describe('recordBaselineDrift', () => {
         observedRepoHead: 'head-2',
         observedWorktreeHash: null,
         detectedAtMs: 20,
-        sequenceNo: 3,
+        sequenceNo: 4,
       })
-      expect(eventPayload(db, 3)).toEqual({
+      expect(eventPayload(db, 4)).toEqual({
         workItemId: 'wi:drift-proj:WORK-001',
         planVersionId: 'plv:drift-plan:v1',
-        blockerId: 'dr:wi:drift-proj:WORK-001:3',
+        blockerId: 'dr:wi:drift-proj:WORK-001:4',
         baselineRepoHead: 'head-1',
         baselineWorktreeHash: 'tree-1',
         observedRepoHead: 'head-2',
         observedWorktreeHash: null,
       })
-      expect(readProjectEvents(db, brandString<ProjectId>('drift-proj'))[2]).toMatchObject({
+      expect(readProjectEvents(db, brandString<ProjectId>('drift-proj'))[3]).toMatchObject({
         eventType: 'baseline/drift-detected',
         entityType: 'work_external_blocker',
-        entityId: 'dr:wi:drift-proj:WORK-001:3',
+        entityId: 'dr:wi:drift-proj:WORK-001:4',
       })
       expect(db.prepare('SELECT blocker_kind, status, external_ref FROM work_external_blockers WHERE id = ?')
         .get(drift.driftId)).toEqual({ blocker_kind: 'BASELINE_DRIFT', status: 'OPEN', external_ref: 'head-2' })
 
       const readiness = computeWorkReadiness(db, work, { nowMs: 25 })
       expect(readiness.reasons[0]?.kind).toBe('external-blocker-open')
-      expect(readiness.reasons[0]?.refId).toBe('dr:wi:drift-proj:WORK-001:3')
+      expect(readiness.reasons[0]?.refId).toBe('dr:wi:drift-proj:WORK-001:4')
       const denied = thrownError(LeaseError, () => claimWorkItem(db, work, 'worker/session-9', { nowMs: 25 }))
       expect(denied.code).toBe('work-not-ready')
-      expect(denied.message).toContain('external blocker "dr:wi:drift-proj:WORK-001:3"')
+      expect(denied.message).toContain('external blocker "dr:wi:drift-proj:WORK-001:4"')
 
       // The pin is immutable: the version keeps its original baseline.
       expect(db.prepare('SELECT baseline_repo_head, baseline_worktree_hash FROM plan_versions WHERE id = ?')
@@ -405,7 +491,7 @@ describe('recordBaselineDrift against partially pinned baselines', () => {
     const headless = await driftLedger()
     try {
       headless.prepare('UPDATE plan_versions SET baseline_repo_head = NULL').run()
-      headless.prepare("UPDATE plan_versions SET status = 'ACTIVE'").run()
+      activatePlanVersion(headless, brandString<PlanVersionId>('plv:drift-plan:v1'))
       const drift = recordBaselineDrift(
         headless,
         brandString<WorkItemId>('wi:drift-proj:WORK-001'),
@@ -425,7 +511,7 @@ describe('recordBaselineDrift against partially pinned baselines', () => {
     const treeless = await driftLedger()
     try {
       treeless.prepare('UPDATE plan_versions SET baseline_worktree_hash = NULL').run()
-      treeless.prepare("UPDATE plan_versions SET status = 'ACTIVE'").run()
+      activatePlanVersion(treeless, brandString<PlanVersionId>('plv:drift-plan:v1'))
       const drift = recordBaselineDrift(
         treeless,
         brandString<WorkItemId>('wi:drift-proj:WORK-001'),
@@ -441,12 +527,12 @@ describe('recordBaselineDrift against partially pinned baselines', () => {
 })
 
 describe('replaying supersede and drift events', () => {
-  /** A golden ledger with an active version superseded at event 17. */
+  /** A golden ledger with an active version superseded at event 18. */
   async function supersededLedger(): Promise<{ db: DatabaseSync; base: Record<string, unknown> }> {
     const db = await goldenLedger()
     makeClaimable(db, 'W01')
     supersedePlanVersion(db, GOLDEN_VERSION, { nowMs: 50 })
-    return { db, base: eventPayload(db, 17) }
+    return { db, base: eventPayload(db, 18) }
   }
 
   it('accepts the recorded events and fails closed on unreadable supersede payloads', async () => {
@@ -485,7 +571,7 @@ describe('replaying supersede and drift events', () => {
       if (transform === undefined || pattern === undefined) throw new Error('unreachable case row')
       const { db, base } = await supersededLedger()
       try {
-        rewritePayload(db, 17, transform(base))
+        rewritePayload(db, 18, transform(base))
         expect(thrownError(Error, () => replayProjectEvents(db, PROJECT)).message, `case ${index}`)
           .toMatch(pattern)
       } finally {
@@ -497,7 +583,7 @@ describe('replaying supersede and drift events', () => {
   it('fails closed when a version retires twice or a drift names no replayed item', async () => {
     const duplicate = await supersededLedger()
     try {
-      const recorded = eventPayload(duplicate.db, 17)
+      const recorded = eventPayload(duplicate.db, 18)
       appendProjectEvent(
         duplicate.db,
         PROJECT,

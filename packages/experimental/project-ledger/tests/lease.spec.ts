@@ -34,6 +34,8 @@ import {
   type ProjectId,
   type WorkItemId,
   type WorkLeaseId,
+  activatePlanVersion,
+  type PlanVersionId,
 } from '../src/index.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -72,12 +74,12 @@ function tokenHash(leaseToken: string): string {
 }
 
 /**
- * Make a golden item claimable through the causal rows: activate the version,
- * activate its phase, and satisfy the BLOCKS edges — the seams of writers
- * this package does not own (activation, evaluation outcomes).
+ * Make a golden item claimable through the causal rows: activate the version
+ * through its writer, activate its phase, and satisfy the BLOCKS edges — the
+ * phase move is the seam of writers this package does not own.
  */
 function makeClaimable(db: DatabaseSync, phaseKey: string): void {
-  db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
+  activatePlanVersion(db, brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v1'))
   db.prepare('UPDATE phases SET status = ? WHERE stable_key = ?').run('ACTIVE', phaseKey)
   db.prepare('UPDATE work_items SET status = ? WHERE stable_key IN (?, ?)').run('DONE', 'OWNER-REVIEW-001', 'PRE-001')
 }
@@ -131,14 +133,32 @@ function thrownError<T extends Error>(expected: new (...args: never[]) => T, cal
 /** The projection read straight from the materialized tables, for the parity comparison. */
 function materializedProjection(db: DatabaseSync): Record<string, unknown> {
   const planVersions = new Map<string, unknown>()
-  const versionRows = db.prepare('SELECT id, plan_id, version_no, source_document_hash FROM plan_versions')
-    .all() as { id: string; plan_id: string; version_no: number; source_document_hash: string }[]
+  const versionRows = db.prepare(
+    'SELECT id, plan_id, version_no, source_document_hash, status, activated_at_ms, superseded_at_ms FROM plan_versions',
+  ).all() as {
+    id: string
+    plan_id: string
+    version_no: number
+    source_document_hash: string
+    status: string
+    activated_at_ms: number | null
+    superseded_at_ms: number | null
+  }[]
   for (const row of versionRows) {
     planVersions.set(row.id, {
       planId: row.plan_id,
       versionNo: row.version_no,
       sourceDocumentHash: row.source_document_hash,
+      status: row.status,
+      activatedAtMs: row.activated_at_ms ?? undefined,
+      supersededAtMs: row.superseded_at_ms ?? undefined,
     })
+  }
+  const currentPlanVersions = new Map<string, string>()
+  const pointerRows = db.prepare('SELECT id, current_version_id FROM plans WHERE current_version_id IS NOT NULL')
+    .all() as { id: string; current_version_id: string }[]
+  for (const row of pointerRows) {
+    currentPlanVersions.set(row.id, row.current_version_id)
   }
   const workItems = new Map<string, unknown>()
   const itemRows = db.prepare('SELECT id, stable_key, title, plan_version_id, status FROM work_items')
@@ -191,6 +211,7 @@ function materializedProjection(db: DatabaseSync): Record<string, unknown> {
   }
   // No test in this file prepares work packets; the rebuild seam owns packet parity.
   return {
+    currentPlanVersions,
     planVersions, workItems, leases, workPackets: new Map(),
     decisionRequests: new Map(), decisions: new Map(), approvals: new Map(),
     resourceRequirements: new Map(), resourceInstances: new Map(), resourceVerifications: new Map(),
@@ -249,12 +270,12 @@ describe('claimWorkItem', () => {
       nowMs: 1000,
     })
 
-    expect(claim.leaseId).toBe('ls:wi:mini-dsh:SCHEMA-001:17')
+    expect(claim.leaseId).toBe('ls:wi:mini-dsh:SCHEMA-001:18')
     // The token is an asymmetric matcher inside `toEqual`, so it is asserted
     // beside the structural comparison instead.
     const { leaseToken, ...claimWithoutToken } = claim
     expect(claimWithoutToken).toEqual({
-      leaseId: 'ls:wi:mini-dsh:SCHEMA-001:17',
+      leaseId: 'ls:wi:mini-dsh:SCHEMA-001:18',
       workItemId: target,
       workerIdentity: 'worker-a',
       status: 'ACTIVE',
@@ -262,14 +283,14 @@ describe('claimWorkItem', () => {
       heartbeatAtMs: 1000,
       expiresAtMs: 2000,
       releasedAtMs: undefined,
-      sequenceNo: 17,
+      sequenceNo: 18,
     })
     expect(leaseToken).toMatch(/^[0-9a-f]{64}$/)
     expect(db.prepare(
       'SELECT id, work_item_id, worker_identity, lease_token_hash, status, acquired_at_ms, heartbeat_at_ms, '
       + 'expires_at_ms, released_at_ms FROM work_leases',
     ).get()).toEqual({
-      id: 'ls:wi:mini-dsh:SCHEMA-001:17',
+      id: 'ls:wi:mini-dsh:SCHEMA-001:18',
       work_item_id: target,
       worker_identity: 'worker-a',
       lease_token_hash: tokenHash(claim.leaseToken),
@@ -281,7 +302,7 @@ describe('claimWorkItem', () => {
     })
     expect(db.prepare(
       'SELECT event_type, ignorable, entity_type, entity_id, actor_ref, created_at_ms FROM project_events '
-      + 'WHERE sequence_no = 17',
+      + 'WHERE sequence_no = 18',
     ).get()).toEqual({
       event_type: 'work/claimed',
       ignorable: 0,
@@ -290,9 +311,9 @@ describe('claimWorkItem', () => {
       actor_ref: DEFAULT_LEASE_ACTOR_REF,
       created_at_ms: 1000,
     })
-    expect(eventPayload(db, 17)).toEqual({
+    expect(eventPayload(db, 18)).toEqual({
       workItemId: target,
-      leaseId: 'ls:wi:mini-dsh:SCHEMA-001:17',
+      leaseId: 'ls:wi:mini-dsh:SCHEMA-001:18',
       workerIdentity: 'worker-a',
       fromStatus: 'BLOCKED',
       toStatus: 'IN_PROGRESS',
@@ -355,12 +376,12 @@ describe('claimWorkItem', () => {
       },
       {
         kind: 'lease-active',
-        refId: 'ls:wi:mini-dsh:SCHEMA-001:17',
-        message: 'active lease "ls:wi:mini-dsh:SCHEMA-001:17" held by worker-a expires at 2000',
+        refId: 'ls:wi:mini-dsh:SCHEMA-001:18',
+        message: 'active lease "ls:wi:mini-dsh:SCHEMA-001:18" held by worker-a expires at 2000',
       },
     ])
     expect(db.prepare("SELECT COUNT(*) AS n FROM work_leases WHERE status = 'ACTIVE'").get()).toEqual({ n: 1 })
-    expect(eventCount(db)).toBe(17)
+    expect(eventCount(db)).toBe(18)
     db.close()
   })
 
@@ -374,16 +395,16 @@ describe('claimWorkItem', () => {
     setItemStatus(db, 'SCHEMA-001', 'READY')
     const claim = claimWorkItem(db, itemId('SCHEMA-001'), 'worker-b', { nowMs: 5000 })
 
-    expect(claim.leaseId).toBe('ls:wi:mini-dsh:SCHEMA-001:19')
-    expect(db.prepare('SELECT status FROM work_leases WHERE id = ?').get('ls:wi:mini-dsh:SCHEMA-001:17'))
+    expect(claim.leaseId).toBe('ls:wi:mini-dsh:SCHEMA-001:20')
+    expect(db.prepare('SELECT status FROM work_leases WHERE id = ?').get('ls:wi:mini-dsh:SCHEMA-001:18'))
       .toEqual({ status: 'EXPIRED' })
-    expect(eventPayload(db, 18)).toEqual({
+    expect(eventPayload(db, 19)).toEqual({
       workItemId: itemId('SCHEMA-001'),
-      leaseId: 'ls:wi:mini-dsh:SCHEMA-001:17',
+      leaseId: 'ls:wi:mini-dsh:SCHEMA-001:18',
       workerIdentity: 'worker-a',
       toStatus: 'READY',
     })
-    expect(eventPayload(db, 19)).toMatchObject({ workerIdentity: 'worker-b', fromStatus: 'READY' })
+    expect(eventPayload(db, 20)).toMatchObject({ workerIdentity: 'worker-b', fromStatus: 'READY' })
     db.close()
   })
 })
@@ -396,7 +417,7 @@ describe('heartbeatWorkLease', () => {
       leaseConfig: { ttlMs: 1000, heartbeatIntervalMs: 400 },
       nowMs: 1000,
     })
-    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:17')
+    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:18')
     const lease = heartbeatWorkLease(db, leaseId, claim.leaseToken, {
       leaseConfig: { ttlMs: 1000, heartbeatIntervalMs: 400 },
       nowMs: 1500,
@@ -414,9 +435,9 @@ describe('heartbeatWorkLease', () => {
     })
     expect(db.prepare('SELECT heartbeat_at_ms, expires_at_ms FROM work_leases WHERE id = ?').get(leaseId))
       .toEqual({ heartbeat_at_ms: 1500, expires_at_ms: 2500 })
-    expect(db.prepare('SELECT entity_type, entity_id, actor_ref FROM project_events WHERE sequence_no = 18').get())
+    expect(db.prepare('SELECT entity_type, entity_id, actor_ref FROM project_events WHERE sequence_no = 19').get())
       .toEqual({ entity_type: 'work_lease', entity_id: leaseId, actor_ref: DEFAULT_LEASE_ACTOR_REF })
-    expect(eventPayload(db, 18)).toEqual({
+    expect(eventPayload(db, 19)).toEqual({
       workItemId: itemId('SCHEMA-001'),
       leaseId,
       workerIdentity: 'worker-a',
@@ -430,13 +451,13 @@ describe('heartbeatWorkLease', () => {
     const db = await goldenLedger()
     makeClaimable(db, 'W01')
     claimWorkItem(db, itemId('SCHEMA-001'), 'worker-a', { nowMs: 1000 })
-    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:17')
+    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:18')
     const thrown = thrownError(LeaseError, () => heartbeatWorkLease(db, leaseId, 'not-the-token', { nowMs: 1500 }))
     expect(thrown.code).toBe('lease-token-mismatch')
     expect(thrown.message).toBe(
       `work lease "${leaseId}" token does not match; only the lease holder may extend or release it`,
     )
-    expect(eventCount(db)).toBe(17)
+    expect(eventCount(db)).toBe(18)
     expect(db.prepare('SELECT expires_at_ms FROM work_leases WHERE id = ?').get(leaseId))
       .toEqual({ expires_at_ms: 300_000 + 1000 })
     db.close()
@@ -458,7 +479,7 @@ describe('heartbeatWorkLease', () => {
       leaseConfig: { ttlMs: 10_000, heartbeatIntervalMs: 4000 },
       nowMs: 1000,
     })
-    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:17')
+    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:18')
     releaseWorkLease(db, leaseId, claim.leaseToken, { nowMs: 1500 })
     const thrown = thrownError(LeaseError, () => heartbeatWorkLease(db, leaseId, claim.leaseToken, { nowMs: 1600 }))
     expect(thrown.code).toBe('lease-not-active')
@@ -473,7 +494,7 @@ describe('heartbeatWorkLease', () => {
       leaseConfig: { ttlMs: 1000, heartbeatIntervalMs: 400 },
       nowMs: 1000,
     })
-    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:17')
+    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:18')
     const thrown = thrownError(LeaseError, () => heartbeatWorkLease(db, leaseId, claim.leaseToken, { nowMs: 2000 }))
     expect(thrown.code).toBe('lease-not-active')
     expect(thrown.message).toBe(
@@ -481,7 +502,7 @@ describe('heartbeatWorkLease', () => {
     )
     expect(db.prepare('SELECT heartbeat_at_ms, expires_at_ms FROM work_leases WHERE id = ?').get(leaseId))
       .toEqual({ heartbeat_at_ms: 1000, expires_at_ms: 2000 })
-    expect(eventCount(db)).toBe(17)
+    expect(eventCount(db)).toBe(18)
     db.close()
   })
 })
@@ -494,7 +515,7 @@ describe('releaseWorkLease', () => {
       leaseConfig: { ttlMs: 10_000, heartbeatIntervalMs: 4000 },
       nowMs: 1000,
     })
-    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:17')
+    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:18')
     const lease = releaseWorkLease(db, leaseId, claim.leaseToken, { nowMs: 1500 })
 
     expect(lease).toEqual({
@@ -509,7 +530,7 @@ describe('releaseWorkLease', () => {
     })
     expect(db.prepare('SELECT status, released_at_ms FROM work_leases WHERE id = ?').get(leaseId))
       .toEqual({ status: 'RELEASED', released_at_ms: 1500 })
-    expect(eventPayload(db, 18)).toEqual({
+    expect(eventPayload(db, 19)).toEqual({
       workItemId: itemId('SCHEMA-001'),
       leaseId,
       workerIdentity: 'worker-a',
@@ -527,10 +548,10 @@ describe('releaseWorkLease', () => {
       nowMs: 1000,
     })
     evaluateAcceptanceCriterion(db, criterionId('SCHEMA-001', 'AC-SCHEMA-001'), 'FAIL', { nowMs: 1200 })
-    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:17')
+    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:18')
     const lease = releaseWorkLease(db, leaseId, claim.leaseToken, { nowMs: 1500 })
     expect(lease.status).toBe('RELEASED')
-    expect(eventPayload(db, 19)).toMatchObject({ toStatus: 'BLOCKED' })
+    expect(eventPayload(db, 20)).toMatchObject({ toStatus: 'BLOCKED' })
     expect(itemStatus(db, 'SCHEMA-001')).toBe('BLOCKED')
     db.close()
   })
@@ -542,7 +563,7 @@ describe('releaseWorkLease', () => {
       leaseConfig: { ttlMs: 10_000, heartbeatIntervalMs: 4000 },
       nowMs: 1000,
     })
-    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:17')
+    const leaseId = brandString<WorkLeaseId>('ls:wi:mini-dsh:SCHEMA-001:18')
     const mismatch = thrownError(LeaseError, () => releaseWorkLease(db, leaseId, 'wrong', { nowMs: 1500 }))
     expect(mismatch.code).toBe('lease-token-mismatch')
 
@@ -572,19 +593,19 @@ describe('reapExpiredLeases', () => {
 
     expect(reaped).toEqual([
       {
-        leaseId: 'ls:wi:mini-dsh:SCHEMA-001:17',
+        leaseId: 'ls:wi:mini-dsh:SCHEMA-001:18',
         workItemId: itemId('SCHEMA-001'),
         workerIdentity: 'worker-a',
         fromItemStatus: 'IN_PROGRESS',
         toItemStatus: 'READY',
-        sequenceNo: 18,
+        sequenceNo: 19,
       },
     ])
     expect(db.prepare('SELECT status, released_at_ms FROM work_leases').get())
       .toEqual({ status: 'EXPIRED', released_at_ms: null })
-    expect(eventPayload(db, 18)).toEqual({
+    expect(eventPayload(db, 19)).toEqual({
       workItemId: itemId('SCHEMA-001'),
-      leaseId: 'ls:wi:mini-dsh:SCHEMA-001:17',
+      leaseId: 'ls:wi:mini-dsh:SCHEMA-001:18',
       workerIdentity: 'worker-a',
       toStatus: 'READY',
     })
@@ -604,7 +625,7 @@ describe('reapExpiredLeases', () => {
     const reaped = reapExpiredLeases(db, { nowMs: 5000 })
 
     expect(reaped).toEqual([
-      expect.objectContaining({ leaseId: 'ls:wi:mini-dsh:SCHEMA-001:17', toItemStatus: 'BLOCKED', sequenceNo: 19 }),
+      expect.objectContaining({ leaseId: 'ls:wi:mini-dsh:SCHEMA-001:18', toItemStatus: 'BLOCKED', sequenceNo: 20 }),
     ])
     expect(itemStatus(db, 'SCHEMA-001')).toBe('BLOCKED')
     db.close()
@@ -632,7 +653,7 @@ describe('reapExpiredLeases', () => {
 
     const firstBatch = reapExpiredLeases(db, { limit: 2, nowMs: 5000 })
     expect(firstBatch.map(lease => lease.leaseId))
-      .toEqual(['ls:wi:mini-dsh:DB-001:18', 'ls:wi:mini-dsh:IMPORT-001:19'])
+      .toEqual(['ls:wi:mini-dsh:DB-001:19', 'ls:wi:mini-dsh:IMPORT-001:20'])
     // DB-001's lifecycle moved on to DONE while its lease was live, so the
     // reaper leaves it; IMPORT-001's edge source is that DONE item, so its
     // abandoned IN_PROGRESS recomputes READY.
@@ -641,12 +662,12 @@ describe('reapExpiredLeases', () => {
     const secondBatch = reapExpiredLeases(db, { limit: 2, nowMs: 5000 })
     expect(secondBatch).toEqual([
       {
-        leaseId: 'ls:wi:mini-dsh:SCHEMA-001:17',
+        leaseId: 'ls:wi:mini-dsh:SCHEMA-001:18',
         workItemId: itemId('SCHEMA-001'),
         workerIdentity: 'worker-a',
         fromItemStatus: 'DONE',
         toItemStatus: 'DONE',
-        sequenceNo: 22,
+        sequenceNo: 23,
       },
     ])
     expect(itemStatus(db, 'SCHEMA-001')).toBe('DONE')
@@ -675,18 +696,18 @@ describe('blockWorkItem and unblockWorkItem', () => {
       fromStatus: 'BLOCKED',
       toStatus: 'READY',
       readiness: { ready: true, reasons: [] },
-      sequenceNo: 17,
+      sequenceNo: 18,
       createdAtMs: 100,
     })
     expect(db.prepare(
-      'SELECT event_type, entity_type, entity_id, actor_ref FROM project_events WHERE sequence_no = 17',
+      'SELECT event_type, entity_type, entity_id, actor_ref FROM project_events WHERE sequence_no = 18',
     ).get()).toEqual({
       event_type: 'work/unblocked',
       entity_type: 'work_item',
       entity_id: itemId('SCHEMA-001'),
       actor_ref: DEFAULT_READINESS_ACTOR_REF,
     })
-    expect(eventPayload(db, 17)).toEqual({
+    expect(eventPayload(db, 18)).toEqual({
       workItemId: itemId('SCHEMA-001'),
       fromStatus: 'BLOCKED',
       toStatus: 'READY',
@@ -720,10 +741,10 @@ describe('blockWorkItem and unblockWorkItem', () => {
       fromStatus: 'READY',
       toStatus: 'BLOCKED',
       readiness: { ready: false, reasons },
-      sequenceNo: 19,
+      sequenceNo: 20,
       createdAtMs: 200,
     })
-    expect(eventPayload(db, 19)).toEqual({
+    expect(eventPayload(db, 20)).toEqual({
       workItemId: itemId('SCHEMA-001'),
       fromStatus: 'READY',
       toStatus: 'BLOCKED',
@@ -778,7 +799,7 @@ describe('blockWorkItem and unblockWorkItem', () => {
     expect(unblockInFlight.message).toBe(
       'work item "wi:mini-dsh:SCHEMA-001" recomputes blocked: '
       + 'work item "wi:mini-dsh:SCHEMA-001" has status IN_PROGRESS and is not open for a claim; '
-      + 'active lease "ls:wi:mini-dsh:SCHEMA-001:18" held by worker-a expires at 300150',
+      + 'active lease "ls:wi:mini-dsh:SCHEMA-001:19" held by worker-a expires at 300150',
     )
     done.close()
   })
@@ -868,7 +889,7 @@ describe('lease write failures roll back', () => {
       + 'BEGIN SELECT RAISE(ABORT, \'forced lease rejection\'); END')
     expect(() => claimWorkItem(db, itemId('SCHEMA-001'), 'worker-a', { nowMs: 1000 }))
       .toThrow('forced lease rejection')
-    expect(eventCount(db)).toBe(16)
+    expect(eventCount(db)).toBe(17)
     expect(leaseCount(db)).toBe(0)
     expect(itemStatus(db, 'SCHEMA-001')).toBe('BLOCKED')
     db.exec('DROP TRIGGER forced_lease_reject')
@@ -885,7 +906,7 @@ describe('lease write failures roll back', () => {
     db.exec('CREATE TRIGGER forced_event_reject BEFORE INSERT ON project_events '
       + 'BEGIN SELECT RAISE(ABORT, \'forced event rejection\'); END')
     expect(() => reapExpiredLeases(db, { nowMs: 5000 })).toThrow('forced event rejection')
-    expect(eventCount(db)).toBe(17)
+    expect(eventCount(db)).toBe(18)
     expect(db.prepare('SELECT status FROM work_leases').get()).toEqual({ status: 'ACTIVE' })
     expect(itemStatus(db, 'SCHEMA-001')).toBe('IN_PROGRESS')
     db.exec('DROP TRIGGER forced_event_reject')
@@ -896,10 +917,10 @@ describe('lease write failures roll back', () => {
 describe('lease replay parity', () => {
   it('rebuilds the lease lifecycle and item statuses from the events', async () => {
     const db = await goldenLedger()
-    // Only the unprojected rows (version and phase status) are written
-    // directly; every work-item status moves through vocabulary writers so
-    // the replay can rebuild it.
-    db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
+    // Only the unprojected phase row is written directly; the version
+    // activates through its writer and every work-item status moves through
+    // vocabulary writers, so the replay can rebuild them.
+    activatePlanVersion(db, brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v1'))
     const target = itemId('SCHEMA-001')
     const owner = itemId('OWNER-REVIEW-001')
     const pre = itemId('PRE-001')
@@ -907,7 +928,7 @@ describe('lease replay parity', () => {
     // OWNER-REVIEW-001 and PRE-001 complete through claim → VERIFYING →
     // acceptance PASS → DONE, the only lawful completion path.
     const ownerClaim = claimWorkItem(db, owner, 'worker-owner', { nowMs: 1000 })
-    expect(ownerClaim.leaseId).toBe('ls:wi:mini-dsh:OWNER-REVIEW-001:17')
+    expect(ownerClaim.leaseId).toBe('ls:wi:mini-dsh:OWNER-REVIEW-001:18')
     changeWorkStatus(db, owner, 'VERIFYING', { nowMs: 1050 })
     evaluateAcceptanceCriterion(
       db,
@@ -937,7 +958,7 @@ describe('lease replay parity', () => {
     const second = claimWorkItem(db, target, 'worker-b', { nowMs: 2000 })
     reapExpiredLeases(db, { nowMs: 400_000 })
 
-    expect(second.leaseId).toBe('ls:wi:mini-dsh:SCHEMA-001:28')
+    expect(second.leaseId).toBe('ls:wi:mini-dsh:SCHEMA-001:29')
     expect(replayProjectEvents(db, PROJECT)).toEqual(materializedProjection(db))
     expect(itemStatus(db, 'SCHEMA-001')).toBe('READY')
     expect(itemStatus(db, 'OWNER-REVIEW-001')).toBe('DONE')
@@ -958,7 +979,7 @@ describe('replay fails closed on contradictory lease payloads', () => {
       acquiredAtMs: 1,
       expiresAtMs: 2,
     }, { nowMs: 1 })
-    const carrier = 17
+    const carrier = 18
 
     for (const [payload, message] of [
       [{}, 'payload field "workItemId" must be a string'],
@@ -1038,7 +1059,7 @@ describe('replay fails closed on contradictory lease payloads', () => {
     appendProjectEvent(db, PROJECT, 'work/claimed', payload, { nowMs: 1 })
     appendProjectEvent(db, PROJECT, 'work/claimed', { ...payload, workerIdentity: 'worker-b' }, { nowMs: 2 })
     expect(() => replayProjectEvents(db, PROJECT)).toThrow(
-      'project event 18 of "mini-dsh" payload field "leaseId" names an already replayed work lease (ls:x:1)',
+      'project event 19 of "mini-dsh" payload field "leaseId" names an already replayed work lease (ls:x:1)',
     )
     db.close()
   })
@@ -1075,8 +1096,8 @@ describe('replay fails closed on contradictory lease payloads', () => {
           expiresAtMs: 2,
         }, 'payload field "leaseId" names no replayed work lease (ls:wi:mini-dsh:SCHEMA-001:99)'],
       ] as const) {
-        rewritePayload(db, 18, payload)
-        expect(() => replayProjectEvents(db, PROJECT)).toThrow(`project event 18 of "mini-dsh" ${message}`)
+        rewritePayload(db, 19, payload)
+        expect(() => replayProjectEvents(db, PROJECT)).toThrow(`project event 19 of "mini-dsh" ${message}`)
       }
       db.close()
     }
@@ -1103,8 +1124,8 @@ describe('replay fails closed on contradictory lease payloads', () => {
           toStatus: 'READY',
         }, 'payload field "workItemId" names no replayed work item (wi:mini-dsh:NOPE)'],
       ] as const) {
-        rewritePayload(db, 18, payload)
-        expect(() => replayProjectEvents(db, PROJECT)).toThrow(`project event 18 of "mini-dsh" ${message}`)
+        rewritePayload(db, 19, payload)
+        expect(() => replayProjectEvents(db, PROJECT)).toThrow(`project event 19 of "mini-dsh" ${message}`)
       }
       db.close()
     }
@@ -1116,7 +1137,7 @@ describe('replay fails closed on contradictory lease payloads', () => {
       appendProjectEvent(db, PROJECT, 'work/lease-expired', { ...leaseRef, toStatus: 'READY' }, { nowMs: 2 })
       appendProjectEvent(db, PROJECT, 'work/lease-heartbeat', { ...leaseRef, expiresAtMs: 9 }, { nowMs: 3 })
       expect(() => replayProjectEvents(db, PROJECT)).toThrow(
-        `project event 19 of "mini-dsh" payload heartbeats work lease "${claim.leaseId}" whose replayed status is EXPIRED`,
+        `project event 20 of "mini-dsh" payload heartbeats work lease "${claim.leaseId}" whose replayed status is EXPIRED`,
       )
       db.close()
     }
@@ -1128,7 +1149,7 @@ describe('replay fails closed on contradictory lease payloads', () => {
       appendProjectEvent(db, PROJECT, 'work/lease-expired', { ...leaseRef, toStatus: 'READY' }, { nowMs: 2 })
       appendProjectEvent(db, PROJECT, 'work/lease-expired', { ...leaseRef, toStatus: 'READY' }, { nowMs: 3 })
       expect(() => replayProjectEvents(db, PROJECT)).toThrow(
-        `project event 19 of "mini-dsh" payload expires work lease "${claim.leaseId}" whose replayed status is EXPIRED`,
+        `project event 20 of "mini-dsh" payload expires work lease "${claim.leaseId}" whose replayed status is EXPIRED`,
       )
       db.close()
     }
@@ -1140,7 +1161,7 @@ describe('replay fails closed on contradictory lease payloads', () => {
       appendProjectEvent(db, PROJECT, 'work/lease-expired', { ...leaseRef, toStatus: 'READY' }, { nowMs: 2 })
       appendProjectEvent(db, PROJECT, 'work/lease-released', { ...leaseRef, toStatus: 'READY' }, { nowMs: 3 })
       expect(() => replayProjectEvents(db, PROJECT)).toThrow(
-        `project event 19 of "mini-dsh" payload releases work lease "${claim.leaseId}" whose replayed status is EXPIRED`,
+        `project event 20 of "mini-dsh" payload releases work lease "${claim.leaseId}" whose replayed status is EXPIRED`,
       )
       db.close()
     }

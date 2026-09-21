@@ -17,6 +17,7 @@ import {
   type PlanVersionId,
   type ProjectId,
   type WorkItemId,
+  activatePlanVersion,
 } from '../src/index.js'
 
 /**
@@ -151,14 +152,11 @@ function compiledOf(text: string): ReturnType<typeof compilePlan> {
   return compilePlan(validatePlanSchema(value), { sourceText: text })
 }
 
-/** Import one compiled plan and activate its version the way the pinned fixtures do. */
+/** Import one compiled plan and activate its version through the writer. */
 async function activeLedgerOf(text: string, nowMs: number): Promise<DatabaseSync> {
   const db = await openProjectLedgerDatabase(':memory:')
   const { planVersionId } = importPlanVersion(db, compiledOf(text), { nowMs })
-  // Activation is an owner seam without an exported writer (v1.6a §5); the
-  // spec sets it the way the pinned-fixture generator does. The fold projects
-  // no version status, so the raw activation never drifts.
-  db.prepare("UPDATE plan_versions SET status = 'ACTIVE', activated_at_ms = ? WHERE id = ?").run(nowMs, planVersionId)
+  activatePlanVersion(db, brandString<PlanVersionId>(planVersionId), { nowMs })
   return db
 }
 
@@ -166,9 +164,6 @@ describe('readProjectDigest', () => {
   it('digests a two-version project through the real writers', async () => {
     const db = await activeLedgerOf(V1_TEXT, 1_000)
     const v1 = db.prepare('SELECT id FROM plan_versions WHERE plan_id = ? AND version_no = 1').get('digest-plan') as { id: string }
-    // Naming the current version is an owner seam without an exported writer
-    // (v1.6a §5); the raw pointer lets the real supersede writer repoint it.
-    db.prepare('UPDATE plans SET current_version_id = ? WHERE id = ?').run(v1.id, 'digest-plan')
     evaluateAcceptanceCriterion(
       db,
       brandString<AcceptanceCriterionId>('ac:wi:digest-proj:FIRST:AC-FIRST'),
@@ -177,7 +172,7 @@ describe('readProjectDigest', () => {
     )
     const v2 = importPlanVersion(db, compiledOf(V2_TEXT), { nowMs: 2_000 })
     supersedePlanVersion(db, brandString<PlanVersionId>(v1.id), { succeededBy: v2.planVersionId, nowMs: 2_100 })
-    db.prepare("UPDATE plan_versions SET status = 'ACTIVE', activated_at_ms = ? WHERE id = ?").run(2_200, v2.planVersionId)
+    activatePlanVersion(db, v2.planVersionId, { nowMs: 2_200 })
 
     const digest = readProjectDigest(db, PROJECT)
     expect(digest.plans).toEqual([{
@@ -268,7 +263,7 @@ describe('readProjectDigest', () => {
       {
         planId: brandString<PlanId>('digest-plan'),
         planName: 'Digest Proof Plan',
-        currentVersionId: null,
+        currentVersionId: brandString<PlanVersionId>('plv:digest-plan:v1'),
         versions: [{
           versionId: brandString<PlanVersionId>('plv:digest-plan:v1'),
           versionNo: 1,
@@ -335,7 +330,7 @@ describe('readProjectDigest', () => {
     db.prepare(
       'INSERT INTO project_events '
         + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-        + "VALUES (?, 99, 10, 'plan/imported', 0, '{}', 1)",
+        + "VALUES (?, 99, 11, 'plan/imported', 0, '{}', 1)",
     ).run(PROJECT)
 
     const digest = readProjectDigest(db, PROJECT)
@@ -344,6 +339,6 @@ describe('readProjectDigest', () => {
     expect(digest.replay).toMatchObject({ outcome: 'undecodable' })
     expect(digest.replay.outcome).toBe('undecodable')
     if (digest.replay.outcome !== 'undecodable') return
-    expect(digest.replay.timelineError).toMatch(/carries event format 10; this build reads up to format 9/u)
+    expect(digest.replay.timelineError).toMatch(/carries event format 11; this build reads up to format 10/u)
   })
 })

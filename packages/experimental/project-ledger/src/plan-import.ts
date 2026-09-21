@@ -5,8 +5,9 @@
  * and the `plan/imported` + `work/created` project events of §15/§16, all in
  * one `BEGIN IMMEDIATE` transaction that either commits whole or rolls back
  * whole. Import never activates a version: `plans.current_version_id` stays
- * untouched and every imported version is `DRAFT` (activation is a later
- * work package's explicit event). Work items are project-scoped projection
+ * untouched and every imported version is `DRAFT` until
+ * `activatePlanVersion`'s explicit owner event. Work items are
+ * project-scoped projection
  * rows, so a version that re-declares an item already recorded under another
  * version rejects (`work-item-conflict`) instead of re-pointing it — moving
  * items between versions belongs to the supersede flow.
@@ -152,8 +153,8 @@ function importWithinTransaction(
   }
   // Work items are project-scoped current-projection rows: a work item lives
   // in exactly one plan version (or the backlog). Re-declaring one under a
-  // new version is the supersede flow's decision (a later work package), so
-  // import rejects instead of silently re-pointing the projection.
+  // new version is the supersede flow's decision, so import rejects instead
+  // of silently re-pointing the projection.
   const recordedItem = db.prepare(
     'SELECT plan_version_id FROM work_items WHERE project_id = ? AND stable_key = ?',
   )

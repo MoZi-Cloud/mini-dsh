@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type { DatabaseSync } from 'node:sqlite'
 import {
+  activatePlanVersion,
   compilePlan,
   importPlanVersion,
   parsePlanDocument,
@@ -35,6 +36,8 @@ plan:
   id: tiny-plan
   name: Tiny Proof Plan
   version: 1
+  baseline:
+    repoHead: repo-head-v1
 phases:
   - id: P0
     title: One phase
@@ -104,6 +107,8 @@ plan:
   id: solo-plan
   name: Solo Proof Plan
   version: 1
+  baseline:
+    repoHead: repo-head-v1
 phases:
   - id: P0
     title: One phase
@@ -253,7 +258,5 @@ export function compilePlanText(text: string): ReturnType<typeof compilePlan> {
  */
 export function seedActivePlan(db: DatabaseSync, text: string): void {
   const { planVersionId } = importPlanVersion(db, compilePlanText(text))
-  // Activation is an owner seam without an exported writer (v1.6a §5); specs
-  // set it the same way the pinned-fixture generator does.
-  db.prepare("UPDATE plan_versions SET status = 'ACTIVE', activated_at_ms = ? WHERE id = ?").run(1_000, planVersionId)
+  activatePlanVersion(db, planVersionId, { nowMs: 1_000 })
 }

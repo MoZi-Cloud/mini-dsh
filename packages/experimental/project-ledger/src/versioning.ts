@@ -1,15 +1,20 @@
 /**
- * Immutable plan-version supersede and baseline drift (v1.6a §21/§22,
- * BOOT-08): the writers that retire a plan version and the writer that
- * records a repository drifting off a version's pinned baseline. Both are
- * additive-history writers — supersede moves only the version's lifecycle
- * columns (`status`, `superseded_at_ms`) and the `plans.current_version_id`
- * pointer when it named the retired version; the version's plan facts, its
- * work items' origins, and every recorded evaluation stay byte-identical.
- * Drift never rewrites the baseline columns: the pinned baseline is the
- * version's immutable record, and moving it silently to a new HEAD is
- * forbidden (§21) — the owner answers a drift with a superseding version or
- * an explicit rebind, not a pointer edit.
+ * Immutable plan-version lifecycle (v1.6a §8/§21/§22, BOOT-08): the owner
+ * writers that move a version through its lifecycle and the writer that
+ * records a repository drifting off a version's pinned baseline. All are
+ * additive-history writers — activation moves only `status`,
+ * `activated_at_ms`, and the `plans.current_version_id` pointer, and
+ * supersede moves only the version's lifecycle columns (`status`,
+ * `superseded_at_ms`) and the pointer when it named the retired version;
+ * the version's plan facts, its work items' origins, and every recorded
+ * evaluation stay byte-identical. Import never activates (§8): a version
+ * enters as `DRAFT` and reaches `ACTIVE` only through
+ * {@link activatePlanVersion}'s explicit owner event, and leaves `ACTIVE`
+ * only through {@link supersedePlanVersion}. Drift never rewrites the
+ * baseline columns: the pinned baseline is the version's immutable record,
+ * and moving it silently to a new HEAD is forbidden (§21) — the owner
+ * answers a drift with a superseding version or an explicit rebind, not a
+ * pointer edit.
  *
  * §22's default policy is `freeze-new-claims-and-review-active`: once a
  * version is `SUPERSEDED`, readiness recomputation denies every new claim on
@@ -39,6 +44,129 @@ export type PlanVersionStatus = (typeof PLAN_VERSION_STATUSES)[number]
 
 /** Writer identity recorded on supersede events by default. */
 export const DEFAULT_SUPERSEDE_ACTOR_REF = 'dsh-experimental-project-ledger/supersede'
+
+/** Writer identity recorded on activation events by default. */
+export const DEFAULT_ACTIVATE_ACTOR_REF = 'dsh-experimental-project-ledger/activate'
+
+/** Closed set of activation rejection reasons. */
+export type PlanActivationErrorCode =
+  | 'unknown-plan-version'
+  | 'version-not-draft'
+  | 'active-version-exists'
+  | 'import-record-missing'
+
+/** Thrown by {@link activatePlanVersion}; the rejection writes nothing. */
+export class PlanActivationError extends Error {
+  /** Stable failure kind for programmatic handling. */
+  readonly code: PlanActivationErrorCode
+
+  /** @param code - why the activation was rejected. @param message - the concrete reason. */
+  constructor(code: PlanActivationErrorCode, message: string) {
+    super(message)
+    this.name = 'PlanActivationError'
+    this.code = code
+  }
+}
+
+/** Options for {@link activatePlanVersion}. */
+export interface ActivatePlanVersionOptions {
+  /** Actor recorded on the event; defaults to {@link DEFAULT_ACTIVATE_ACTOR_REF}. */
+  readonly actorRef?: string | undefined
+  /** Wall-clock stamp for the row and event; defaults to `Date.now()`. */
+  readonly nowMs?: number | undefined
+}
+
+/** The recorded outcome of one plan-version activation. */
+export interface PlanVersionActivation {
+  readonly planVersionId: PlanVersionId
+  readonly planId: PlanId
+  readonly activatedAtMs: number
+  readonly sequenceNo: number
+}
+
+/**
+ * Activate one `DRAFT` plan version (v1.6a §8) inside a single
+ * `BEGIN IMMEDIATE` transaction: append the required
+ * `plan/version-activated` event, move the version to `ACTIVE` with its
+ * `activated_at_ms` stamp, and take ownership of `plans.current_version_id`.
+ * Activation is the owner action import defers — at most one version per
+ * plan is `ACTIVE`, and the version must have entered through the supported
+ * importer (`plan_imports` row) and never have left `DRAFT`.
+ * @param db - open ledger database.
+ * @param planVersionId - the `DRAFT` version to activate.
+ * @param options - actor and clock overrides.
+ * @returns the recorded activation with its event sequence.
+ * @throws {PlanActivationError} on `unknown-plan-version`, `version-not-draft`,
+ * `active-version-exists`, and `import-record-missing`.
+ * @throws the underlying SQLite error when a write fails; the transaction
+ * rolls back, leaving no partial rows.
+ */
+export function activatePlanVersion(
+  db: DatabaseSync,
+  planVersionId: PlanVersionId,
+  options: ActivatePlanVersionOptions = {},
+): PlanVersionActivation {
+  const nowMs = options.nowMs ?? Date.now()
+  const actorRef = options.actorRef ?? DEFAULT_ACTIVATE_ACTOR_REF
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const version = db.prepare('SELECT plan_id, status FROM plan_versions WHERE id = ?')
+      .get(planVersionId) as { plan_id: string; status: PlanVersionStatus } | undefined
+    if (version === undefined) {
+      throw new PlanActivationError(
+        'unknown-plan-version',
+        `plan version "${planVersionId}" is not recorded in this ledger`,
+      )
+    }
+    if (version.status !== 'DRAFT') {
+      throw new PlanActivationError(
+        'version-not-draft',
+        `plan version "${planVersionId}" is ${version.status}; only a DRAFT version activates`,
+      )
+    }
+    const imported = db.prepare('SELECT id FROM plan_imports WHERE plan_version_id = ?')
+      .get(planVersionId) as { id: string } | undefined
+    if (imported === undefined) {
+      throw new PlanActivationError(
+        'import-record-missing',
+        `plan version "${planVersionId}" records no plan_imports row; only an imported version activates`,
+      )
+    }
+    const active = db.prepare("SELECT id FROM plan_versions WHERE plan_id = ? AND status = 'ACTIVE'")
+      .get(version.plan_id) as { id: string } | undefined
+    if (active !== undefined) {
+      throw new PlanActivationError(
+        'active-version-exists',
+        `plan "${version.plan_id}" already has an ACTIVE version (${active.id}); supersede it before `
+          + `activating "${planVersionId}"`,
+      )
+    }
+    const projectId = brandString<ProjectId>(
+      (db.prepare('SELECT project_id FROM plans WHERE id = ?').get(version.plan_id) as { project_id: string }).project_id,
+    )
+    const sequenceNo = nextProjectEventSequence(db, projectId)
+    appendProjectEvent(
+      db,
+      projectId,
+      'plan/version-activated',
+      { planId: version.plan_id, planVersionId, activatedAtMs: nowMs },
+      { entityType: 'plan_version', entityId: planVersionId, actorRef, nowMs },
+    )
+    db.prepare("UPDATE plan_versions SET status = 'ACTIVE', activated_at_ms = ? WHERE id = ?")
+      .run(nowMs, planVersionId)
+    db.prepare('UPDATE plans SET current_version_id = ? WHERE id = ?').run(planVersionId, version.plan_id)
+    db.exec('COMMIT')
+    return {
+      planVersionId,
+      planId: brandString<PlanId>(version.plan_id),
+      activatedAtMs: nowMs,
+      sequenceNo,
+    }
+  } catch (error: unknown) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
 
 /** Writer identity recorded on drift events by default. */
 export const DEFAULT_DRIFT_ACTOR_REF = 'dsh-experimental-project-ledger/baseline-drift'

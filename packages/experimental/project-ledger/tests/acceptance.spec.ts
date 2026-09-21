@@ -19,6 +19,8 @@ import {
   type CompiledPlan,
   type ProjectId,
   type WorkItemId,
+  type PlanVersionId,
+  activatePlanVersion,
 } from '../src/index.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -63,14 +65,32 @@ function thrownError<T extends Error>(expected: new (...args: never[]) => T, cal
 /** The projection read straight from the materialized tables, for the parity comparison. */
 function materializedProjection(db: DatabaseSync): Record<string, unknown> {
   const planVersions = new Map<string, unknown>()
-  const versionRows = db.prepare('SELECT id, plan_id, version_no, source_document_hash FROM plan_versions')
-    .all() as { id: string; plan_id: string; version_no: number; source_document_hash: string }[]
+  const versionRows = db.prepare(
+    'SELECT id, plan_id, version_no, source_document_hash, status, activated_at_ms, superseded_at_ms FROM plan_versions',
+  ).all() as {
+    id: string
+    plan_id: string
+    version_no: number
+    source_document_hash: string
+    status: string
+    activated_at_ms: number | null
+    superseded_at_ms: number | null
+  }[]
   for (const row of versionRows) {
     planVersions.set(row.id, {
       planId: row.plan_id,
       versionNo: row.version_no,
       sourceDocumentHash: row.source_document_hash,
+      status: row.status,
+      activatedAtMs: row.activated_at_ms ?? undefined,
+      supersededAtMs: row.superseded_at_ms ?? undefined,
     })
+  }
+  const currentPlanVersions = new Map<string, string>()
+  const pointerRows = db.prepare('SELECT id, current_version_id FROM plans WHERE current_version_id IS NOT NULL')
+    .all() as { id: string; current_version_id: string }[]
+  for (const row of pointerRows) {
+    currentPlanVersions.set(row.id, row.current_version_id)
   }
   const criteriaByItem = new Map<string, Map<string, unknown>>()
   const criteriaRows = db.prepare(
@@ -132,6 +152,7 @@ function materializedProjection(db: DatabaseSync): Record<string, unknown> {
   }
   // No test in this file prepares work packets; the rebuild seam owns packet parity.
   return {
+    currentPlanVersions,
     planVersions, workItems, leases, workPackets: new Map(),
     decisionRequests: new Map(), decisions: new Map(), approvals: new Map(),
     resourceRequirements: new Map(), resourceInstances: new Map(), resourceVerifications: new Map(),
@@ -423,7 +444,7 @@ describe('replay', () => {
 describe('readiness closed loop', () => {
   it('a waived required criterion stops blocking the claim', async () => {
     const db = await goldenLedger()
-    db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
+    activatePlanVersion(db, brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v1'))
     const item = brandString<WorkItemId>('wi:mini-dsh:PRE-001')
     const id = criterionId('PRE-001', 'AC-PRE-001')
     evaluateAcceptanceCriterion(db, id, 'FAIL', { nowMs: 7 })

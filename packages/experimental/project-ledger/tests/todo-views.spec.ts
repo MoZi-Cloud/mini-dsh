@@ -23,6 +23,8 @@ import {
   type CompiledPlan,
   type ProjectId,
   type WorkItemId,
+  type PlanVersionId,
+  activatePlanVersion,
 } from '../src/index.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -61,7 +63,7 @@ function criterionId(stableKey: string, criterion: string): AcceptanceCriterionI
  * this package does not own (activation, evaluation outcomes).
  */
 function makeClaimable(db: DatabaseSync, phaseKey: string): void {
-  db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
+  activatePlanVersion(db, brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v1'))
   db.prepare('UPDATE phases SET status = ? WHERE stable_key = ?').run('ACTIVE', phaseKey)
   db.prepare('UPDATE work_items SET status = ? WHERE stable_key IN (?, ?)').run('DONE', 'OWNER-REVIEW-001', 'PRE-001')
 }
@@ -209,7 +211,7 @@ describe('owner and agent todo views', () => {
   it('hides another holder\'s live claim from a named viewer and keeps own and unclaimed entries', async () => {
     const db = await goldenLedger()
     try {
-      db.prepare('UPDATE plan_versions SET status = ?').run('ACTIVE')
+      activatePlanVersion(db, brandString<PlanVersionId>('plv:mini-dsh-v1.6a-ledger:v1'))
       db.prepare('UPDATE phases SET status = ?').run('ACTIVE')
       db.prepare('UPDATE work_items SET status = ? WHERE stable_key IN (?, ?)').run('DONE', 'OWNER-REVIEW-001', 'PRE-001')
       const leaseOptions = { nowMs: 10, leaseConfig: { ttlMs: 1000, heartbeatIntervalMs: 400 } }

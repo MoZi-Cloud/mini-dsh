@@ -20,7 +20,7 @@ import type { ConflictId } from './collaboration-conflicts.js'
 import type { DecisionId, DecisionRequestId } from './decisions.js'
 import type { HandoffId } from './handoffs.js'
 import type { WorkLeaseId } from './lease.js'
-import type { AcceptanceCriterionId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
+import type { AcceptanceCriterionId, PlanId, PlanVersionId, ProjectId, WorkItemId } from './plan-compile.js'
 import type { ResourceInstanceId, ResourceRequirementId, ResourceVerificationId } from './resources.js'
 import type { ScopeReservationId } from './scope-reservations.js'
 import type { WorkAssignmentId } from './work-assignments.js'
@@ -99,6 +99,15 @@ interface VersionFactsRow {
   readonly plan_id: string
   readonly version_no: number
   readonly source_document_hash: string
+  readonly status: string
+  readonly activated_at_ms: number | null
+  readonly superseded_at_ms: number | null
+}
+
+/** One `plans` row the audit reads, in select order. */
+interface PlanPointerRow {
+  readonly id: string
+  readonly current_version_id: string | null
 }
 
 /** One `work_items` row the audit reads, in select order. */
@@ -245,9 +254,12 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
       + 'FROM project_events WHERE project_id = ?',
   ).get(projectId) as { events: number; last_sequence: number }
   const versionRows = db.prepare(
-    'SELECT v.id, v.plan_id, v.version_no, v.source_document_hash FROM plan_versions v '
+    'SELECT v.id, v.plan_id, v.version_no, v.source_document_hash, v.status, v.activated_at_ms, v.superseded_at_ms '
+      + 'FROM plan_versions v '
       + 'JOIN plans p ON p.id = v.plan_id WHERE p.project_id = ? ORDER BY v.id',
   ).all(projectId) as unknown as VersionFactsRow[]
+  const planPointerRows = db.prepare('SELECT id, current_version_id FROM plans WHERE project_id = ? ORDER BY id')
+    .all(projectId) as unknown as PlanPointerRow[]
   const itemRows = db.prepare('SELECT id, status FROM work_items WHERE project_id = ? ORDER BY id')
     .all(projectId) as unknown as ItemStatusRow[]
   const criterionRows = db.prepare(
@@ -344,6 +356,7 @@ export function readProjectReplay(db: DatabaseSync, projectId: ProjectId): Proje
   const replayedCriterionIds = collectReplayedCriterionIds(projection)
   const drift: ProjectReplayDrift[] = []
   collectVersionDrift(versionRows, projection, drift)
+  collectPlanPointerDrift(planPointerRows, projection, drift)
   collectItemDrift(itemRows, projection, drift)
   collectCriterionDrift(criterionRows, projection, replayedCriterionIds, drift)
   collectLeaseDrift(leaseRows, projection, drift)
@@ -394,7 +407,7 @@ function collectReplayedCriterionIds(projection: ReplayedProjectProjection): Set
   return ids
 }
 
-/** Compare plan-version identity facts and existence, both directions. */
+/** Compare plan-version identity and lifecycle facts, both directions. */
 function collectVersionDrift(
   rows: readonly VersionFactsRow[],
   projection: ReplayedProjectProjection,
@@ -421,8 +434,50 @@ function collectVersionDrift(
           + `v${String(replayed.versionNo)} hash ${replayed.sourceDocumentHash}`,
       })
     }
+    if (replayed.status !== row.status) {
+      drift.push({
+        refId: row.id,
+        message: `plan version "${row.id}" has materialized status ${row.status} but replays to ${replayed.status}`,
+      })
+    }
+    if (replayed.activatedAtMs !== (row.activated_at_ms ?? undefined)) {
+      drift.push({
+        refId: row.id,
+        message: `plan version "${row.id}" materializes activation at ${row.activated_at_ms ?? 'none'} `
+          + `but replays activation at ${replayed.activatedAtMs ?? 'none'}`,
+      })
+    }
+    if (replayed.supersededAtMs !== (row.superseded_at_ms ?? undefined)) {
+      drift.push({
+        refId: row.id,
+        message: `plan version "${row.id}" materializes supersede at ${row.superseded_at_ms ?? 'none'} `
+          + `but replays supersede at ${replayed.supersededAtMs ?? 'none'}`,
+      })
+    }
   }
   pushReplayOnlyDrift(replayedIds, drift, refId => `plan version "${refId}" replays from a plan/imported event but no row is materialized`)
+}
+
+/** Compare each plan's current-version pointer, both directions. */
+function collectPlanPointerDrift(
+  rows: readonly PlanPointerRow[],
+  projection: ReplayedProjectProjection,
+  drift: ProjectReplayDrift[],
+): void {
+  const replayedPlanIds = new Set(projection.currentPlanVersions.keys())
+  for (const row of rows) {
+    const planId = brandString<PlanId>(row.id)
+    replayedPlanIds.delete(planId)
+    const replayed = projection.currentPlanVersions.get(planId)
+    if ((replayed ?? null) !== row.current_version_id) {
+      drift.push({
+        refId: row.id,
+        message: `plan "${row.id}" materializes current version ${row.current_version_id ?? 'none'} `
+          + `but replays ${replayed ?? 'none'}`,
+      })
+    }
+  }
+  pushReplayOnlyDrift(replayedPlanIds, drift, refId => `plan "${refId}" replays a current-version pointer but no row is materialized`)
 }
 
 /** Compare work-item existence and status, both directions. */

@@ -38,6 +38,9 @@ import {
   type DecisionRequestId,
   type ProjectId,
   type WorkItemId,
+  activatePlanVersion,
+  supersedePlanVersion,
+  type PlanVersionId,
 } from '@deepseek-ai/dsh-experimental-project-ledger'
 import { DUAL_PLAN_TEXT, GOLDEN_PLAN_TEXT, SOLO_PLAN_TEXT, TINY_PLAN_TEXT, compilePlanText, seedActivePlan } from './plans.ts'
 import * as miniProjectCommands from '../src/commands.ts'
@@ -196,10 +199,7 @@ describe('/project', () => {
   it('runs the doctor on the named-current version and on an explicit id', async () => {
     const mounted = await mount((db) => {
       const { planVersionId } = importPlanVersion(db, compilePlanText(GOLDEN_PLAN_TEXT))
-      // Naming the current version is an owner seam without an exported
-      // writer (v1.6a §5); the command test sets the pointer the same way
-      // the pinned-fixture generator does.
-      db.prepare('UPDATE plans SET current_version_id = ? WHERE id = ?').run(planVersionId, 'mini-dsh-v1.6a-ledger')
+      activatePlanVersion(db, planVersionId)
     })
     try {
       await expect(run(mounted, '/project doctor')).resolves.toMatchObject({
@@ -238,7 +238,7 @@ describe('/project', () => {
 
     const drifted = await mount((db) => {
       const { planVersionId } = importPlanVersion(db, compilePlanText(GOLDEN_PLAN_TEXT))
-      db.prepare('UPDATE plans SET current_version_id = ? WHERE id = ?').run(planVersionId, 'mini-dsh-v1.6a-ledger')
+      activatePlanVersion(db, planVersionId)
       // An out-of-band status write is projection drift by construction;
       // the doctor must surface it through the command.
       db.prepare("UPDATE work_items SET status = 'DONE' WHERE id = ?").run('wi:mini-dsh:PRE-002')
@@ -461,7 +461,7 @@ describe('/project', () => {
     })
     try {
       const expected = [
-        'Project tiny-proj — replay audit over 6 events, last sequence 6.',
+        'Project tiny-proj — replay audit over 7 events, last sequence 7.',
         'Replayed: 1 plan versions, 3 work items, 3 criteria, 1 leases, 0 work packets.',
         'Materialized: 1 plan versions, 3 work items, 3 criteria, 1 leases.',
         'Replay matches every materialized row.',
@@ -500,12 +500,12 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 10, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 11, 'plan/imported', 0, '{}', 1)",
       ).run()
       const result = await run(mounted, '/project replay')
       expect(result).toMatchObject({ kind: 'success' })
       if (result.kind !== 'success' || result.text === undefined) return
-      expect(result.text).toContain('Project tiny-proj — replay audit over 5 events, last sequence 99.')
+      expect(result.text).toContain('Project tiny-proj — replay audit over 6 events, last sequence 99.')
       expect(result.text).toContain('The timeline cannot be decoded by this build:')
       expect(result.text).not.toContain('Replay matches')
     } finally {
@@ -524,23 +524,16 @@ describe('/project', () => {
         'PASS',
         { evaluatedBy: 'spec-worker', nowMs: 60_000 },
       )
-      // Naming the current version is an owner seam without an exported
-      // writer (v1.6a §5); the retire and baseline writes are display facts
-      // the replay never projects, set the way the doctor test sets its facts.
-      db.prepare('UPDATE plans SET current_version_id = ? WHERE id = ?').run('plv:tiny-plan:v1', 'tiny-plan')
-      db.prepare(
-        "UPDATE plan_versions SET status = 'SUPERSEDED', superseded_at_ms = 61_000, baseline_repo_head = 'repo-head-v1' "
-          + "WHERE id = 'plv:tiny-plan:v1'",
-      ).run()
+      supersedePlanVersion(db, brandString<PlanVersionId>('plv:tiny-plan:v1'), { nowMs: 61_000 })
       const expected = [
         'Project tiny-proj — evidence digest.',
-        'Plan Tiny Proof Plan (tiny-plan) — current version plv:tiny-plan:v1.',
+        'Plan Tiny Proof Plan (tiny-plan) — current version none.',
         '  v1 SUPERSEDED — baseline repo-head-v1, superseded 1970-01-01T00:01:01.000Z',
         'Items (3):',
         '- AGENT-FREE (agent, priority 30) READY — criteria 1/1 passing, verdicts PASS 1; last evidence 1970-01-01T00:01:00.000Z',
         '- OWNER-A (owner, priority 50) READY — criteria 0/1 passing, verdicts none',
         '- OWNER-B (owner, priority 40) READY — criteria 0/1 passing, verdicts none',
-        'Replay audit: clean over 5 events (last sequence 5).',
+        'Replay audit: clean over 7 events (last sequence 7).',
       ].join('\n')
       await expect(run(mounted, '/project digest')).resolves.toEqual({ kind: 'success', text: expected })
       await expect(run(mounted, '/project digest tiny-proj')).resolves.toEqual({ kind: 'success', text: expected })
@@ -645,20 +638,13 @@ describe('/project', () => {
         'PASS',
         { evaluatedBy: 'spec-worker', nowMs: 61_000, observed: { outputTail: 'optional tail passes' } },
       )
-      // Naming the current version is an owner seam without an exported
-      // writer (v1.6a §5); the retire and baseline writes are display facts
-      // the replay never projects, set the way the digest test sets its facts.
-      db.prepare('UPDATE plans SET current_version_id = ? WHERE id = ?').run('plv:solo-plan:v1', 'solo-plan')
-      db.prepare(
-        "UPDATE plan_versions SET status = 'SUPERSEDED', superseded_at_ms = 61_500, baseline_repo_head = 'repo-head-v1' "
-          + "WHERE id = 'plv:solo-plan:v1'",
-      ).run()
+      supersedePlanVersion(db, brandString<PlanVersionId>('plv:solo-plan:v1'), { nowMs: 61_500 })
       const expected = [
         '# Project solo-proj — evidence export',
         '',
         '## Plans',
         '',
-        '- **Solo Proof Plan** (`solo-plan`) — current version `plv:solo-plan:v1`',
+        '- **Solo Proof Plan** (`solo-plan`) — current version `none`',
         '  - v1 SUPERSEDED — baseline `repo-head-v1`, superseded 1970-01-01T00:01:01.500Z',
         '',
         '## Work items (1)',
@@ -673,7 +659,7 @@ describe('/project', () => {
         '',
         '## Replay audit',
         '',
-        'clean over 4 events (last sequence 4).',
+        'clean over 6 events (last sequence 6).',
       ].join('\n')
       await expect(run(mounted, '/project export')).resolves.toEqual({ kind: 'success', text: expected })
       await expect(run(mounted, '/project export solo-proj')).resolves.toEqual({ kind: 'success', text: expected })
@@ -1182,7 +1168,7 @@ describe('/project', () => {
       expect(drifted).toMatchObject({ kind: 'success' })
       if (drifted.kind !== 'success' || drifted.text === undefined) return
       expect(drifted.text).toContain('- OWNER-A (owner, priority 50) DONE — criteria 0/1 passing, verdicts none')
-      expect(drifted.text).toContain('Replay audit: 1 drift finding over 4 events:')
+      expect(drifted.text).toContain('Replay audit: 1 drift finding over 5 events:')
       expect(drifted.text).toContain(
         'work item "wi:tiny-proj:OWNER-A" has materialized status DONE but replays to READY',
       )
@@ -1194,7 +1180,7 @@ describe('/project', () => {
       const plural = await run(mounted, '/project digest tiny-proj')
       expect(plural).toMatchObject({ kind: 'success' })
       if (plural.kind !== 'success' || plural.text === undefined) return
-      expect(plural.text).toContain('2 drift findings over 4 events:')
+      expect(plural.text).toContain('2 drift findings over 5 events:')
 
       // The export renders the drift state as markdown: the versionless plan
       // line, the per-finding drift list, and the DONE display fact.
@@ -1204,7 +1190,7 @@ describe('/project', () => {
       expect(driftedExport.text).toContain('- **Side Plan** (`side-plan`) — current version `none`')
       expect(driftedExport.text).toContain('  - (no plan versions recorded)')
       expect(driftedExport.text).toContain('## Replay audit')
-      expect(driftedExport.text).toContain('2 drift findings over 4 events:')
+      expect(driftedExport.text).toContain('2 drift findings over 5 events:')
       expect(driftedExport.text).toContain('has materialized status WAIVED but replays to PENDING')
       expect(driftedExport.text).toContain(
         'work item "wi:tiny-proj:OWNER-A" has materialized status DONE but replays to READY',
@@ -1216,13 +1202,13 @@ describe('/project', () => {
       mounted.ctx.projectLedger.db.prepare(
         'INSERT INTO project_events '
           + '(project_id, sequence_no, event_format_version, event_type, ignorable, payload_json, created_at_ms) '
-          + "VALUES ('tiny-proj', 99, 10, 'plan/imported', 0, '{}', 1)",
+          + "VALUES ('tiny-proj', 99, 11, 'plan/imported', 0, '{}', 1)",
       ).run()
       const broken = await run(mounted, '/project digest tiny-proj')
       expect(broken).toMatchObject({ kind: 'success' })
       if (broken.kind !== 'success' || broken.text === undefined) return
       expect(broken.text).toContain('Replay audit: the timeline cannot be decoded by this build — ')
-      expect(broken.text).toContain('carries event format 10; this build reads up to format 9')
+      expect(broken.text).toContain('carries event format 11; this build reads up to format 10')
       expect(broken.text).not.toContain('Replay audit: clean')
 
       // The export's replay section reports the decode failure, not parity.
@@ -1230,7 +1216,7 @@ describe('/project', () => {
       expect(brokenExport).toMatchObject({ kind: 'success' })
       if (brokenExport.kind !== 'success' || brokenExport.text === undefined) return
       expect(brokenExport.text).toContain('the timeline cannot be decoded by this build — ')
-      expect(brokenExport.text).toContain('carries event format 10; this build reads up to format 9')
+      expect(brokenExport.text).toContain('carries event format 11; this build reads up to format 10')
       expect(brokenExport.text).not.toContain('clean over')
     } finally {
       await unmount(mounted)
