@@ -41,6 +41,7 @@ import {
   claimWorkItem,
   compilePlan,
   evaluateAcceptanceCriterion,
+  activatePlanVersion,
   importPlanVersion,
   listAgentTodo,
   parsePlanDocument,
@@ -371,10 +372,8 @@ async function main(): Promise<void> {
     const db = await openProjectLedgerDatabase(':memory:')
     const planText = await readFile(join(SRC, 'task-plan.yaml'), 'utf8')
     const compiled = compilePlan(validatePlanSchema(parsePlanDocument(planText).value), { sourceText: planText })
-    importPlanVersion(db, compiled)
-    // The activation seam: activation has no ledger writer in v1.6a, so the
-    // harness performs the owner's activation directly (docs/mini/v1.6a §9.2).
-    db.prepare("UPDATE plan_versions SET status = 'ACTIVE'").run()
+    const { planVersionId } = importPlanVersion(db, compiled)
+    activatePlanVersion(db, planVersionId)
 
     const ctx = new Context()
     try {

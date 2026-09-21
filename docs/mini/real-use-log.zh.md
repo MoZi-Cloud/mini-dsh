@@ -219,6 +219,10 @@ v1.6b 计划 supersede 了自己的版本 1，本增量完成版本 2 批次的�
 
 运行之后，本域首行把阶段 B 的擦边记录为它如今有家可归的事实：`cf:mini-dsh:203`——`SCOPE_OVERLAP`，介于 `SB-SCOPE-RESERVATION-001` 与本条目之间，由第二个 agent 提出，OPEN——描述原样陈述了发生的事：阶段 B 的两条预留（`sr:mini-dsh:194`、`sr:mini-dsh:195`）在握，对已持有范围的第三次尝试被以 duplicate 拒绝，而任一预留之下的嵌套路径本会从等值检查漏过。计划文档本身不变，故运行内导入幂等、版本 2 仍是活跃版本。持久账本首次打开时就地迁移 schema 8→9，现在把 1/2/3/4/5/6/7/8/9 混合时间线折叠干净（203 事件中 97 + 19 + 2 + 14 + 15 + 13 + 22 + 13 + 8 个戳记）。幂等重跑通过（`alreadyComplete: true`、零工具调用、doctor 0、drift 0），4K 切片重跑保持绿色（6 请求、最大 2,444/4,096 估算 token、DONE）。v1.6d 全部五个条目——阶段 A 三个、阶段 B 两个——在版本 2 中 DONE；阶段 B 收拢，v1.6d 完成报告可作为独立门步骤跟进。
 
+### 2026-09-21 —— v1.7 阶段 A：激活补录与 benchmark 生命周期迁移
+
+owner 对 [v1.7 改进计划](v1.7/fork-mini-DSH-v1.7-improvement-plan.zh.md)的 go 进入阶段 A，其首个增量交付了激活写入者本身：`activatePlanVersion` 在单个 `BEGIN IMMEDIATE` 内把 `DRAFT` 版本移到 `ACTIVE`，带上 `activated_at_ms` 戳记、`plans.current_version_id` 指针与严格的 `plan/version-activated` 事件；fold 拥有版本生命周期，回放审计拥有生命周期 parity，doctor 转换回放漂移而非重新实现——事件格式 10，schema 9（列自 v1 就存在）。本增量把记录历史中的激活空洞补上：持久账本三个现役版本（`plv:mini-dsh-post-v16a-increments:v5`、`plv:mini-dsh-v16b-owner-decision:v2`、`plv:mini-dsh-v16d-collaboration:v2`）在序号 204–206 收到各自的激活事件（format 10，actor `owner-backfill`，戳记因 raw 时代从未写入而在补录时追记），raw 时代从未行使的指针所有权随之落地——三个计划现在都点名自己的 ACTIVE 版本。六个已接替版本保持其事件时间线形状：追加式时间线里，追记的激活会落在已记录的接替之后，fold 会正确拒绝该序列。回放审计在 206 事件、十个戳记的时间线上读出 0 drift；doctor 在活跃的 v1.6d 版本上报 0 issues。同一增量中，benchmark worker 迁出直接生命周期 SQL——context-light worker 无条件的 `UPDATE plan_versions SET status = 'ACTIVE'`（连 `WHERE` 都没有：它会把库里的每个版本都激活）与 real-use worker 不带指针的裸激活都改走写入者——确定性 4K 重跑 keyless 保持绿色（6 请求、最大 2,444/4,096 估算 token、verifier 退出码 0、DONE）。本增量无 lane 运行、无工作项：记录的活动是 owner 记账与代码增量；v1.7 计划条目的 keyed lane 认领与 live-4K 重跑等 keyed 环境。下一步：F-01 的受信 verifier consumer。
+
 ## 相对门槛的状态
 
 

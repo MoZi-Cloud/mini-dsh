@@ -41,6 +41,7 @@ import {
   planDoctor,
   readProjectReplay,
   replayProjectEvents,
+  activatePlanVersion,
   supersedePlanVersion,
   validatePlanSchema,
   type PlanVersionId,
@@ -208,10 +209,10 @@ async function main(): Promise<void> {
     const statusRow = () => db.prepare('SELECT status FROM plan_versions WHERE id = ?')
       .get(versionId) as { status: string }
     if (statusRow().status !== 'ACTIVE') {
-      // The supersede seam (§22): a prior ACTIVE version of this plan freezes
-      // under the imported successor; like activation, supersede-then-activate
-      // here is the owner's move the lane performs directly, per the pinned
-      // fixtures' documented raw owner updates.
+      // The lifecycle seam (§22): a prior ACTIVE version of this plan freezes
+      // under the imported successor, and the successor activates through the
+      // v1.7 activation writer - the lane performs the owner's moves through
+      // the shipped operations, never raw lifecycle SQL.
       const activeOther = db.prepare(
         "SELECT id FROM plan_versions WHERE plan_id = ? AND status = 'ACTIVE' AND id <> ?",
       ).get(compiled.planId, versionId) as { id: string } | undefined
@@ -220,7 +221,7 @@ async function main(): Promise<void> {
           succeededBy: brandString<PlanVersionId>(versionId),
         })
       }
-      db.prepare("UPDATE plan_versions SET status = 'ACTIVE' WHERE id = ?").run(versionId)
+      activatePlanVersion(db, brandString<PlanVersionId>(versionId))
     }
 
     const itemRow = db.prepare('SELECT id, status FROM work_items WHERE plan_version_id = ? AND stable_key = ?')
